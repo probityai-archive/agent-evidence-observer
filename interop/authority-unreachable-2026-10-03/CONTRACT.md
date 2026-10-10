@@ -49,7 +49,7 @@ The peer reader authenticates the profile record and native service state, opens
 
 ## Delegated-authority cases mapped to this record
 
-The working group list carries six vendor-neutral delegated-authority cases (2 October), each stated as an expected invariant, failure condition, observable evidence and residual risk. Five of them run in this profile today; case 4 is the unreachable-human pair above. Each row names the reference cases and the record fields that decide it.
+The working group list proposed six vendor-neutral delegated-authority cases on 2 October ([message 14](https://lists.aaif.io/g/wg-identity-trust/message/14)), each stated as an expected invariant, failure condition, observable evidence and residual risk. Five of them run in this profile today; case 4 is the unreachable-human pair above. Each row names the reference cases and the record fields that decide it. On 5 October the list added case 7 (the delegation chain as a surveillance graph) and case 8 (a revocation issued in error, or disputed); neither has a reference case here yet.
 
 | Case | Expected invariant | Failure condition | Observable evidence in this record | Reference cases | Residual risk this profile leaves |
 | --- | --- | --- | --- | --- | --- |
