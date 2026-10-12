@@ -523,13 +523,19 @@ def test_runner_reports_process_group_inspection_failure(monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment test")
-def test_runner_windows_denies_breakaway(tmp_path):
+def test_runner_windows_contains_breakaway_attempt(tmp_path):
     runner = _load_script("refund_handoff_runner_breakaway", "run_corpus.py")
     marker = tmp_path / "breakaway-descendant"
+    release = tmp_path / "release-descendant"
     descendant = (
-        "import pathlib,time;"
-        "time.sleep(0.25);"
-        f"pathlib.Path({str(marker)!r}).write_text('escaped',encoding='ascii')"
+        "import pathlib,time\n"
+        f"marker=pathlib.Path({str(marker)!r})\n"
+        f"release=pathlib.Path({str(release)!r})\n"
+        "deadline=time.monotonic()+5\n"
+        "while not release.exists() and time.monotonic()<deadline:\n"
+        " time.sleep(0.01)\n"
+        "if release.exists():\n"
+        " marker.write_text('escaped',encoding='ascii')\n"
     )
     parent = (
         "import subprocess,sys\n"
@@ -538,14 +544,17 @@ def test_runner_windows_denies_breakaway(tmp_path):
         + repr(descendant)
         + "],creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB,"
         "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        " print('created')\n"
         "except OSError:\n"
         " print('denied')\n"
     )
     returncode, stdout, stderr, error = runner._run_bounded(
         [sys.executable, "-c", parent]
     )
-    assert (returncode, stdout, stderr, error) == (0, b"denied\n", b"", None)
-    time.sleep(0.75)
+    assert (returncode, stderr, error) == (0, b"", None)
+    assert stdout in (b"created\n", b"denied\n")
+    release.write_text("release", encoding="ascii")
+    time.sleep(1)
     assert not marker.exists()
 
 

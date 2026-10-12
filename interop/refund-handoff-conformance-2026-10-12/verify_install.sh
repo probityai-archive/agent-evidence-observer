@@ -93,7 +93,8 @@ fi
 printf '%s\n' 0 > "$results/source-selection.exit"
 
 run_stage archive-source-at-commit \
-  git -C "$root" archive --format=tar --output="$results/source-at-commit.tar" \
+  git -C "$root" -c core.autocrlf=false -c core.eol=lf archive \
+    --format=tar --output="$results/source-at-commit.tar" \
     "$source_commit" || \
   exit "$stage_code"
 mkdir -p "$results/test-source"

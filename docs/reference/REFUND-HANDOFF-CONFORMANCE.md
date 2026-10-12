@@ -14,6 +14,8 @@ every dependency from the hash-locked profile file, builds one wheel under the
 same locked build constraints, and installs that wheel without resolving more
 dependencies. It archives the exact source commit and writes canonical provenance
 for the source tree, archive, wheel, runtime, uv version, and dependency lock. It
+disables Git checkout line-ending conversion while creating the archive, so
+Windows and Linux verify the same committed contract and fixture bytes. It
 runs `interop/refund-handoff-conformance-2026-10-12/tests/test_refund_handoff.py`, smoke-tests the installed console command,
 then invokes the verified refund-handoff module on all 80 hash-selected vectors.
 Every stage retains its command, stdout, stderr, and exit status. The corpus keeps
