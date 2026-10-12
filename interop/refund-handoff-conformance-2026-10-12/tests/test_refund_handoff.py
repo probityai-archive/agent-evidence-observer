@@ -544,15 +544,15 @@ def test_runner_windows_contains_breakaway_attempt(tmp_path):
         + repr(descendant)
         + "],creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB,"
         "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
-        " print('created')\n"
+        " sys.stdout.buffer.write(b'created')\n"
         "except OSError:\n"
-        " print('denied')\n"
+        " sys.stdout.buffer.write(b'denied')\n"
     )
     returncode, stdout, stderr, error = runner._run_bounded(
         [sys.executable, "-c", parent]
     )
     assert (returncode, stderr, error) == (0, b"", None)
-    assert stdout in (b"created\n", b"denied\n")
+    assert stdout in (b"created", b"denied")
     release.write_text("release", encoding="ascii")
     time.sleep(1)
     assert not marker.exists()
@@ -666,11 +666,15 @@ def test_runner_retains_late_case_containment_failure(tmp_path, monkeypatch):
     assert prefix.with_suffix(".stderr").read_bytes() == b""
 
 
-def test_runner_keeps_partial_child_output_on_late_state_failure(monkeypatch):
+def test_runner_keeps_partial_child_output_on_late_state_failure(monkeypatch, tmp_path):
     runner = _load_script("refund_handoff_runner_partial_failure", "run_corpus.py")
+    marker = tmp_path / "child-flushed"
 
     def fail_after_output(*_args):
-        time.sleep(0.15)
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert marker.exists(), "child did not flush its partial output"
         raise runner.VerificationError("process state unreadable")
 
     monkeypatch.setattr(runner, "_wait_bounded", fail_after_output)
@@ -678,7 +682,12 @@ def test_runner_keeps_partial_child_output_on_late_state_failure(monkeypatch):
         [
             sys.executable,
             "-c",
-            "import sys,time;sys.stdout.write('partial');sys.stdout.flush();time.sleep(1)",
+            (
+                "import pathlib,sys,time;"
+                "sys.stdout.buffer.write(b'partial');sys.stdout.buffer.flush();"
+                f"pathlib.Path({str(marker)!r}).write_text('flushed',encoding='ascii');"
+                "time.sleep(5)"
+            ),
         ]
     )
     assert status == -1
