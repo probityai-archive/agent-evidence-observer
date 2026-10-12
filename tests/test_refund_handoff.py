@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -11,7 +12,15 @@ import sys
 import pytest
 
 from probity_observer.crypto import VerificationError, canonical, strict_loads
-from probity_observer.refund_handoff import assess, main
+from probity_observer.refund_handoff import (
+    MAX_DOCUMENT_BYTES,
+    assess,
+    check_trust_snapshot,
+    main,
+    operation_id,
+    read_document_bytes,
+    reason_uri,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = ROOT / "interop/refund-handoff-conformance-2026-10-12"
@@ -71,20 +80,20 @@ def test_cli_preserves_each_vector_result(item, monkeypatch, capsys):
     captured = capsys.readouterr()
     if item["expected"]["exit"] == 2:
         assert captured.out == ""
-        assert item["expected"]["refusal"] in captured.err
+        assert captured.err == (
+            "Refund handoff bundle refused: " + item["expected"]["refusal"] + "\n"
+        )
+        assert hashlib.sha256(captured.err.encode("ascii")).hexdigest() == item[
+            "expected"
+        ]["stderr_sha256"]
         return
     report = strict_loads(captured.out.rstrip("\n").encode("ascii"))
     expected = item["expected"]
     assert report["overall"] == expected["overall"]
-    for field in ("effect_coverage", "completion"):
-        if field in expected:
-            assert report["claims"][field]["state"] == expected[field]
-    if "completion_value" in expected:
-        assert report["claims"]["completion"]["value"] == expected["completion_value"]
-    if "excluded_after_cutoff" in expected:
-        assert report["counts"]["excluded_after_cutoff"] == expected["excluded_after_cutoff"]
-    if "unique_handoffs" in expected:
-        assert report["counts"]["unique_handoffs"] == expected["unique_handoffs"]
+    assert report["claims"] == expected["claims"]
+    assert hashlib.sha256(captured.out.encode("ascii")).hexdigest() == expected[
+        "report_sha256"
+    ]
 
 
 def test_public_generator_reproduces_every_committed_byte(tmp_path):
@@ -121,8 +130,11 @@ def test_runner_bounds_each_child_output_stream():
         "-c",
         "import sys; sys.stdout.write('x' * 1048577)",
     ]
-    with pytest.raises(VerificationError, match="byte limit"):
-        runner._run_bounded(command)
+    returncode, stdout, stderr, error = runner._run_bounded(command)
+    assert returncode != 0
+    assert len(stdout) > runner.MAX_STREAM_BYTES
+    assert stderr == b""
+    assert error == "verifier output exceeds the retained byte limit"
 
 
 @pytest.mark.parametrize(
@@ -182,7 +194,7 @@ def test_response_loss_keeps_effect_and_completion_claims_separate():
     }
     assert report["claims"]["completion"] == {
         "state": "NOT_ESTABLISHED",
-        "reasons": ["unresolved_completion"],
+        "reasons": [reason_uri("unresolved_completion")],
         "value": "unknown",
     }
 
@@ -221,6 +233,8 @@ def test_report_keeps_exact_references_peer_scope_and_nonclaims():
     assert set(report["references"]) == {
         "bundle_ref",
         "trust_snapshot_ref",
+        "admission_checkpoint_ref",
+        "handoff_checkpoint_ref",
         "admission_ref",
         "handoff_ref",
         "execution_manifest_ref",
@@ -229,5 +243,70 @@ def test_report_keeps_exact_references_peer_scope_and_nonclaims():
         "terminal_refs",
     }
     assert "remote exactly-once execution" in report["does_not_assert"]
+    assert (
+        "complete admission history or global decision single-consumption"
+        in report["does_not_assert"]
+    )
     assert "independent operation, adoption, or commercial agreement" in report["does_not_assert"]
     assert canonical(report) == canonical(deepcopy(report))
+
+
+def test_operation_identity_survives_handoff_authority_rotation():
+    baseline = strict_loads(_case("01-observed-success"))["target"]
+    rotated = deepcopy(baseline)
+    rotated["handoff_issuer"] = "fixture.rotated-handoff-authority"
+    assert operation_id(rotated) == operation_id(baseline)
+
+
+def test_trust_snapshot_rejects_one_key_under_two_roles():
+    changed = deepcopy(TRUST)
+    changed["keys"][1]["public_key"] = changed["keys"][0]["public_key"]
+    cutoff = datetime(2026, 10, 12, 10, 8, tzinfo=timezone.utc)
+    with pytest.raises(VerificationError, match="repeats Ed25519 public-key bytes"):
+        check_trust_snapshot(changed, cutoff)
+
+
+def test_missing_records_remain_not_established():
+    missing_outcome = _report("45-missing-attempt-outcome")
+    assert missing_outcome["claims"]["completion"] == {
+        "state": "NOT_ESTABLISHED",
+        "reasons": [reason_uri("missing_attempt_outcome")],
+        "value": "unknown",
+    }
+    missing_resolution = _report("46-reissue-without-resolution")
+    assert missing_resolution["claims"]["approval_continuity"] == {
+        "state": "NOT_ESTABLISHED",
+        "reasons": [reason_uri("reissued_approval_lacks_resolution")],
+    }
+
+
+def test_terminal_outcome_rejects_later_unresolved_reconciliation():
+    report = _report("47-reconciliation-after-success")
+    assert report["claims"]["completion"]["state"] == "CONTRADICTED"
+    assert report["claims"]["completion"]["reasons"] == [
+        reason_uri("reconciliation_after_terminal_outcome")
+    ]
+
+
+def test_consumer_checkpoints_detect_separately_consistent_forks():
+    assert _report("57-handoff-checkpoint-fork")["claims"][
+        "authenticated_handoff"
+    ]["reasons"] == [reason_uri("handoff_checkpoint_handoff_ref_mismatch")]
+    admission_fork = _report("58-admission-checkpoint-fork")
+    assert admission_fork["claims"]["admission"]["state"] == "CONTRADICTED"
+    assert reason_uri("admission_checkpoint_admission_ref_mismatch") in admission_fork[
+        "claims"
+    ]["admission"]["reasons"]
+
+
+def test_document_reader_refuses_oversize_and_symlink_inputs(tmp_path):
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"x" * (MAX_DOCUMENT_BYTES + 1))
+    with pytest.raises(VerificationError, match="document byte limit"):
+        read_document_bytes(oversized)
+    target = tmp_path / "target.json"
+    target.write_bytes(b"{}")
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    with pytest.raises(VerificationError, match="readable regular file"):
+        read_document_bytes(link)

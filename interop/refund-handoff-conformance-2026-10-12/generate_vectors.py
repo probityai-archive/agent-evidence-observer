@@ -14,7 +14,7 @@ from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from probity_observer.crypto import SigningKey, canonical, digest
+from probity_observer.crypto import SigningKey, canonical, digest, strict_loads
 from probity_observer.refund_handoff import (
     ADMISSION_DOMAIN,
     CONTRACT_ID,
@@ -27,6 +27,7 @@ from probity_observer.refund_handoff import (
     SCHEMA,
     SNAPSHOT_DOMAIN,
     admission_state_root,
+    assess,
     decision_binding_ref,
     idempotency_key,
     operation_id,
@@ -36,9 +37,11 @@ from probity_observer.refund_handoff import (
 NAMESPACE = b"probity-public-refund-handoff-conformance-0.1:"
 KEY_IDS = {
     "reader": "fixture.reader",
+    "reader_alt": "fixture.reader-alt",
     "admission": "fixture.admission",
     "recovery": "fixture.recovery",
-    "handoff": "fixture.handoff",
+    "handoff": "fixture.handoff-retired",
+    "handoff_active": "fixture.handoff-active",
     "execution": "fixture.execution",
     "effect": "fixture.effect",
     "revoked": "fixture.revoked-handoff",
@@ -46,22 +49,32 @@ KEY_IDS = {
 }
 ROLES = {
     "reader": "evidence-reader",
+    "reader_alt": "evidence-reader",
     "admission": "admission-authority",
     "recovery": "recovery-observer",
     "handoff": "handoff-issuer",
+    "handoff_active": "handoff-issuer",
     "execution": "execution-observer",
     "effect": "effect-observer",
     "revoked": "handoff-issuer",
 }
 PRINCIPALS = {
-    "reader": "probity-reader-fixture",
-    "admission": "admission-authority-001",
-    "recovery": "recovery-observer-001",
-    "handoff": "conduit-issuer-001",
-    "execution": "execution-observer-001",
-    "effect": "provider-observer-001",
-    "revoked": "revoked-conduit-issuer",
+    "reader": "fixture.probity-reader",
+    "reader_alt": "fixture.probity-reader-alt",
+    "admission": "fixture.admission-authority",
+    "recovery": "fixture.recovery-observer",
+    "handoff": "fixture.handoff-authority",
+    "handoff_active": "fixture.handoff-authority",
+    "execution": "fixture.execution-observer",
+    "effect": "fixture.provider-observer",
+    "revoked": "fixture.revoked-handoff-authority",
 }
+
+WORKFLOW_ID = "fixture.refund-workflow-001"
+DECISION_SCOPE = "fixture.pic-compatible.refund-pilot"
+DECISION_ISSUER = "fixture.pic-compatible.authority-001"
+PROVIDER_ID = "fixture.simulator-provider-001"
+BASELINE_CUTOFF = "2026-10-12T10:08:00Z"
 
 
 def key(name: str) -> SigningKey:
@@ -87,14 +100,23 @@ def trust_snapshot() -> dict[str, Any]:
     keys = []
     for name in (
         "reader",
+        "reader_alt",
         "admission",
         "recovery",
         "handoff",
+        "handoff_active",
         "execution",
         "effect",
         "revoked",
     ):
-        revoked = name == "revoked"
+        revoked = name in {"handoff", "revoked"}
+        revoked_at = (
+            "2026-10-12T10:02:30Z"
+            if name == "handoff"
+            else "2026-10-01T00:00:00Z"
+            if name == "revoked"
+            else None
+        )
         keys.append(
             {
                 "key_id": KEY_IDS[name],
@@ -104,28 +126,58 @@ def trust_snapshot() -> dict[str, Any]:
                 "status": "revoked" if revoked else "active",
                 "not_before": "2026-01-01T00:00:00Z",
                 "not_after": "2027-01-01T00:00:00Z",
-                "revoked_at": "2026-10-01T00:00:00Z" if revoked else None,
+                "revoked_at": revoked_at,
+                "scope": {
+                    "workflow_ids": [WORKFLOW_ID],
+                    "provider_ids": [PROVIDER_ID],
+                    "decision_scopes": [DECISION_SCOPE],
+                },
             }
         )
+    baseline = build()
+    admission = baseline["admission"]["payload"]
+    handoff = baseline["handoffs"][0]["payload"]
     return {
         "profile": CONTRACT_ID,
         "schema": SCHEMA,
         "snapshot_id": "probity-public-conformance-2026-10-12",
         "valid_from": "2026-01-01T00:00:00Z",
         "valid_until": "2027-01-01T00:00:00Z",
+        "admission_checkpoint": {
+            "authority_id": admission["authority_id"],
+            "workflow_id": admission["workflow_id"],
+            "decision_scope": admission["decision_scope"],
+            "decision_issuer": admission["decision_issuer"],
+            "decision_id": admission["decision_id"],
+            "operation_id": admission["operation_id"],
+            "admission_ref": digest(ADMISSION_DOMAIN, admission),
+            "state_root": admission["state_root"],
+            "observed_at": BASELINE_CUTOFF,
+        },
+        "handoff_checkpoint": {
+            "issuer": handoff["issuer"],
+            "workflow_id": handoff["workflow_id"],
+            "decision_scope": handoff["decision_scope"],
+            "decision_issuer": handoff["decision_issuer"],
+            "decision_id": handoff["decision_id"],
+            "handoff_id": handoff["handoff_id"],
+            "operation_id": handoff["operation_id"],
+            "handoff_ref": digest(HANDOFF_DOMAIN, handoff),
+            "observed_at": BASELINE_CUTOFF,
+        },
         "keys": keys,
     }
 
 
 def target() -> dict[str, Any]:
     return {
-        "workflow_id": "refund-workflow-001",
-        "decision_scope": "pic-refund-pilot",
-        "decision_issuer": "pic-authority-001",
+        "workflow_id": WORKFLOW_ID,
+        "decision_scope": DECISION_SCOPE,
+        "decision_issuer": DECISION_ISSUER,
         "decision_id": "decision-001",
         "admission_authority_id": PRINCIPALS["admission"],
         "handoff_issuer": PRINCIPALS["handoff"],
-        "provider_id": "simulator-provider-001",
+        "provider_id": PROVIDER_ID,
         "tool": "refund",
         "arguments": {
             "payment_id": "pay-A",
@@ -157,10 +209,10 @@ def verified_input(
         "key_id": KEY_IDS["reader"],
         "input_id": f"{source.lower()}-input-{suffix}",
         "evidence_role": role,
-        "producer_profile": (
-            "pic/refund-decision/0.1"
+        "compatibility_profile": (
+            "fixture.pic-compatible/refund-decision/0.1"
             if role == "decision_evidence"
-            else "aps/approval-receipt/0.1"
+            else "fixture.aps-compatible/approval-receipt/0.1"
         ),
         "evidence_ref": digest(
             "probity-public-source-fixture-v0.1",
@@ -191,7 +243,8 @@ def _event_common(kind: str, event_id: str, attempt_id: str, occurred_at: str) -
         "sequence": 0,
         "previous_event_ref": None,
         "workflow_id": selected["workflow_id"],
-        "issuer": selected["handoff_issuer"],
+        "decision_scope": selected["decision_scope"],
+        "handoff_issuer": selected["handoff_issuer"],
         "provider_id": selected["provider_id"],
         "operation_id": operation,
         "idempotency_key": idempotency_key(operation, selected["provider_id"]),
@@ -202,36 +255,44 @@ def _event_common(kind: str, event_id: str, attempt_id: str, occurred_at: str) -
 
 
 def _link_and_sign_events(bundle: dict[str, Any]) -> None:
-    """Rebuild the hash chain and remap existing typed references."""
+    """Rebuild the chain and all valid typed references by attempt identity."""
     payloads = [deepcopy(item["payload"]) for item in bundle["events"]]
-    old_refs = {digest(EVENT_DOMAIN, item): item for item in payloads}
-    remap: dict[str, str] = {}
     previous: str | None = None
     rebuilt: list[dict[str, Any]] = []
+    attempt_refs: dict[str, str] = {}
+    effect_refs: dict[str, str] = {}
+    outcome_refs: dict[str, str] = {}
+    reconciliation_refs: dict[str, str] = {}
     for sequence, payload in enumerate(payloads, start=1):
-        for field in (
-            "predecessor_attempt_ref",
-            "attempt_ref",
-            "effect_ref",
-            "initial_outcome_ref",
-            "previous_reconciliation_ref",
-        ):
-            if field in payload and payload[field] in remap:
-                payload[field] = remap[payload[field]]
-        old_ref = digest(EVENT_DOMAIN, old_refs[digest(EVENT_DOMAIN, payload)]) if digest(EVENT_DOMAIN, payload) in old_refs else None
         payload["sequence"] = sequence
         payload["previous_event_ref"] = previous
+        attempt_id = payload["attempt_id"]
+        if payload["kind"] == "attempt":
+            if payload["predecessor_attempt_ref"] is not None:
+                prior_attempt_ids = list(attempt_refs)
+                payload["predecessor_attempt_ref"] = attempt_refs[prior_attempt_ids[-1]]
+        else:
+            payload["attempt_ref"] = attempt_refs[attempt_id]
+        if payload["kind"] == "outcome" and payload["effect_ref"] is not None:
+            payload["effect_ref"] = effect_refs[attempt_id]
+        if payload["kind"] == "reconciliation":
+            payload["initial_outcome_ref"] = outcome_refs[attempt_id]
+            payload["previous_reconciliation_ref"] = reconciliation_refs.get(attempt_id)
+            if payload["effect_ref"] is not None:
+                payload["effect_ref"] = effect_refs[attempt_id]
         signer = "effect" if payload["kind"] == "effect" else "execution"
         payload["key_id"] = KEY_IDS[signer]
         payload["observer_id"] = PRINCIPALS[signer]
         signed = envelope(payload, signer, EVENT_DOMAIN)
         new_ref = digest(EVENT_DOMAIN, signed["payload"])
-        # The payload often changed before this helper. Map both the original
-        # entry reference and the pre-chain reference when either is present.
-        original_payload = bundle["events"][sequence - 1]["payload"]
-        remap[digest(EVENT_DOMAIN, original_payload)] = new_ref
-        if old_ref is not None:
-            remap[old_ref] = new_ref
+        if payload["kind"] == "attempt":
+            attempt_refs[attempt_id] = new_ref
+        elif payload["kind"] == "effect":
+            effect_refs[attempt_id] = new_ref
+        elif payload["kind"] == "outcome":
+            outcome_refs[attempt_id] = new_ref
+        else:
+            reconciliation_refs[attempt_id] = new_ref
         previous = new_ref
         rebuilt.append(signed)
     bundle["events"] = rebuilt
@@ -254,12 +315,12 @@ def _refresh_snapshot(bundle: dict[str, Any]) -> None:
     if bundle["provider_snapshot"] is None:
         return
     payload = deepcopy(bundle["provider_snapshot"]["payload"])
-    effect_ids = sorted(
+    effect_ids = sorted({
         item["payload"]["effect_id"]
         for item in bundle["events"]
         if item["payload"]["kind"] == "effect"
         and item["payload"]["occurred_at"] <= bundle["cutoff"]
-    )
+    })
     payload["effect_ids"] = effect_ids
     payload["effect_count"] = len(effect_ids)
     payload["observed_at"] = bundle["cutoff"]
@@ -278,7 +339,7 @@ def build(
     attempt_at: str = "2026-10-12T10:03:00Z",
     effect_at: str = "2026-10-12T10:04:00Z",
     outcome_at: str = "2026-10-12T10:05:00Z",
-    cutoff: str = "2026-10-12T10:08:00Z",
+    cutoff: str = BASELINE_CUTOFF,
 ) -> dict[str, Any]:
     selected = target()
     operation = operation_id(selected)
@@ -331,6 +392,9 @@ def build(
         "key_id": KEY_IDS["recovery"],
         "recovery_id": "recovery-001",
         "recovery_observer_id": PRINCIPALS["recovery"],
+        "workflow_id": selected["workflow_id"],
+        "provider_id": selected["provider_id"],
+        "decision_scope": selected["decision_scope"],
         "instance_id": "recovery-instance-002",
         "restart_id": "restart-001",
         "admission_ref": admission_ref,
@@ -439,7 +503,8 @@ def build(
         "key_id": KEY_IDS["execution"],
         "manifest_id": "manifest-001",
         "workflow_id": selected["workflow_id"],
-        "issuer": selected["handoff_issuer"],
+        "decision_scope": selected["decision_scope"],
+        "handoff_issuer": selected["handoff_issuer"],
         "provider_id": selected["provider_id"],
         "operation_id": operation,
         "idempotency_key": idem,
@@ -456,6 +521,9 @@ def build(
         "kind": "provider_snapshot",
         "key_id": KEY_IDS["effect"],
         "snapshot_id": "provider-snapshot-001",
+        "workflow_id": selected["workflow_id"],
+        "decision_scope": selected["decision_scope"],
+        "handoff_issuer": selected["handoff_issuer"],
         "provider_id": selected["provider_id"],
         "operation_id": operation,
         "idempotency_key": idem,
@@ -493,6 +561,16 @@ def _resign_event(bundle: dict[str, Any], index: int, signer: str | None = None)
     bundle["events"][index] = envelope(payload, selected, EVENT_DOMAIN)
 
 
+def _refresh_handoff_binding(bundle: dict[str, Any]) -> None:
+    """Point the first attempt at the current handoff and rebuild event references."""
+    handoff_ref = digest(HANDOFF_DOMAIN, bundle["handoffs"][0]["payload"])
+    first_attempt = next(
+        item for item in bundle["events"] if item["payload"]["kind"] == "attempt"
+    )
+    first_attempt["payload"]["handoff_ref"] = handoff_ref
+    _link_and_sign_events(bundle)
+
+
 def _add_reissue(bundle: dict[str, Any]) -> None:
     reissue = verified_input(
         "approval_evidence",
@@ -510,6 +588,8 @@ def _add_reissue(bundle: dict[str, Any]) -> None:
         "key_id": KEY_IDS["admission"],
         "resolution_id": "resolution-001",
         "authority_id": PRINCIPALS["admission"],
+        "workflow_id": bundle["target"]["workflow_id"],
+        "provider_id": bundle["target"]["provider_id"],
         "decision_scope": bundle["target"]["decision_scope"],
         "decision_issuer": bundle["target"]["decision_issuer"],
         "decision_id": bundle["target"]["decision_id"],
@@ -547,6 +627,7 @@ def vectors() -> dict[str, tuple[bytes, dict[str, Any]]]:
     changed_tuple["handoffs"][0] = envelope(
         changed_tuple["handoffs"][0]["payload"], "handoff", HANDOFF_DOMAIN
     )
+    _refresh_handoff_binding(changed_tuple)
     add("04-changed-refund-tuple", changed_tuple, exit=3, overall="CONTRADICTED")
 
     changed_operation = build()
@@ -689,13 +770,30 @@ def vectors() -> dict[str, tuple[bytes, dict[str, Any]]]:
 
     early_effect = build()
     early_effect["events"][1]["payload"]["occurred_at"] = "2026-10-12T10:02:30Z"
-    _resign_event(early_effect, 1)
+    _link_and_sign_events(early_effect)
     add("22-effect-precedes-attempt", early_effect, exit=3, overall="CONTRADICTED")
 
     unknown_attempt = build()
-    unknown_attempt["events"][2]["payload"]["attempt_id"] = "attempt-999"
-    unknown_attempt["events"][2]["payload"]["attempt_ref"] = "f" * 64
-    _resign_event(unknown_attempt, 2)
+    unknown_outcome = deepcopy(unknown_attempt["events"][2]["payload"])
+    unknown_outcome.update(
+        {
+            "event_id": "event-outcome-unknown",
+            "sequence": 4,
+            "previous_event_ref": digest(
+                EVENT_DOMAIN, unknown_attempt["events"][-1]["payload"]
+            ),
+            "attempt_id": "attempt-999",
+            "attempt_ref": "f" * 64,
+            "effect_ref": None,
+            "state": "unresolved",
+            "response_received": False,
+            "occurred_at": "2026-10-12T10:05:30Z",
+        }
+    )
+    unknown_attempt["events"].append(
+        envelope(unknown_outcome, "execution", EVENT_DOMAIN)
+    )
+    _refresh_manifest(unknown_attempt)
     add("23-success-references-unknown-attempt", unknown_attempt, exit=3, overall="CONTRADICTED")
 
     regressed = build()
@@ -775,25 +873,49 @@ def vectors() -> dict[str, tuple[bytes, dict[str, Any]]]:
         EVENT_DOMAIN, cross_attempt["events"][0]["payload"]
     )
     _resign_event(cross_attempt, 3, "effect")
+    cross_attempt["events"][4]["payload"]["previous_event_ref"] = digest(
+        EVENT_DOMAIN, cross_attempt["events"][3]["payload"]
+    )
+    _resign_event(cross_attempt, 4, "execution")
+    _refresh_manifest(cross_attempt)
     add("27-cross-attempt-effect-reference", cross_attempt, exit=3, overall="CONTRADICTED")
 
-    rebound = build()
-    rebound_effect = deepcopy(rebound["events"][1]["payload"])
-    rebound_effect.update(
+    rebound = deepcopy(later_unresolved)
+    first_effect = _event_common(
+        "effect", "event-effect-rebound-001", "attempt-001", "2026-10-12T10:03:30Z"
+    )
+    first_effect.update(
         {
-            "event_id": "event-effect-002",
-            "attempt_id": "attempt-002",
-            "attempt_ref": "e" * 64,
-            "occurred_at": "2026-10-12T10:06:00Z",
+            "attempt_ref": "0" * 64,
+            "effect_id": "effect-rebound",
+            "effect_type": "refund_committed",
+            "arguments": deepcopy(rebound["target"]["arguments"]),
         }
     )
-    rebound["events"].append(envelope(rebound_effect, "effect", EVENT_DOMAIN))
-    _refresh_manifest(rebound)
+    second_effect = _event_common(
+        "effect", "event-effect-rebound-002", "attempt-002", "2026-10-12T10:06:15Z"
+    )
+    second_effect.update(
+        {
+            "attempt_ref": "0" * 64,
+            "effect_id": "effect-rebound",
+            "effect_type": "refund_committed",
+            "arguments": deepcopy(rebound["target"]["arguments"]),
+        }
+    )
+    rebound["events"].insert(1, envelope(first_effect, "effect", EVENT_DOMAIN))
+    rebound["events"].insert(-1, envelope(second_effect, "effect", EVENT_DOMAIN))
+    _link_and_sign_events(rebound)
     add("28-effect-id-rebound", rebound, exit=3, overall="CONTRADICTED")
 
     broken_chain = build()
     broken_chain["events"][1]["payload"]["previous_event_ref"] = "a" * 64
     _resign_event(broken_chain, 1, "effect")
+    changed_effect_ref = digest(EVENT_DOMAIN, broken_chain["events"][1]["payload"])
+    broken_chain["events"][2]["payload"]["previous_event_ref"] = changed_effect_ref
+    broken_chain["events"][2]["payload"]["effect_ref"] = changed_effect_ref
+    _resign_event(broken_chain, 2, "execution")
+    _refresh_manifest(broken_chain)
     add("29-broken-event-chain", broken_chain, exit=3, overall="CONTRADICTED")
 
     omitted = build()
@@ -811,6 +933,7 @@ def vectors() -> dict[str, tuple[bytes, dict[str, Any]]]:
     bad_idem["handoffs"][0] = envelope(
         bad_idem["handoffs"][0]["payload"], "handoff", HANDOFF_DOMAIN
     )
+    _refresh_handoff_binding(bad_idem)
     add("32-idempotency-key-mismatch", bad_idem, exit=3, overall="CONTRADICTED")
 
     late_recovery = build()
@@ -907,6 +1030,172 @@ def vectors() -> dict[str, tuple[bytes, dict[str, Any]]]:
     )
     add("44-terminal-reconciliation-regresses", terminal_regression, exit=3, overall="CONTRADICTED")
 
+    missing_outcome = build()
+    missing_outcome["events"] = missing_outcome["events"][:-1]
+    _link_and_sign_events(missing_outcome)
+    add("45-missing-attempt-outcome", missing_outcome, exit=3, overall="NOT_ESTABLISHED")
+
+    unresolved_reissue = build()
+    unresolved_reissue["inputs"].append(
+        verified_input(
+            "approval_evidence",
+            approval_ref="approval-002",
+            verified_at="2026-10-12T10:02:10Z",
+            suffix="unresolved",
+        )
+    )
+    add(
+        "46-reissue-without-resolution",
+        unresolved_reissue,
+        exit=3,
+        overall="NOT_ESTABLISHED",
+    )
+
+    terminal_reconciliation = build()
+    attempt_ref = digest(EVENT_DOMAIN, terminal_reconciliation["events"][0]["payload"])
+    outcome_ref = digest(EVENT_DOMAIN, terminal_reconciliation["events"][2]["payload"])
+    reconciliation = _event_common(
+        "reconciliation",
+        "event-reconciliation-after-success",
+        "attempt-001",
+        "2026-10-12T10:05:10Z",
+    )
+    reconciliation.update(
+        {
+            "sequence": 4,
+            "previous_event_ref": outcome_ref,
+            "attempt_ref": attempt_ref,
+            "initial_outcome_ref": outcome_ref,
+            "previous_reconciliation_ref": None,
+            "outcome": "still_unresolved",
+            "effect_ref": None,
+        }
+    )
+    terminal_reconciliation["events"].append(
+        envelope(reconciliation, "execution", EVENT_DOMAIN)
+    )
+    _refresh_manifest(terminal_reconciliation)
+    add(
+        "47-reconciliation-after-success",
+        terminal_reconciliation,
+        exit=3,
+        overall="CONTRADICTED",
+    )
+
+    success_without_response = build()
+    success_without_response["events"][2]["payload"]["response_received"] = False
+    _resign_event(success_without_response, 2)
+    _refresh_manifest(success_without_response)
+    add(
+        "48-success-without-response",
+        success_without_response,
+        exit=3,
+        overall="CONTRADICTED",
+    )
+
+    failure_without_response = build(
+        include_effect=False,
+        outcome_state="observed_failure",
+        response_received=False,
+    )
+    add(
+        "49-failure-without-response",
+        failure_without_response,
+        exit=3,
+        overall="CONTRADICTED",
+    )
+
+    unresolved_with_response = build(
+        outcome_state="unresolved",
+        response_received=True,
+    )
+    add(
+        "50-unresolved-with-response",
+        unresolved_with_response,
+        exit=3,
+        overall="CONTRADICTED",
+    )
+
+    outside_scope = build()
+    outside_scope["inputs"][0]["payload"]["decision_scope"] = "fixture.outside-scope"
+    outside_scope["inputs"][0] = envelope(
+        outside_scope["inputs"][0]["payload"], "reader", INPUT_DOMAIN
+    )
+    add("51-key-scope-crossing", outside_scope, exit=2, refusal="outside its decision_scopes scope")
+
+    mismatched_key_id = build()
+    mismatched_payload = deepcopy(mismatched_key_id["inputs"][0]["payload"])
+    mismatched_payload["key_id"] = KEY_IDS["reader_alt"]
+    mismatched_key_id["inputs"][0] = {
+        "algorithm": "Ed25519",
+        "key_id": KEY_IDS["reader"],
+        "payload": mismatched_payload,
+        "signature": KEYS["reader"].sign(INPUT_DOMAIN, mismatched_payload),
+    }
+    add(
+        "52-envelope-payload-key-id-mismatch",
+        mismatched_key_id,
+        exit=2,
+        refusal="signed key_id differs",
+    )
+
+    bad_algorithm = build()
+    bad_algorithm["handoffs"][0]["algorithm"] = "Ed448"
+    add("53-unsupported-signature-algorithm", bad_algorithm, exit=2, refusal="algorithm")
+
+    domain_substitution = build()
+    handoff_payload = domain_substitution["handoffs"][0]["payload"]
+    domain_substitution["handoffs"][0]["signature"] = KEYS["handoff"].sign(
+        ADMISSION_DOMAIN, handoff_payload
+    )
+    add("54-signature-domain-substitution", domain_substitution, exit=2, refusal="signature")
+
+    before_validity = build()
+    before_validity["inputs"][0]["payload"]["verified_at"] = "2025-12-31T23:59:59Z"
+    before_validity["inputs"][0] = envelope(
+        before_validity["inputs"][0]["payload"], "reader", INPUT_DOMAIN
+    )
+    add("55-record-before-key-validity", before_validity, exit=2, refusal="validity interval")
+
+    at_revocation = build()
+    at_revocation["handoffs"][0]["payload"].update(
+        {
+            "issued_at": "2026-10-12T10:02:30Z",
+            "not_before": "2026-10-12T10:02:30Z",
+            "expires_at": "2026-10-12T10:09:00Z",
+        }
+    )
+    at_revocation["handoffs"][0] = envelope(
+        at_revocation["handoffs"][0]["payload"], "handoff", HANDOFF_DOMAIN
+    )
+    add("56-record-at-key-revocation", at_revocation, exit=2, refusal="revoked at record time")
+
+    handoff_fork = build()
+    handoff_fork["handoffs"][0]["payload"]["expires_at"] = "2026-10-12T10:09:00Z"
+    handoff_fork["handoffs"][0] = envelope(
+        handoff_fork["handoffs"][0]["payload"], "handoff", HANDOFF_DOMAIN
+    )
+    _refresh_handoff_binding(handoff_fork)
+    add("57-handoff-checkpoint-fork", handoff_fork, exit=3, overall="CONTRADICTED")
+
+    admission_fork = build()
+    changed_admission = admission_fork["admission"]["payload"]
+    changed_admission["admission_id"] = "admission-fork"
+    changed_admission["state_root"] = admission_state_root(changed_admission)
+    admission_fork["admission"] = envelope(
+        changed_admission, "admission", ADMISSION_DOMAIN
+    )
+    changed_admission_ref = digest(ADMISSION_DOMAIN, changed_admission)
+    admission_fork["recovery"]["payload"]["admission_ref"] = changed_admission_ref
+    admission_fork["recovery"]["payload"]["state_root"] = changed_admission["state_root"]
+    _resign(admission_fork, "recovery", "recovery", RECOVERY_DOMAIN)
+    admission_fork["handoffs"][0]["payload"]["admission_ref"] = changed_admission_ref
+    admission_fork["handoffs"][0] = envelope(
+        admission_fork["handoffs"][0]["payload"], "handoff", HANDOFF_DOMAIN
+    )
+    _refresh_handoff_binding(admission_fork)
+    add("58-admission-checkpoint-fork", admission_fork, exit=3, overall="CONTRADICTED")
+
     result = {
         name: (canonical(value), expected)
         for name, (value, expected) in cases.items()
@@ -921,7 +1210,55 @@ def vectors() -> dict[str, tuple[bytes, dict[str, Any]]]:
         duplicate_json,
         {"exit": 2, "refusal": "duplicate JSON member"},
     )
-    return result
+    result["59-noncanonical-json"] = (
+        baseline.replace('"schema":', '"schema": ', 1).encode("ascii"),
+        {"exit": 2, "refusal": "not canonical"},
+    )
+    result["60-float-input"] = (
+        baseline.replace('"amount_minor":4000', '"amount_minor":4000.0', 1).encode(
+            "ascii"
+        ),
+        {"exit": 2, "refusal": "outside the prototype JSON profile"},
+    )
+    result["61-unsafe-integer"] = (
+        baseline.replace(
+            '"amount_minor":4000', '"amount_minor":9007199254740992', 1
+        ).encode("ascii"),
+        {"exit": 2, "refusal": "safe JSON range"},
+    )
+    result["62-non-ascii-input"] = (
+        baseline.replace("pay-A", "pay-é", 1).encode("utf-8"),
+        {"exit": 2, "refusal": "non-ASCII string"},
+    )
+    selected_trust = trust_snapshot()
+    normalized = {}
+    for name, (raw, hint) in sorted(result.items()):
+        try:
+            report = assess(strict_loads(raw), selected_trust)
+        except Exception as error:
+            if hint["exit"] != 2 or hint["refusal"] not in str(error):
+                raise AssertionError(name + " produced an unexpected refusal") from error
+            stderr = (
+                "Refund handoff bundle refused: " + str(error) + "\n"
+            ).encode("ascii")
+            expected = {
+                "exit": 2,
+                "refusal": str(error),
+                "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+            }
+        else:
+            exit_code = 0 if report["overall"] == "ESTABLISHED" else 3
+            if hint["exit"] != exit_code or hint["overall"] != report["overall"]:
+                raise AssertionError(name + " produced an unexpected classification")
+            stdout = canonical(report) + b"\n"
+            expected = {
+                "exit": exit_code,
+                "overall": report["overall"],
+                "claims": report["claims"],
+                "report_sha256": hashlib.sha256(stdout).hexdigest(),
+            }
+        normalized[name] = (raw, expected)
+    return normalized
 
 
 def generate(output: Path) -> None:

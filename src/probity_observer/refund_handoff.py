@@ -13,7 +13,9 @@ from collections import defaultdict
 from collections.abc import Sequence
 from copy import deepcopy
 from datetime import datetime, timezone
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -42,10 +44,18 @@ DECISION_BINDING_DOMAIN = "probity-refund-decision-binding-v0.1"
 ADMISSION_STATE_DOMAIN = "probity-refund-admission-state-v0.1"
 PROVIDER_STATE_DOMAIN = "probity-refund-provider-state-v0.1"
 TRUST_SNAPSHOT_DOMAIN = "probity-refund-trust-snapshot-v0.1"
+ADMISSION_CHECKPOINT_DOMAIN = "probity-refund-admission-checkpoint-v0.1"
+HANDOFF_CHECKPOINT_DOMAIN = "probity-refund-handoff-checkpoint-v0.1"
 
 MAX_HANDOFF_TTL_SECONDS = 600
+MAX_DOCUMENT_BYTES = 1_048_576
+MAX_BUNDLE_RECORDS = 512
+MAX_TRUST_KEYS = 128
+MAX_IDENTIFIER_BYTES = 512
 HEX_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
+REASON_CODE = re.compile(r"[a-z][a-z0-9_]*\Z")
+REASON_URI_PREFIX = CONTRACT_ID + "#reason-"
 
 ENVELOPE_FIELDS = {"algorithm", "key_id", "payload", "signature"}
 TARGET_FIELDS = {
@@ -66,7 +76,7 @@ INPUT_FIELDS = {
     "key_id",
     "input_id",
     "evidence_role",
-    "producer_profile",
+    "compatibility_profile",
     "evidence_ref",
     "decision_scope",
     "decision_issuer",
@@ -111,6 +121,9 @@ RECOVERY_FIELDS = {
     "key_id",
     "recovery_id",
     "recovery_observer_id",
+    "workflow_id",
+    "provider_id",
+    "decision_scope",
     "instance_id",
     "restart_id",
     "admission_ref",
@@ -126,6 +139,8 @@ RESOLUTION_FIELDS = {
     "key_id",
     "resolution_id",
     "authority_id",
+    "workflow_id",
+    "provider_id",
     "decision_scope",
     "decision_issuer",
     "decision_id",
@@ -171,7 +186,8 @@ EVENT_COMMON_FIELDS = {
     "sequence",
     "previous_event_ref",
     "workflow_id",
-    "issuer",
+    "decision_scope",
+    "handoff_issuer",
     "provider_id",
     "operation_id",
     "idempotency_key",
@@ -202,7 +218,8 @@ MANIFEST_FIELDS = {
     "key_id",
     "manifest_id",
     "workflow_id",
-    "issuer",
+    "decision_scope",
+    "handoff_issuer",
     "provider_id",
     "operation_id",
     "idempotency_key",
@@ -218,6 +235,9 @@ SNAPSHOT_FIELDS = {
     "kind",
     "key_id",
     "snapshot_id",
+    "workflow_id",
+    "decision_scope",
+    "handoff_issuer",
     "provider_id",
     "operation_id",
     "idempotency_key",
@@ -238,7 +258,12 @@ def _object(value: Any, fields: set[str], reason: str) -> dict[str, Any]:
 
 
 def _identifier(value: Any, reason: str) -> str:
-    if not isinstance(value, str) or not value or not value.isascii():
+    if (
+        not isinstance(value, str)
+        or not value
+        or not value.isascii()
+        or len(value.encode("ascii")) > MAX_IDENTIFIER_BYTES
+    ):
         raise VerificationError(reason + " is not a nonempty ASCII identifier")
     return value
 
@@ -289,18 +314,65 @@ def _profile(payload: dict[str, Any], kind: str) -> None:
         raise VerificationError(kind + " has a different signed kind")
 
 
+def reason_uri(code: str) -> str:
+    """Return the stable contract URI for one closed report reason code."""
+    if REASON_CODE.fullmatch(code) is None:
+        raise AssertionError("internal reason code is not stable snake case")
+    return REASON_URI_PREFIX + code
+
+
+def read_document_bytes(path: Path) -> bytes:
+    """Read one bounded regular file through one no-follow file descriptor."""
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise VerificationError("input is not a readable regular file: " + path.name) from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise VerificationError("input is not a regular file: " + path.name)
+        if metadata.st_size > MAX_DOCUMENT_BYTES:
+            raise VerificationError("input exceeds the document byte limit: " + path.name)
+        chunks: list[bytes] = []
+        remaining = MAX_DOCUMENT_BYTES + 1
+        while remaining:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > MAX_DOCUMENT_BYTES:
+            raise VerificationError("input exceeds the document byte limit: " + path.name)
+    finally:
+        os.close(descriptor)
+    return raw
+
+
 def load_document(path: Path) -> Any:
-    """Read one regular, canonical JSON file without following a symlink."""
-    if path.is_symlink() or not path.is_file():
-        raise VerificationError("input is not a regular file: " + path.name)
-    return strict_loads(path.read_bytes())
+    """Parse one bounded canonical JSON document from one file snapshot."""
+    return strict_loads(read_document_bytes(path))
 
 
-def check_trust_snapshot(snapshot: Any, cutoff: datetime) -> dict[str, dict[str, Any]]:
-    """Check the consumer-selected key set and return it by key identifier."""
+def check_trust_snapshot(
+    snapshot: Any, cutoff: datetime
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """Check consumer-selected keys, scopes, and the selected admission pin."""
     root = _object(
         snapshot,
-        {"profile", "schema", "snapshot_id", "valid_from", "valid_until", "keys"},
+        {
+            "profile",
+            "schema",
+            "snapshot_id",
+            "valid_from",
+            "valid_until",
+            "admission_checkpoint",
+            "handoff_checkpoint",
+            "keys",
+        },
         "trust snapshot",
     )
     if root["profile"] != CONTRACT_ID or root["schema"] != SCHEMA:
@@ -310,9 +382,74 @@ def check_trust_snapshot(snapshot: Any, cutoff: datetime) -> dict[str, dict[str,
     valid_until = _stamp(root["valid_until"], "trust snapshot valid_until")
     if not valid_from <= cutoff <= valid_until:
         raise VerificationError("cutoff is outside the trust snapshot interval")
-    if not isinstance(root["keys"], list) or not root["keys"]:
+    if (
+        not isinstance(root["keys"], list)
+        or not root["keys"]
+        or len(root["keys"]) > MAX_TRUST_KEYS
+    ):
         raise VerificationError("trust snapshot has no keys")
+    admission_checkpoint = _object(
+        root["admission_checkpoint"],
+        {
+            "authority_id",
+            "workflow_id",
+            "decision_scope",
+            "decision_issuer",
+            "decision_id",
+            "operation_id",
+            "admission_ref",
+            "state_root",
+            "observed_at",
+        },
+        "admission checkpoint",
+    )
+    for field in (
+        "authority_id",
+        "workflow_id",
+        "decision_scope",
+        "decision_issuer",
+        "decision_id",
+    ):
+        _identifier(admission_checkpoint[field], "admission checkpoint " + field)
+    for field in ("operation_id", "admission_ref", "state_root"):
+        _sha256(admission_checkpoint[field], "admission checkpoint " + field)
+    if _stamp(
+        admission_checkpoint["observed_at"], "admission checkpoint observed_at"
+    ) > cutoff:
+        raise VerificationError("admission checkpoint is observed after the report cutoff")
+    handoff_checkpoint = _object(
+        root["handoff_checkpoint"],
+        {
+            "issuer",
+            "workflow_id",
+            "decision_scope",
+            "decision_issuer",
+            "decision_id",
+            "handoff_id",
+            "operation_id",
+            "handoff_ref",
+            "observed_at",
+        },
+        "handoff checkpoint",
+    )
+    for field in (
+        "issuer",
+        "workflow_id",
+        "decision_scope",
+        "decision_issuer",
+        "decision_id",
+        "handoff_id",
+    ):
+        _identifier(handoff_checkpoint[field], "handoff checkpoint " + field)
+    for field in ("operation_id", "handoff_ref"):
+        _sha256(handoff_checkpoint[field], "handoff checkpoint " + field)
+    if _stamp(
+        handoff_checkpoint["observed_at"], "handoff checkpoint observed_at"
+    ) > cutoff:
+        raise VerificationError("handoff checkpoint is observed after the report cutoff")
+
     result: dict[str, dict[str, Any]] = {}
+    public_keys: set[str] = set()
     key_fields = {
         "key_id",
         "principal_id",
@@ -322,6 +459,7 @@ def check_trust_snapshot(snapshot: Any, cutoff: datetime) -> dict[str, dict[str,
         "not_before",
         "not_after",
         "revoked_at",
+        "scope",
     }
     for candidate in root["keys"]:
         item = _object(candidate, key_fields, "trust key")
@@ -339,22 +477,62 @@ def check_trust_snapshot(snapshot: Any, cutoff: datetime) -> dict[str, dict[str,
         public = item["public_key"]
         if not isinstance(public, str) or re.fullmatch(r"[0-9a-f]{64}", public) is None:
             raise VerificationError("trust key has an invalid Ed25519 public key")
+        if public in public_keys:
+            raise VerificationError("trust snapshot repeats Ed25519 public-key bytes")
+        public_keys.add(public)
+        scope = _object(
+            item["scope"],
+            {"workflow_ids", "provider_ids", "decision_scopes"},
+            "trust key scope",
+        )
+        for field in ("workflow_ids", "provider_ids", "decision_scopes"):
+            values = scope[field]
+            if not isinstance(values, list) or not values:
+                raise VerificationError("trust key scope has an empty dimension")
+            for value in values:
+                _identifier(value, "trust key scope value")
+            if values != sorted(set(values)):
+                raise VerificationError("trust key scope is not a sorted set")
         if item["status"] not in {"active", "revoked"}:
             raise VerificationError("trust key has an unknown status")
         before = _stamp(item["not_before"], "trust key not_before")
         after = _stamp(item["not_after"], "trust key not_after")
         if before >= after:
             raise VerificationError("trust key has an empty validity interval")
+        revoked_at = None
         if item["revoked_at"] is not None:
-            _stamp(item["revoked_at"], "trust key revoked_at")
+            revoked_at = _stamp(item["revoked_at"], "trust key revoked_at")
         if item["status"] == "revoked" and item["revoked_at"] is None:
             raise VerificationError("revoked trust key lacks revoked_at")
         if item["status"] == "active" and item["revoked_at"] is not None:
             raise VerificationError("active trust key carries revoked_at")
+        if revoked_at is not None and not before <= revoked_at <= after:
+            raise VerificationError("trust key revocation is outside its validity interval")
         if key_id in result:
             raise VerificationError("trust snapshot repeats a key id")
         result[key_id] = deepcopy(item)
-    return result
+    return result, {
+        "admission": deepcopy(admission_checkpoint),
+        "handoff": deepcopy(handoff_checkpoint),
+    }
+
+
+def _key_scope(
+    key: dict[str, Any],
+    *,
+    workflow_id: str | None = None,
+    provider_id: str | None = None,
+    decision_scope: str | None = None,
+) -> None:
+    """Refuse a valid signature used outside its consumer-selected scope."""
+    checks = {
+        "workflow_ids": workflow_id,
+        "provider_ids": provider_id,
+        "decision_scopes": decision_scope,
+    }
+    for field, value in checks.items():
+        if value is not None and value not in key["scope"][field]:
+            raise VerificationError("signer key is outside its " + field + " scope")
 
 
 def _signed(
@@ -378,8 +556,6 @@ def _signed(
     key = trust[key_id]
     if key["role"] != role:
         raise VerificationError(kind + " signer has the wrong trust role")
-    if key["status"] != "active":
-        raise VerificationError(kind + " signer is revoked")
     signature = outer["signature"]
     if not isinstance(signature, str):
         raise VerificationError(kind + " signature is not text")
@@ -394,6 +570,10 @@ def _signed(
         <= _stamp(key["not_after"], "trust key not_after")
     ):
         raise VerificationError(kind + " is outside its signer's validity interval")
+    if key["status"] == "revoked" and instant >= _stamp(
+        key["revoked_at"], "trust key revoked_at"
+    ):
+        raise VerificationError(kind + " signer was revoked at record time")
     return payload, instant, key
 
 
@@ -417,7 +597,7 @@ def _input(
     )
     for field in (
         "input_id",
-        "producer_profile",
+        "compatibility_profile",
         "evidence_ref",
         "decision_scope",
         "decision_issuer",
@@ -437,6 +617,7 @@ def _input(
         raise VerificationError("verified evidence has an unsupported tool")
     _refund(payload["arguments"], "verified evidence arguments")
     _basic_record(payload, key["principal_id"], "reader_id")
+    _key_scope(key, decision_scope=payload["decision_scope"])
     return payload, instant
 
 
@@ -484,6 +665,12 @@ def _admission(
         raise VerificationError("admission has an unsupported state or tool")
     _refund(payload["arguments"], "admission arguments")
     _basic_record(payload, key["principal_id"], "authority_id")
+    _key_scope(
+        key,
+        workflow_id=payload["workflow_id"],
+        provider_id=payload["provider_id"],
+        decision_scope=payload["decision_scope"],
+    )
     return payload, instant
 
 
@@ -502,6 +689,9 @@ def _recovery(
     for field in (
         "recovery_id",
         "recovery_observer_id",
+        "workflow_id",
+        "provider_id",
+        "decision_scope",
         "instance_id",
         "restart_id",
     ):
@@ -513,6 +703,12 @@ def _recovery(
     if payload["instance_id"] == payload["restart_id"]:
         raise VerificationError("recovery instance and restart identifiers are equal")
     _basic_record(payload, key["principal_id"], "recovery_observer_id")
+    _key_scope(
+        key,
+        workflow_id=payload["workflow_id"],
+        provider_id=payload["provider_id"],
+        decision_scope=payload["decision_scope"],
+    )
     return payload, instant
 
 
@@ -531,6 +727,8 @@ def _resolution(
     for field in (
         "resolution_id",
         "authority_id",
+        "workflow_id",
+        "provider_id",
         "decision_scope",
         "decision_issuer",
         "decision_id",
@@ -544,6 +742,12 @@ def _resolution(
         raise VerificationError("approval resolution has an unsupported disposition or tool")
     _refund(payload["arguments"], "approval resolution arguments")
     _basic_record(payload, key["principal_id"], "authority_id")
+    _key_scope(
+        key,
+        workflow_id=payload["workflow_id"],
+        provider_id=payload["provider_id"],
+        decision_scope=payload["decision_scope"],
+    )
     return payload, instant
 
 
@@ -582,6 +786,12 @@ def _handoff(
         raise VerificationError("handoff has an unsupported tool")
     _refund(payload["arguments"], "handoff arguments")
     _basic_record(payload, key["principal_id"], "issuer")
+    _key_scope(
+        key,
+        workflow_id=payload["workflow_id"],
+        provider_id=payload["provider_id"],
+        decision_scope=payload["decision_scope"],
+    )
     not_before = _stamp(payload["not_before"], "handoff not_before")
     expires = _stamp(payload["expires_at"], "handoff expires_at")
     if instant > not_before or not_before >= expires:
@@ -615,7 +825,8 @@ def _event(
     for field in (
         "event_id",
         "workflow_id",
-        "issuer",
+        "decision_scope",
+        "handoff_issuer",
         "provider_id",
         "attempt_id",
         "observer_id",
@@ -628,6 +839,12 @@ def _event(
     if payload["previous_event_ref"] is not None:
         _sha256(payload["previous_event_ref"], kind + " previous_event_ref")
     _basic_record(payload, key["principal_id"], "observer_id")
+    _key_scope(
+        key,
+        workflow_id=payload["workflow_id"],
+        provider_id=payload["provider_id"],
+        decision_scope=payload["decision_scope"],
+    )
     if kind == "attempt":
         _sha256(payload["handoff_ref"], "attempt handoff_ref")
         if payload["predecessor_attempt_ref"] is not None:
@@ -695,7 +912,8 @@ def _manifest(
     for field in (
         "manifest_id",
         "workflow_id",
-        "issuer",
+        "decision_scope",
+        "handoff_issuer",
         "provider_id",
         "observer_id",
     ):
@@ -706,6 +924,12 @@ def _manifest(
         raise VerificationError("execution manifest event_count is not positive")
     _stamp(payload["cutoff"], "execution manifest cutoff")
     _basic_record(payload, key["principal_id"], "observer_id")
+    _key_scope(
+        key,
+        workflow_id=payload["workflow_id"],
+        provider_id=payload["provider_id"],
+        decision_scope=payload["decision_scope"],
+    )
     return payload, instant
 
 
@@ -721,7 +945,15 @@ def _snapshot(
         time_field="observed_at",
         trust=trust,
     )
-    for field in ("snapshot_id", "provider_id", "query_scope", "observer_id"):
+    for field in (
+        "snapshot_id",
+        "workflow_id",
+        "decision_scope",
+        "handoff_issuer",
+        "provider_id",
+        "query_scope",
+        "observer_id",
+    ):
         _identifier(payload[field], "provider snapshot " + field)
     for field in ("operation_id", "idempotency_key", "state_ref"):
         _sha256(payload[field], "provider snapshot " + field)
@@ -736,6 +968,12 @@ def _snapshot(
     if payload["query_scope"] != "refund_effects_by_idempotency_key":
         raise VerificationError("provider snapshot has an unsupported query scope")
     _basic_record(payload, key["principal_id"], "observer_id")
+    _key_scope(
+        key,
+        workflow_id=payload["workflow_id"],
+        provider_id=payload["provider_id"],
+        decision_scope=payload["decision_scope"],
+    )
     return payload, instant
 
 
@@ -751,7 +989,6 @@ def operation_id(target: dict[str, Any]) -> str:
             "decision_scope": target["decision_scope"],
             "decision_issuer": target["decision_issuer"],
             "decision_id": target["decision_id"],
-            "handoff_issuer": target["handoff_issuer"],
             "provider_id": target["provider_id"],
             "tool": target["tool"],
             "arguments": target["arguments"],
@@ -836,12 +1073,12 @@ def _claim(contradictions: list[str], missing: list[str], **extra: Any) -> dict[
     if contradictions:
         result: dict[str, Any] = {
             "state": "CONTRADICTED",
-            "reasons": sorted(set(contradictions)),
+            "reasons": [reason_uri(code) for code in sorted(set(contradictions))],
         }
     elif missing:
         result = {
             "state": "NOT_ESTABLISHED",
-            "reasons": sorted(set(missing)),
+            "reasons": [reason_uri(code) for code in sorted(set(missing))],
         }
     else:
         result = {"state": "ESTABLISHED", "reasons": []}
@@ -893,9 +1130,9 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
     if target["tool"] != "refund":
         raise VerificationError("bundle target has an unsupported tool")
     _refund(target["arguments"], "bundle target arguments")
-    trust = check_trust_snapshot(trust_snapshot, cutoff)
+    trust, checkpoints = check_trust_snapshot(trust_snapshot, cutoff)
     for field in ("inputs", "approval_resolutions", "handoffs", "events"):
-        if not isinstance(root[field], list):
+        if not isinstance(root[field], list) or len(root[field]) > MAX_BUNDLE_RECORDS:
             raise VerificationError("bundle " + field + " is not a list")
 
     parsed_inputs = [_input(value, trust) for value in root["inputs"]]
@@ -1056,6 +1293,20 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
                 contradiction("admission", "admission_" + field + "_mismatch")
         if admission["state_root"] != admission_state_root(admission):
             contradiction("admission", "admission_state_root_mismatch")
+        admission_checkpoint = checkpoints["admission"]
+        checkpoint_expected = {
+            "authority_id": admission["authority_id"],
+            "workflow_id": admission["workflow_id"],
+            "decision_scope": admission["decision_scope"],
+            "decision_issuer": admission["decision_issuer"],
+            "decision_id": admission["decision_id"],
+            "operation_id": admission["operation_id"],
+            "admission_ref": admission_ref,
+            "state_root": admission["state_root"],
+        }
+        for field, expected in checkpoint_expected.items():
+            if admission_checkpoint[field] != expected:
+                contradiction("admission", "admission_checkpoint_" + field + "_mismatch")
         decision_matches = [
             item
             for item in decision_inputs
@@ -1088,6 +1339,9 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
         missing("durable_admission", "missing_admission_for_recovery")
     else:
         for field, expected in {
+            "workflow_id": target["workflow_id"],
+            "provider_id": target["provider_id"],
+            "decision_scope": target["decision_scope"],
             "admission_ref": admission_ref,
             "operation_id": operation,
             "state_root": admission["state_root"],
@@ -1120,6 +1374,8 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
             continue
         expected = {
             "authority_id": target["admission_authority_id"],
+            "workflow_id": target["workflow_id"],
+            "provider_id": target["provider_id"],
             "decision_scope": target["decision_scope"],
             "decision_issuer": target["decision_issuer"],
             "decision_id": target["decision_id"],
@@ -1138,7 +1394,9 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
             contradiction("approval_continuity", "resolution_not_after_admission")
     for reissue in reissues:
         matches = resolutions_by_reissue[reissue["approval_ref"]]
-        if len(matches) != 1:
+        if not matches:
+            missing("approval_continuity", "reissued_approval_lacks_resolution")
+        elif len(matches) > 1:
             contradiction("approval_continuity", "reissued_approval_not_resolved_once")
         elif _stamp(matches[0]["resolved_at"], "resolution time") < _stamp(
             reissue["verified_at"], "reissue verification time"
@@ -1171,7 +1429,14 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
         ]
         if len(exact) != 1:
             contradiction("authenticated_handoff", "target_handoff_not_unique")
-        if exact:
+        checkpoint_matches = [
+            item
+            for item in exact
+            if digest(HANDOFF_DOMAIN, item) == checkpoints["handoff"]["handoff_ref"]
+        ]
+        if len(checkpoint_matches) == 1:
+            primary = checkpoint_matches[0]
+        elif exact:
             primary = exact[0]
         if len(target_handoffs) != len(exact):
             contradiction("authenticated_handoff", "conflicting_target_handoff")
@@ -1197,6 +1462,22 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
         for field, value in expected.items():
             if primary[field] != value:
                 contradiction("authenticated_handoff", "handoff_" + field + "_mismatch")
+        handoff_checkpoint = checkpoints["handoff"]
+        checkpoint_expected = {
+            "issuer": primary["issuer"],
+            "workflow_id": primary["workflow_id"],
+            "decision_scope": primary["decision_scope"],
+            "decision_issuer": primary["decision_issuer"],
+            "decision_id": primary["decision_id"],
+            "handoff_id": primary["handoff_id"],
+            "operation_id": primary["operation_id"],
+            "handoff_ref": handoff_ref,
+        }
+        for field, expected in checkpoint_expected.items():
+            if handoff_checkpoint[field] != expected:
+                contradiction(
+                    "authenticated_handoff", "handoff_checkpoint_" + field + "_mismatch"
+                )
         if recovery is None:
             missing("authenticated_handoff", "handoff_lacks_recovery_evidence")
         elif _stamp(primary["issued_at"], "handoff issued_at") <= _stamp(
@@ -1234,7 +1515,8 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
         if not _same_target(event, target):
             contradiction("record_completeness", "execution_event_target_mismatch")
         if (
-            event["issuer"] != target["handoff_issuer"]
+            event["decision_scope"] != target["decision_scope"]
+            or event["handoff_issuer"] != target["handoff_issuer"]
             or event["operation_id"] != operation
             or event["idempotency_key"] != idem
         ):
@@ -1246,7 +1528,8 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
     else:
         expected = {
             "workflow_id": target["workflow_id"],
-            "issuer": target["handoff_issuer"],
+            "decision_scope": target["decision_scope"],
+            "handoff_issuer": target["handoff_issuer"],
             "provider_id": target["provider_id"],
             "operation_id": operation,
             "idempotency_key": idem,
@@ -1274,6 +1557,9 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
         missing("effect_coverage", "missing_provider_snapshot")
     else:
         expected = {
+            "workflow_id": target["workflow_id"],
+            "decision_scope": target["decision_scope"],
+            "handoff_issuer": target["handoff_issuer"],
             "provider_id": target["provider_id"],
             "operation_id": operation,
             "idempotency_key": idem,
@@ -1290,6 +1576,8 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
             contradiction("effect_coverage", "provider_snapshot_effect_set_mismatch")
         if snapshot["state_ref"] != provider_state_ref(snapshot):
             contradiction("effect_coverage", "provider_snapshot_state_ref_mismatch")
+        if manifest is not None and snapshot["observer_id"] == manifest["observer_id"]:
+            contradiction("effect_coverage", "effect_observer_not_separate")
         effect_value = "present" if snapshot["effect_count"] else "absent"
 
     completion_value = "unknown"
@@ -1371,18 +1659,41 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
             if item["attempt_id"] == attempt["attempt_id"]
             and item["attempt_ref"] == attempt_ref
         ]
-        if len(exact_outcomes) != 1 or len(matching_outcomes) != len(exact_outcomes):
+        if not exact_outcomes:
+            if matching_outcomes:
+                contradiction("completion", "outcome_crosses_attempt_binding")
+            else:
+                missing("completion", "missing_attempt_outcome")
+            previous_attempt_ref = attempt_ref
+            previous_terminal = None
+            continue
+        if len(exact_outcomes) > 1 or len(matching_outcomes) != len(exact_outcomes):
             contradiction("completion", "attempt_outcome_not_exactly_one")
             previous_attempt_ref = attempt_ref
             previous_terminal = None
             continue
         outcome = exact_outcomes[0]
         outcome_ref = digest(EVENT_DOMAIN, outcome)
+        matching_reconciliations = [
+            item
+            for item in reconciliations
+            if item["attempt_id"] == attempt["attempt_id"]
+            or item["attempt_ref"] == attempt_ref
+        ]
         if _stamp(outcome["occurred_at"], "outcome time") < occurred:
             contradiction("completion", "outcome_precedes_attempt")
         state = outcome["state"]
         current_terminal: tuple[str, datetime] | None = None
         if state == "observed_success":
+            if matching_reconciliations:
+                contradiction("completion", "reconciliation_after_terminal_outcome")
+                for reconciliation in matching_reconciliations:
+                    if (
+                        reconciliation["attempt_id"] != attempt["attempt_id"]
+                        or reconciliation["attempt_ref"] != attempt_ref
+                        or reconciliation["initial_outcome_ref"] != outcome_ref
+                    ):
+                        contradiction("completion", "reconciliation_crosses_attempt_binding")
             effect = effects_by_ref.get(outcome["effect_ref"])
             if (
                 effect is None
@@ -1399,6 +1710,15 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
             current_terminal = ("present", _stamp(outcome["occurred_at"], "outcome time"))
             terminal_refs.append(outcome_ref)
         elif state == "observed_failure":
+            if matching_reconciliations:
+                contradiction("completion", "reconciliation_after_terminal_outcome")
+                for reconciliation in matching_reconciliations:
+                    if (
+                        reconciliation["attempt_id"] != attempt["attempt_id"]
+                        or reconciliation["attempt_ref"] != attempt_ref
+                        or reconciliation["initial_outcome_ref"] != outcome_ref
+                    ):
+                        contradiction("completion", "reconciliation_crosses_attempt_binding")
             if outcome["effect_ref"] is not None or outcome["response_received"] is not True:
                 contradiction("completion", "observed_failure_has_effect_or_no_response")
             if matching_effects:
@@ -1421,12 +1741,7 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
                 ):
                     contradiction("completion", "unresolved_outcome_precedes_effect")
             chain = sorted(
-                [
-                    item
-                    for item in reconciliations
-                    if item["attempt_id"] == attempt["attempt_id"]
-                    or item["attempt_ref"] == attempt_ref
-                ],
+                matching_reconciliations,
                 key=lambda item: item["sequence"],
             )
             previous_reconciliation_ref: str | None = None
@@ -1536,6 +1851,12 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
     references = {
         "bundle_ref": digest(BUNDLE_DOMAIN, root),
         "trust_snapshot_ref": digest(TRUST_SNAPSHOT_DOMAIN, trust_snapshot),
+        "admission_checkpoint_ref": digest(
+            ADMISSION_CHECKPOINT_DOMAIN, checkpoints["admission"]
+        ),
+        "handoff_checkpoint_ref": digest(
+            HANDOFF_CHECKPOINT_DOMAIN, checkpoints["handoff"]
+        ),
         "admission_ref": admission_ref,
         "handoff_ref": handoff_ref,
         "execution_manifest_ref": (
@@ -1571,6 +1892,8 @@ def assess(bundle: Any, trust_snapshot: Any) -> dict[str, Any]:
             "merchant authority or delegated business authority",
             "production deployment or host adoption",
             "independent durability or non-operator custody",
+            "complete admission history or global decision single-consumption",
+            "handoff history beyond the selected consumer checkpoint",
             "provider coverage beyond the selected observer and query scope",
             "remote exactly-once execution",
             "independent operation, adoption, or commercial agreement",
@@ -1589,7 +1912,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             load_document(arguments.bundle),
             load_document(arguments.trust_snapshot),
         )
-    except (VerificationError, OSError, KeyError, TypeError, ValueError) as error:
+    except (
+        VerificationError,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ) as error:
         print("Refund handoff bundle refused: " + str(error), file=sys.stderr)
         return 2
     sys.stdout.buffer.write(canonical(report) + b"\n")
