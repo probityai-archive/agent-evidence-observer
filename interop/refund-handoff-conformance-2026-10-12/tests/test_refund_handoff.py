@@ -38,7 +38,7 @@ from probity_observer.refund_handoff_reasons import (
     lookup_reason_contract,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 PROFILE = ROOT / "interop/refund-handoff-conformance-2026-10-12"
 VECTORS = PROFILE / "fixtures/vectors"
 TRUST_ROOT = PROFILE / "fixtures/trust"

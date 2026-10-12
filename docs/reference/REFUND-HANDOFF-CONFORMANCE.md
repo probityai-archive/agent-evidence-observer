@@ -14,7 +14,7 @@ every dependency from the hash-locked profile file, builds one wheel under the
 same locked build constraints, and installs that wheel without resolving more
 dependencies. It archives the exact source commit and writes canonical provenance
 for the source tree, archive, wheel, runtime, uv version, and dependency lock. It
-runs `tests/test_refund_handoff.py`, smoke-tests the installed console command,
+runs `interop/refund-handoff-conformance-2026-10-12/tests/test_refund_handoff.py`, smoke-tests the installed console command,
 then invokes the verified refund-handoff module on all 80 hash-selected vectors.
 Every stage retains its command, stdout, stderr, and exit status. The corpus keeps
 the materialized trust, manifest, vectors, every result stream, and a canonical

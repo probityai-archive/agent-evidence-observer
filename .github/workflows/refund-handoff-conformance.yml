@@ -8,7 +8,6 @@ on:
       - 'src/probity_observer/crypto.py'
       - 'src/probity_observer/refund_handoff.py'
       - 'src/probity_observer/refund_handoff_reasons.py'
-      - 'tests/test_refund_handoff.py'
       - 'pyproject.toml'
       - 'docs/REFUND-HANDOFF-CONFORMANCE.md'
       - 'docs/reference/REFUND-HANDOFF-CONFORMANCE.md'

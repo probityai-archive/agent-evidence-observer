@@ -98,7 +98,7 @@ run_stage archive-source-at-commit \
   exit "$stage_code"
 mkdir -p "$results/test-source"
 run_stage extract-source-at-commit \
-  tar -xf "$results/source-at-commit.tar" -C "$results/test-source" || \
+  tar -xpf "$results/source-at-commit.tar" -C "$results/test-source" || \
   exit "$stage_code"
 snapshot_root="$results/test-source"
 snapshot_profile="$snapshot_root/interop/refund-handoff-conformance-2026-10-12"
@@ -276,12 +276,12 @@ if [[ $stage_code -ne 0 ]]; then
 fi
 
 run_stage focused-tests \
-  "$python" -I -B -m pytest "$snapshot_root/tests/test_refund_handoff.py" -q || \
+  "$python" -I -B -m pytest "$snapshot_root/interop/refund-handoff-conformance-2026-10-12/tests/test_refund_handoff.py" -q || \
   exit "$stage_code"
 
 mkdir -p "$results/evidence-source"
 run_stage extract-evidence-source \
-  tar -xf "$results/source-at-commit.tar" -C "$results/evidence-source" || \
+  tar -xpf "$results/source-at-commit.tar" -C "$results/evidence-source" || \
   exit "$stage_code"
 evidence_profile="$results/evidence-source/interop/refund-handoff-conformance-2026-10-12"
 
