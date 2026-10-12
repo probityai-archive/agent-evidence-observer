@@ -53,6 +53,10 @@ MAX_EXECUTABLE_BYTES = 134_217_728
 PROCESS_TIMEOUT_SECONDS = 30
 BUILD_TIMEOUT_SECONDS = 600
 CONTAINMENT_TIMEOUT_SECONDS = 5
+# The trusted Python helper must install its filter before any verifier code
+# runs. Allow interpreter startup under contended CI hosts, while retaining a
+# separate short deadline for stopping an already-running process group.
+CONTAINMENT_STARTUP_TIMEOUT_SECONDS = 30
 DIST_NAME = "agent-evidence-observer"
 ENTRY_POINT_NAME = "agent-evidence-read-refund-handoff"
 ENTRY_POINT_VALUE = "probity_observer.refund_handoff:main"
@@ -725,7 +729,7 @@ def _close_windows_job(job: Any | None) -> None:
 
 
 def _await_linux_containment_ack(descriptor: int) -> None:
-    deadline = time.monotonic() + CONTAINMENT_TIMEOUT_SECONDS
+    deadline = time.monotonic() + CONTAINMENT_STARTUP_TIMEOUT_SECONDS
     try:
         while True:
             remaining = deadline - time.monotonic()
