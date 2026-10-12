@@ -153,7 +153,9 @@ def _regular_lstat(path: Path, label: str) -> os.stat_result:
 
 def _open_bounded_regular(path: Path, *, limit: int, label: str) -> tuple[int, int]:
     before = _regular_lstat(path, label)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    # Windows CRT descriptors otherwise default to text mode. Translation of
+    # CRLF and 0x1a would corrupt the retained byte count and digest.
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

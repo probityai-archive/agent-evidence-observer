@@ -1098,6 +1098,25 @@ def test_document_reader_refuses_oversize_and_symlink_inputs(tmp_path):
         read_document_bytes(link)
 
 
+def test_runner_preserves_binary_retained_artifact_bytes(tmp_path):
+    runner = _load_script("refund_handoff_runner_binary_files", "run_corpus.py")
+    raw = b"prefix\r\n\x1a\x00tail\r\n"
+    source = tmp_path / "source.bundle"
+    source.write_bytes(raw)
+    same = tmp_path / "same.bundle"
+    same.write_bytes(raw)
+    changed = tmp_path / "changed.bundle"
+    changed.write_bytes(raw[:-1] + b"x")
+
+    assert runner.read_document_bytes(source) == raw
+    assert runner._hash_regular_file(source, limit=len(raw), label="source bundle") == (
+        hashlib.sha256(raw).hexdigest(),
+        len(raw),
+    )
+    assert runner._same_regular_file_bytes(source, same, limit=len(raw))
+    assert not runner._same_regular_file_bytes(source, changed, limit=len(raw))
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO files need os.mkfifo")
 def test_document_readers_reject_a_fifo_without_blocking(tmp_path):
     runner = _load_script("refund_handoff_runner_fifo", "run_corpus.py")
