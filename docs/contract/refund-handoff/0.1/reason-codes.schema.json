@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1/reason-codes.schema.json",
+  "title": "Probity refund handoff 0.1 reason-code registry",
+  "type": "object",
+  "properties": {
+    "$schema": {"const": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1/reason-codes.schema.json"},
+    "profile": {"const": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1"},
+    "schema": {"const": "refund-handoff-reason-codes/0.1"},
+    "namespace": {"const": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-"},
+    "reasons": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/reason"},
+      "description": "Entries use unique URI and code values. The verifier test checks those cross-entry constraints."
+    }
+  },
+  "required": ["$schema", "profile", "schema", "namespace", "reasons"],
+  "additionalProperties": false,
+  "$defs": {
+    "reason": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "pattern": "^https://probityai\\.github\\.io/agent-evidence-observer/contract/refund-handoff/0\\.1#reason-[a-z][a-z0-9_]*$"
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "claims": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "admission",
+              "approval_continuity",
+              "authenticated_handoff",
+              "completion",
+              "durable_admission",
+              "selected_effect_coverage",
+              "selected_log_consistency"
+            ]
+          },
+          "description": "Claim names are sorted lexically."
+        },
+        "default_evidence_state": {
+          "enum": ["CONTRADICTED", "NOT_ESTABLISHED"]
+        }
+      },
+      "required": ["uri", "code", "claims", "default_evidence_state"],
+      "additionalProperties": false
+    }
+  }
+}

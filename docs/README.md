@@ -12,6 +12,7 @@ These examples use controlled local effects and selected framework runs:
 | --- | --- |
 | A refund reply was lost. Does retrying record it twice? | [Approved refund retries](APS-REFUND-RETRIES.md) |
 | Do a PIC approval and an APS record describe the same approved refund? | [PIC and APS refund evidence](PIC-APS-REFUND-EVIDENCE.md) |
+| Did a verified refund admission reach an authenticated handoff and observed effect? | [Refund handoff conformance](REFUND-HANDOFF-CONFORMANCE.md) |
 | A job's output was refused. Had its body already changed a file? | [CrewAI job decisions and file effects](CREWAI-JOB-FENCES.md) |
 | Nested agents shortened their history. Which sessions and callbacks were captured? | [ADK history and nested calls](ADK-NESTED-COMPACTION.md) |
 | The dispatched request changed after approval. Does permission still apply? | [REMORA cases and protected file writes](REMORA-EFFECT-BRIDGE.md) |

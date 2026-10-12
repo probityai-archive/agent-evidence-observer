@@ -1,0 +1,858 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1/contract.schema.json",
+  "title": "Probity refund handoff 0.1 input contract",
+  "description": "Closed structural contract for a refund handoff bundle, its consumer-selected trust snapshot, and every signed envelope accepted by the reference verifier. Source documents also use the Probity restricted canonical JSON profile and have a 1048576-byte limit. JSON Schema cannot check canonical byte encoding, signatures, digests, chronology, sorted arrays, cross-record equality, or consumer-selected key separation.",
+  "oneOf": [
+    {"$ref": "#/$defs/refundHandoffBundle"},
+    {"$ref": "#/$defs/trustSnapshot"},
+    {"$ref": "#/$defs/verifiedEvidenceEnvelope"},
+    {"$ref": "#/$defs/admissionCommitEnvelope"},
+    {"$ref": "#/$defs/admissionRecoveryEnvelope"},
+    {"$ref": "#/$defs/approvalResolutionEnvelope"},
+    {"$ref": "#/$defs/refundHandoffEnvelope"},
+    {"$ref": "#/$defs/attemptEnvelope"},
+    {"$ref": "#/$defs/effectEnvelope"},
+    {"$ref": "#/$defs/outcomeEnvelope"},
+    {"$ref": "#/$defs/reconciliationEnvelope"},
+    {"$ref": "#/$defs/executionManifestEnvelope"},
+    {"$ref": "#/$defs/providerSnapshotEnvelope"}
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[\\u0000-\\u007F]+$",
+      "description": "A nonempty ASCII identifier of at most 512 bytes."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "utcSecond": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "UTC timestamp at whole-second precision. The reference verifier also checks Gregorian calendar validity."
+    },
+    "positiveSafeInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "nonnegativeSafeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "nullableSha256": {
+      "oneOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
+    },
+    "refundArguments": {
+      "type": "object",
+      "properties": {
+        "payment_id": {"$ref": "#/$defs/identifier"},
+        "amount_minor": {"$ref": "#/$defs/positiveSafeInteger"},
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      },
+      "required": ["payment_id", "amount_minor", "currency"],
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "properties": {
+        "workflow_id": {"$ref": "#/$defs/identifier"},
+        "decision_scope": {"$ref": "#/$defs/identifier"},
+        "decision_issuer": {"$ref": "#/$defs/identifier"},
+        "decision_id": {"$ref": "#/$defs/identifier"},
+        "admission_authority_id": {"$ref": "#/$defs/identifier"},
+        "handoff_issuer": {"$ref": "#/$defs/identifier"},
+        "provider_id": {"$ref": "#/$defs/identifier"},
+        "tool": {"const": "refund"},
+        "arguments": {"$ref": "#/$defs/refundArguments"}
+      },
+      "required": [
+        "workflow_id",
+        "decision_scope",
+        "decision_issuer",
+        "decision_id",
+        "admission_authority_id",
+        "handoff_issuer",
+        "provider_id",
+        "tool",
+        "arguments"
+      ],
+      "additionalProperties": false
+    },
+    "payloadHeader": {
+      "type": "object",
+      "properties": {
+        "profile": {"const": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1"},
+        "schema": {"const": "refund-handoff/0.1"},
+        "kind": {"$ref": "#/$defs/identifier"},
+        "key_id": {"$ref": "#/$defs/identifier"}
+      },
+      "required": ["profile", "schema", "kind", "key_id"]
+    },
+    "envelopeBase": {
+      "type": "object",
+      "properties": {
+        "algorithm": {"const": "Ed25519"},
+        "key_id": {"$ref": "#/$defs/identifier"},
+        "payload": {"type": "object"},
+        "signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{86}==$"
+        }
+      },
+      "required": ["algorithm", "key_id", "payload", "signature"],
+      "additionalProperties": false
+    },
+    "verifiedEvidencePayload": {
+      "allOf": [
+        {"$ref": "#/$defs/payloadHeader"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "verified_evidence"},
+            "input_id": {"$ref": "#/$defs/identifier"},
+            "evidence_role": {"enum": ["decision_evidence", "approval_evidence"]},
+            "compatibility_profile": {"$ref": "#/$defs/identifier"},
+            "evidence_ref": {"$ref": "#/$defs/identifier"},
+            "decision_scope": {"$ref": "#/$defs/identifier"},
+            "decision_issuer": {"$ref": "#/$defs/identifier"},
+            "decision_id": {"$ref": "#/$defs/identifier"},
+            "approval_ref": {"$ref": "#/$defs/identifier"},
+            "tool": {"const": "refund"},
+            "arguments": {"$ref": "#/$defs/refundArguments"},
+            "evaluation": {"enum": ["ESTABLISHED", "CONTRADICTED", "NOT_ESTABLISHED"]},
+            "reader_id": {"$ref": "#/$defs/identifier"},
+            "verified_at": {"$ref": "#/$defs/utcSecond"}
+          },
+          "required": [
+            "input_id",
+            "evidence_role",
+            "compatibility_profile",
+            "evidence_ref",
+            "decision_scope",
+            "decision_issuer",
+            "decision_id",
+            "approval_ref",
+            "tool",
+            "arguments",
+            "evaluation",
+            "reader_id",
+            "verified_at"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "admissionCommitPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/payloadHeader"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "admission_commit"},
+            "admission_id": {"$ref": "#/$defs/identifier"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "authority_id": {"$ref": "#/$defs/identifier"},
+            "handoff_issuer": {"$ref": "#/$defs/identifier"},
+            "provider_id": {"$ref": "#/$defs/identifier"},
+            "decision_scope": {"$ref": "#/$defs/identifier"},
+            "decision_issuer": {"$ref": "#/$defs/identifier"},
+            "decision_id": {"$ref": "#/$defs/identifier"},
+            "approval_ref": {"$ref": "#/$defs/identifier"},
+            "decision_evidence_ref": {"$ref": "#/$defs/sha256"},
+            "approval_evidence_ref": {"$ref": "#/$defs/sha256"},
+            "operation_id": {"$ref": "#/$defs/sha256"},
+            "decision_binding_ref": {"$ref": "#/$defs/sha256"},
+            "tool": {"const": "refund"},
+            "arguments": {"$ref": "#/$defs/refundArguments"},
+            "state": {"const": "committed"},
+            "commit_sequence": {"$ref": "#/$defs/positiveSafeInteger"},
+            "previous_commit_ref": {"$ref": "#/$defs/nullableSha256"},
+            "state_root": {"$ref": "#/$defs/sha256"},
+            "committed_at": {"$ref": "#/$defs/utcSecond"}
+          },
+          "required": [
+            "admission_id",
+            "workflow_id",
+            "authority_id",
+            "handoff_issuer",
+            "provider_id",
+            "decision_scope",
+            "decision_issuer",
+            "decision_id",
+            "approval_ref",
+            "decision_evidence_ref",
+            "approval_evidence_ref",
+            "operation_id",
+            "decision_binding_ref",
+            "tool",
+            "arguments",
+            "state",
+            "commit_sequence",
+            "previous_commit_ref",
+            "state_root",
+            "committed_at"
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "commit_sequence": {"const": 1},
+                "previous_commit_ref": {"type": "null"}
+              }
+            },
+            {
+              "properties": {
+                "commit_sequence": {"type": "integer", "minimum": 2, "maximum": 9007199254740991},
+                "previous_commit_ref": {"$ref": "#/$defs/sha256"}
+              }
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "admissionRecoveryPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/payloadHeader"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "admission_recovery"},
+            "recovery_id": {"$ref": "#/$defs/identifier"},
+            "recovery_observer_id": {"$ref": "#/$defs/identifier"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "provider_id": {"$ref": "#/$defs/identifier"},
+            "decision_scope": {"$ref": "#/$defs/identifier"},
+            "instance_id": {"$ref": "#/$defs/identifier"},
+            "restart_id": {"$ref": "#/$defs/identifier"},
+            "admission_ref": {"$ref": "#/$defs/sha256"},
+            "operation_id": {"$ref": "#/$defs/sha256"},
+            "state_root": {"$ref": "#/$defs/sha256"},
+            "state": {"const": "recovered_committed"},
+            "recovered_at": {"$ref": "#/$defs/utcSecond"}
+          },
+          "required": [
+            "recovery_id",
+            "recovery_observer_id",
+            "workflow_id",
+            "provider_id",
+            "decision_scope",
+            "instance_id",
+            "restart_id",
+            "admission_ref",
+            "operation_id",
+            "state_root",
+            "state",
+            "recovered_at"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "approvalResolutionPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/payloadHeader"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "approval_resolution"},
+            "resolution_id": {"$ref": "#/$defs/identifier"},
+            "authority_id": {"$ref": "#/$defs/identifier"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "provider_id": {"$ref": "#/$defs/identifier"},
+            "decision_scope": {"$ref": "#/$defs/identifier"},
+            "decision_issuer": {"$ref": "#/$defs/identifier"},
+            "decision_id": {"$ref": "#/$defs/identifier"},
+            "original_approval_ref": {"$ref": "#/$defs/identifier"},
+            "reissued_approval_ref": {"$ref": "#/$defs/identifier"},
+            "original_admission_ref": {"$ref": "#/$defs/sha256"},
+            "operation_id": {"$ref": "#/$defs/sha256"},
+            "tool": {"const": "refund"},
+            "arguments": {"$ref": "#/$defs/refundArguments"},
+            "disposition": {"const": "resolved_existing"},
+            "resolved_at": {"$ref": "#/$defs/utcSecond"}
+          },
+          "required": [
+            "resolution_id",
+            "authority_id",
+            "workflow_id",
+            "provider_id",
+            "decision_scope",
+            "decision_issuer",
+            "decision_id",
+            "original_approval_ref",
+            "reissued_approval_ref",
+            "original_admission_ref",
+            "operation_id",
+            "tool",
+            "arguments",
+            "disposition",
+            "resolved_at"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "refundHandoffPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/payloadHeader"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "refund_handoff"},
+            "handoff_id": {"$ref": "#/$defs/identifier"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "issuer": {"$ref": "#/$defs/identifier"},
+            "provider_id": {"$ref": "#/$defs/identifier"},
+            "decision_scope": {"$ref": "#/$defs/identifier"},
+            "decision_issuer": {"$ref": "#/$defs/identifier"},
+            "decision_id": {"$ref": "#/$defs/identifier"},
+            "approval_ref": {"$ref": "#/$defs/identifier"},
+            "operation_id": {"$ref": "#/$defs/sha256"},
+            "admission_ref": {"$ref": "#/$defs/sha256"},
+            "decision_evidence_ref": {"$ref": "#/$defs/sha256"},
+            "approval_evidence_ref": {"$ref": "#/$defs/sha256"},
+            "tool": {"const": "refund"},
+            "arguments": {"$ref": "#/$defs/refundArguments"},
+            "idempotency_key": {"$ref": "#/$defs/sha256"},
+            "issued_at": {"$ref": "#/$defs/utcSecond"},
+            "not_before": {"$ref": "#/$defs/utcSecond"},
+            "expires_at": {"$ref": "#/$defs/utcSecond"}
+          },
+          "required": [
+            "handoff_id",
+            "workflow_id",
+            "issuer",
+            "provider_id",
+            "decision_scope",
+            "decision_issuer",
+            "decision_id",
+            "approval_ref",
+            "operation_id",
+            "admission_ref",
+            "decision_evidence_ref",
+            "approval_evidence_ref",
+            "tool",
+            "arguments",
+            "idempotency_key",
+            "issued_at",
+            "not_before",
+            "expires_at"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "eventBase": {
+      "allOf": [
+        {"$ref": "#/$defs/payloadHeader"},
+        {
+          "type": "object",
+          "properties": {
+            "event_id": {"$ref": "#/$defs/identifier"},
+            "sequence": {"$ref": "#/$defs/positiveSafeInteger"},
+            "previous_event_ref": {"$ref": "#/$defs/nullableSha256"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "decision_scope": {"$ref": "#/$defs/identifier"},
+            "handoff_issuer": {"$ref": "#/$defs/identifier"},
+            "provider_id": {"$ref": "#/$defs/identifier"},
+            "operation_id": {"$ref": "#/$defs/sha256"},
+            "idempotency_key": {"$ref": "#/$defs/sha256"},
+            "attempt_id": {"$ref": "#/$defs/identifier"},
+            "observer_id": {"$ref": "#/$defs/identifier"},
+            "occurred_at": {"$ref": "#/$defs/utcSecond"}
+          },
+          "required": [
+            "event_id",
+            "sequence",
+            "previous_event_ref",
+            "workflow_id",
+            "decision_scope",
+            "handoff_issuer",
+            "provider_id",
+            "operation_id",
+            "idempotency_key",
+            "attempt_id",
+            "observer_id",
+            "occurred_at"
+          ]
+        }
+      ]
+    },
+    "attemptPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "attempt"},
+            "handoff_ref": {"$ref": "#/$defs/sha256"},
+            "disposition": {"enum": ["initial", "recovery", "duplicate_delivery"]},
+            "predecessor_attempt_ref": {"$ref": "#/$defs/nullableSha256"},
+            "state": {"const": "dispatch_pending"}
+          },
+          "required": ["handoff_ref", "disposition", "predecessor_attempt_ref", "state"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "effectPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "effect"},
+            "attempt_ref": {"$ref": "#/$defs/sha256"},
+            "effect_id": {"$ref": "#/$defs/identifier"},
+            "effect_type": {"const": "refund_committed"},
+            "arguments": {"$ref": "#/$defs/refundArguments"}
+          },
+          "required": ["attempt_ref", "effect_id", "effect_type", "arguments"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "outcomePayload": {
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "outcome"},
+            "attempt_ref": {"$ref": "#/$defs/sha256"},
+            "state": {"enum": ["observed_success", "observed_failure", "unresolved"]},
+            "effect_ref": {"$ref": "#/$defs/nullableSha256"},
+            "response_received": {"type": "boolean"}
+          },
+          "required": ["attempt_ref", "state", "effect_ref", "response_received"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "reconciliationPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/eventBase"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "reconciliation"},
+            "attempt_ref": {"$ref": "#/$defs/sha256"},
+            "initial_outcome_ref": {"$ref": "#/$defs/sha256"},
+            "previous_reconciliation_ref": {"$ref": "#/$defs/nullableSha256"},
+            "outcome": {"enum": ["still_unresolved", "effect_confirmed", "effect_absent"]},
+            "effect_ref": {"$ref": "#/$defs/nullableSha256"}
+          },
+          "required": [
+            "attempt_ref",
+            "initial_outcome_ref",
+            "previous_reconciliation_ref",
+            "outcome",
+            "effect_ref"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "executionManifestPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/payloadHeader"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "execution_manifest"},
+            "manifest_id": {"$ref": "#/$defs/identifier"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "decision_scope": {"$ref": "#/$defs/identifier"},
+            "handoff_issuer": {"$ref": "#/$defs/identifier"},
+            "provider_id": {"$ref": "#/$defs/identifier"},
+            "operation_id": {"$ref": "#/$defs/sha256"},
+            "idempotency_key": {"$ref": "#/$defs/sha256"},
+            "event_count": {"$ref": "#/$defs/positiveSafeInteger"},
+            "head_event_ref": {"$ref": "#/$defs/sha256"},
+            "cutoff": {"$ref": "#/$defs/utcSecond"},
+            "observer_id": {"$ref": "#/$defs/identifier"},
+            "issued_at": {"$ref": "#/$defs/utcSecond"}
+          },
+          "required": [
+            "manifest_id",
+            "workflow_id",
+            "decision_scope",
+            "handoff_issuer",
+            "provider_id",
+            "operation_id",
+            "idempotency_key",
+            "event_count",
+            "head_event_ref",
+            "cutoff",
+            "observer_id",
+            "issued_at"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "providerSnapshotPayload": {
+      "allOf": [
+        {"$ref": "#/$defs/payloadHeader"},
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"const": "provider_snapshot"},
+            "snapshot_id": {"$ref": "#/$defs/identifier"},
+            "workflow_id": {"$ref": "#/$defs/identifier"},
+            "decision_scope": {"$ref": "#/$defs/identifier"},
+            "handoff_issuer": {"$ref": "#/$defs/identifier"},
+            "provider_id": {"$ref": "#/$defs/identifier"},
+            "operation_id": {"$ref": "#/$defs/sha256"},
+            "idempotency_key": {"$ref": "#/$defs/sha256"},
+            "query_scope": {"const": "refund_effects_by_idempotency_key"},
+            "effect_count": {"$ref": "#/$defs/nonnegativeSafeInteger"},
+            "effect_ids": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/identifier"},
+              "uniqueItems": true,
+              "description": "The reference verifier also requires ascending lexical order."
+            },
+            "state_ref": {"$ref": "#/$defs/sha256"},
+            "observed_at": {"$ref": "#/$defs/utcSecond"},
+            "observer_id": {"$ref": "#/$defs/identifier"}
+          },
+          "required": [
+            "snapshot_id",
+            "workflow_id",
+            "decision_scope",
+            "handoff_issuer",
+            "provider_id",
+            "operation_id",
+            "idempotency_key",
+            "query_scope",
+            "effect_count",
+            "effect_ids",
+            "state_ref",
+            "observed_at",
+            "observer_id"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "verifiedEvidenceEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/verifiedEvidencePayload"}}}
+      ]
+    },
+    "admissionCommitEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/admissionCommitPayload"}}}
+      ]
+    },
+    "admissionRecoveryEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/admissionRecoveryPayload"}}}
+      ]
+    },
+    "approvalResolutionEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/approvalResolutionPayload"}}}
+      ]
+    },
+    "refundHandoffEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/refundHandoffPayload"}}}
+      ]
+    },
+    "attemptEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/attemptPayload"}}}
+      ]
+    },
+    "effectEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/effectPayload"}}}
+      ]
+    },
+    "outcomeEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/outcomePayload"}}}
+      ]
+    },
+    "reconciliationEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/reconciliationPayload"}}}
+      ]
+    },
+    "executionManifestEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/executionManifestPayload"}}}
+      ]
+    },
+    "providerSnapshotEnvelope": {
+      "allOf": [
+        {"$ref": "#/$defs/envelopeBase"},
+        {"properties": {"payload": {"$ref": "#/$defs/providerSnapshotPayload"}}}
+      ]
+    },
+    "admissionCheckpoint": {
+      "type": "object",
+      "properties": {
+        "authority_id": {"$ref": "#/$defs/identifier"},
+        "workflow_id": {"$ref": "#/$defs/identifier"},
+        "decision_scope": {"$ref": "#/$defs/identifier"},
+        "decision_issuer": {"$ref": "#/$defs/identifier"},
+        "decision_id": {"$ref": "#/$defs/identifier"},
+        "operation_id": {"$ref": "#/$defs/sha256"},
+        "admission_ref": {"$ref": "#/$defs/sha256"},
+        "state_root": {"$ref": "#/$defs/sha256"},
+        "observed_at": {"$ref": "#/$defs/utcSecond"}
+      },
+      "required": [
+        "authority_id",
+        "workflow_id",
+        "decision_scope",
+        "decision_issuer",
+        "decision_id",
+        "operation_id",
+        "admission_ref",
+        "state_root",
+        "observed_at"
+      ],
+      "additionalProperties": false
+    },
+    "handoffCheckpoint": {
+      "type": "object",
+      "properties": {
+        "issuer": {"$ref": "#/$defs/identifier"},
+        "workflow_id": {"$ref": "#/$defs/identifier"},
+        "decision_scope": {"$ref": "#/$defs/identifier"},
+        "decision_issuer": {"$ref": "#/$defs/identifier"},
+        "decision_id": {"$ref": "#/$defs/identifier"},
+        "handoff_id": {"$ref": "#/$defs/identifier"},
+        "operation_id": {"$ref": "#/$defs/sha256"},
+        "handoff_ref": {"$ref": "#/$defs/sha256"},
+        "observed_at": {"$ref": "#/$defs/utcSecond"}
+      },
+      "required": [
+        "issuer",
+        "workflow_id",
+        "decision_scope",
+        "decision_issuer",
+        "decision_id",
+        "handoff_id",
+        "operation_id",
+        "handoff_ref",
+        "observed_at"
+      ],
+      "additionalProperties": false
+    },
+    "keyScope": {
+      "type": "object",
+      "properties": {
+        "workflow_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/identifier"},
+          "uniqueItems": true,
+          "description": "The reference verifier also requires ascending lexical order."
+        },
+        "provider_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/identifier"},
+          "uniqueItems": true,
+          "description": "The reference verifier also requires ascending lexical order."
+        },
+        "decision_scopes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/identifier"},
+          "uniqueItems": true,
+          "description": "The reference verifier also requires ascending lexical order."
+        }
+      },
+      "required": ["workflow_ids", "provider_ids", "decision_scopes"],
+      "additionalProperties": false
+    },
+    "trustKey": {
+      "type": "object",
+      "properties": {
+        "key_id": {"$ref": "#/$defs/identifier"},
+        "principal_id": {"$ref": "#/$defs/identifier"},
+        "role": {
+          "enum": [
+            "evidence-reader",
+            "admission-authority",
+            "recovery-observer",
+            "handoff-issuer",
+            "execution-observer",
+            "effect-observer"
+          ]
+        },
+        "public_key": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["active", "revoked"]},
+        "not_before": {"$ref": "#/$defs/utcSecond"},
+        "not_after": {"$ref": "#/$defs/utcSecond"},
+        "revoked_at": {
+          "oneOf": [
+            {"$ref": "#/$defs/utcSecond"},
+            {"type": "null"}
+          ],
+          "description": "Consumer-selected earliest instant when this key can neither issue a valid record nor authorize a dispatch; equality is revoked. Historical records issued before this instant remain authentic evidence."
+        },
+        "scope": {"$ref": "#/$defs/keyScope"}
+      },
+      "required": [
+        "key_id",
+        "principal_id",
+        "role",
+        "public_key",
+        "status",
+        "not_before",
+        "not_after",
+        "revoked_at",
+        "scope"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "active"}}, "required": ["status"]},
+          "then": {"properties": {"revoked_at": {"type": "null"}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "revoked"}}, "required": ["status"]},
+          "then": {"properties": {"revoked_at": {"$ref": "#/$defs/utcSecond"}}}
+        }
+      ]
+    },
+    "trustSnapshot": {
+      "type": "object",
+      "properties": {
+        "profile": {"const": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1"},
+        "schema": {"const": "refund-handoff/0.1"},
+        "snapshot_id": {"$ref": "#/$defs/identifier"},
+        "valid_from": {"$ref": "#/$defs/utcSecond"},
+        "valid_until": {"$ref": "#/$defs/utcSecond"},
+        "admission_checkpoint": {"$ref": "#/$defs/admissionCheckpoint"},
+        "handoff_checkpoint": {"$ref": "#/$defs/handoffCheckpoint"},
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/trustKey"},
+          "description": "Key identifiers and Ed25519 public-key bytes must each be unique."
+        }
+      },
+      "required": [
+        "profile",
+        "schema",
+        "snapshot_id",
+        "valid_from",
+        "valid_until",
+        "admission_checkpoint",
+        "handoff_checkpoint",
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "refundHandoffBundle": {
+      "type": "object",
+      "properties": {
+        "profile": {"const": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1"},
+        "schema": {"const": "refund-handoff/0.1"},
+        "cutoff": {"$ref": "#/$defs/utcSecond"},
+        "target": {"$ref": "#/$defs/target"},
+        "inputs": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {"$ref": "#/$defs/verifiedEvidenceEnvelope"}
+        },
+        "admission": {
+          "oneOf": [
+            {"$ref": "#/$defs/admissionCommitEnvelope"},
+            {"type": "null"}
+          ]
+        },
+        "recovery": {
+          "oneOf": [
+            {"$ref": "#/$defs/admissionRecoveryEnvelope"},
+            {"type": "null"}
+          ]
+        },
+        "approval_resolutions": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {"$ref": "#/$defs/approvalResolutionEnvelope"}
+        },
+        "handoffs": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {"$ref": "#/$defs/refundHandoffEnvelope"}
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "oneOf": [
+              {"$ref": "#/$defs/attemptEnvelope"},
+              {"$ref": "#/$defs/effectEnvelope"},
+              {"$ref": "#/$defs/outcomeEnvelope"},
+              {"$ref": "#/$defs/reconciliationEnvelope"}
+            ]
+          }
+        },
+        "execution_manifest": {
+          "oneOf": [
+            {"$ref": "#/$defs/executionManifestEnvelope"},
+            {"type": "null"}
+          ]
+        },
+        "provider_snapshot": {
+          "oneOf": [
+            {"$ref": "#/$defs/providerSnapshotEnvelope"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "required": [
+        "profile",
+        "schema",
+        "cutoff",
+        "target",
+        "inputs",
+        "admission",
+        "recovery",
+        "approval_resolutions",
+        "handoffs",
+        "events",
+        "execution_manifest",
+        "provider_snapshot"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

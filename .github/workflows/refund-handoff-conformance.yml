@@ -1,0 +1,71 @@
+name: Probity refund handoff conformance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'interop/refund-handoff-conformance-2026-10-12/**'
+      - 'src/probity_observer/crypto.py'
+      - 'src/probity_observer/refund_handoff.py'
+      - 'src/probity_observer/refund_handoff_reasons.py'
+      - 'tests/test_refund_handoff.py'
+      - 'pyproject.toml'
+      - 'docs/REFUND-HANDOFF-CONFORMANCE.md'
+      - 'docs/reference/REFUND-HANDOFF-CONFORMANCE.md'
+      - 'docs/contract/refund-handoff/0.1/**'
+      - '.github/workflows/refund-handoff-conformance.yml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-conformance:
+    name: Offline conformance (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: ubuntu-24.04
+          - os: windows-2025
+            label: windows-2025
+    defaults:
+      run:
+        shell: bash
+    env:
+      TERM: dumb
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          version: '0.12.23'
+      - name: Run the installed verifier over every public vector
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            native_temp="$(cygpath -u "$RUNNER_TEMP")"
+          else
+            native_temp="$RUNNER_TEMP"
+          fi
+          results="$native_temp/refund-handoff-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          bash interop/refund-handoff-conformance-2026-10-12/verify_install.sh "$results"
+      - name: Retain every report and refusal
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: refund-handoff-conformance-${{ matrix.label }}
+          retention-days: 90
+          if-no-files-found: error
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/refund-handoff-${{ github.run_id }}-${{ github.run_attempt }}/
+            !${{ runner.temp }}/refund-handoff-${{ github.run_id }}-${{ github.run_attempt }}/.venv/
+            !${{ runner.temp }}/refund-handoff-${{ github.run_id }}-${{ github.run_attempt }}/test-source/
+            !${{ runner.temp }}/refund-handoff-${{ github.run_id }}-${{ github.run_attempt }}/evidence-source/
