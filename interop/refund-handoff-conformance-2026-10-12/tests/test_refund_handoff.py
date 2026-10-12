@@ -9,6 +9,7 @@ import os
 import queue
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -1115,6 +1116,60 @@ def test_runner_preserves_binary_retained_artifact_bytes(tmp_path):
     )
     assert runner._same_regular_file_bytes(source, same, limit=len(raw))
     assert not runner._same_regular_file_bytes(source, changed, limit=len(raw))
+
+
+def test_runner_reconstructs_canonical_archive_under_host_autocrlf(
+    tmp_path, monkeypatch
+):
+    runner = _load_script("refund_handoff_runner_archive_eol", "run_corpus.py")
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", *map(str, args)], stderr=subprocess.PIPE
+        ).strip()
+
+    git("init", "--quiet", source)
+    (source / ".gitattributes").write_text("*.txt text\n", encoding="ascii")
+    (source / "proof.txt").write_bytes(b"line\n")
+    git("-C", source, "add", ".gitattributes", "proof.txt")
+    git(
+        "-C",
+        source,
+        "-c",
+        "user.name=Conformance Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "source",
+    )
+    commit = git("-C", source, "rev-parse", "HEAD").decode("ascii")
+    bundle = tmp_path / "source.bundle"
+    git("-C", source, "bundle", "create", bundle, "HEAD")
+    archive = tmp_path / "source.tar"
+    git(
+        "-C",
+        source,
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.eol=lf",
+        "archive",
+        "--format=tar",
+        "--output=" + str(archive),
+        commit,
+    )
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text("[core]\n\tautocrlf = true\n", encoding="ascii")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+    reconstructed_digest = runner._reconstruct_source_archive(
+        {"commit": commit}, bundle, tmp_path / "retained"
+    )
+    assert reconstructed_digest == hashlib.sha256(archive.read_bytes()).hexdigest()
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO files need os.mkfifo")

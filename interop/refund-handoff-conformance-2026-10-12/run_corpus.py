@@ -1127,6 +1127,10 @@ def _reconstruct_source_archive(
             [
                 "-C",
                 str(repository),
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.eol=lf",
                 "archive",
                 "--format=tar",
                 "--output=" + str(reconstruction),
