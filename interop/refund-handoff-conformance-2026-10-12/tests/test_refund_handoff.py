@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import queue
@@ -404,6 +405,33 @@ def test_cli_preserves_each_vector_result(item, monkeypatch, capsys):
         hashlib.sha256(captured.out.encode("ascii")).hexdigest()
         == expected["report_sha256"]
     )
+
+
+def test_cli_refusal_bytes_are_not_changed_by_windows_text_newlines(monkeypatch):
+    item = next(
+        value for value in MANIFEST["vectors"]
+        if value["case"] == "16-bad-handoff-signature"
+    )
+    captured_bytes = io.BytesIO()
+    native_stderr = io.TextIOWrapper(
+        captured_bytes, encoding="utf-8", newline="\r\n"
+    )
+    monkeypatch.setattr(sys, "stderr", native_stderr)
+
+    assert main(
+        [
+            "--bundle",
+            str(VECTORS / item["file"]),
+            "--trust-snapshot",
+            str(TRUST_ROOT / (item["trust_snapshot"] + ".json")),
+        ]
+    ) == 2
+    native_stderr.flush()
+    refusal = captured_bytes.getvalue()
+    assert refusal == (
+        "Refund handoff bundle refused: " + item["expected"]["refusal"] + "\n"
+    ).encode("ascii")
+    assert hashlib.sha256(refusal).hexdigest() == item["expected"]["stderr_sha256"]
 
 
 def test_public_generator_reproduces_every_committed_byte(tmp_path):

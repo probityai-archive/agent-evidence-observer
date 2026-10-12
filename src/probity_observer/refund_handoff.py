@@ -2831,7 +2831,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ValueError,
         RecursionError,
     ) as error:
-        print("Refund handoff bundle refused: " + str(error), file=sys.stderr)
+        refusal = ("Refund handoff bundle refused: " + str(error) + "\n").encode(
+            "utf-8", errors="backslashreplace"
+        )
+        sys.stderr.buffer.write(refusal)
         return 2
     sys.stdout.buffer.write(canonical(report) + b"\n")
     return 0 if report["overall"] == "ESTABLISHED" else 3
