@@ -8,3 +8,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # The `inspect` extra installs the exact Inspect AI release the retained
+      # evaluation-history, five-tier and evaluation-contract records were
+      # produced with, and their readers refuse any other version. A newer
+      # Inspect is exercised by its own pinned host under
+      # interop/inspect-current-host-2026-10-03, never by moving this pin.
+      - dependency-name: inspect-ai
