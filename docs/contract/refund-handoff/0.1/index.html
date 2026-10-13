@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Probity refund handoff contract 0.1</title>
+<style>body{max-width:44rem;margin:2rem auto;padding:0 1rem;font:16px/1.5 system-ui,sans-serif}code{background:#f2f2f2;padding:0 .2rem}.reasons li{overflow-wrap:anywhere;scroll-margin-top:1rem}.reasons li:target{background:#fff1c2}</style>
+</head>
+<body>
+<h1>Probity refund handoff contract 0.1</h1>
+<p>This URI identifies the Probity refund admission-to-effect evidence contract <code>refund-handoff/0.1</code>:</p>
+<pre><code>"profile": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1"</code></pre>
+<p>The contract keeps verified evidence, immutable admission, post-restart recovery, authenticated handoff, attempt, effect, outcome, reconciliation, execution manifest, and provider snapshot as separate records. Each signed record has a closed snake-case schema and a record-specific signature domain. The consumer supplies the trust snapshot and report cutoff.</p>
+<p>The generic evidence roles keep PIC, APS, Conduit, and other producers replaceable. Removing or changing this identifier makes a <code>refund-handoff/0.1</code> record nonconformant.</p>
+<p>The reference verifier, 80-vector hostile corpus, and exact field rules are in the
+<a href="https://github.com/probityai/agent-evidence-observer/tree/main/interop/refund-handoff-conformance-2026-10-12">public conformance profile</a>.</p>
+<p>Every report reason URI resolves to a code below. The <a href="reason-codes.json">reason-code registry</a> defines its claim and default evidence state. The <a href="report.schema.json">report schema</a> limits each claim to the applicable codes.</p>
+<h2 id="reasons">Reason codes</h2>
+<ol class="reasons">
+<li id="reason-admission_arguments_mismatch"><code>admission_arguments_mismatch</code></li>
+<li id="reason-admission_authority_id_mismatch"><code>admission_authority_id_mismatch</code></li>
+<li id="reason-admission_checkpoint_admission_ref_mismatch"><code>admission_checkpoint_admission_ref_mismatch</code></li>
+<li id="reason-admission_checkpoint_authority_id_mismatch"><code>admission_checkpoint_authority_id_mismatch</code></li>
+<li id="reason-admission_checkpoint_decision_id_mismatch"><code>admission_checkpoint_decision_id_mismatch</code></li>
+<li id="reason-admission_checkpoint_decision_issuer_mismatch"><code>admission_checkpoint_decision_issuer_mismatch</code></li>
+<li id="reason-admission_checkpoint_decision_scope_mismatch"><code>admission_checkpoint_decision_scope_mismatch</code></li>
+<li id="reason-admission_checkpoint_operation_id_mismatch"><code>admission_checkpoint_operation_id_mismatch</code></li>
+<li id="reason-admission_checkpoint_state_root_mismatch"><code>admission_checkpoint_state_root_mismatch</code></li>
+<li id="reason-admission_checkpoint_workflow_id_mismatch"><code>admission_checkpoint_workflow_id_mismatch</code></li>
+<li id="reason-admission_decision_binding_ref_mismatch"><code>admission_decision_binding_ref_mismatch</code></li>
+<li id="reason-admission_decision_id_mismatch"><code>admission_decision_id_mismatch</code></li>
+<li id="reason-admission_decision_issuer_mismatch"><code>admission_decision_issuer_mismatch</code></li>
+<li id="reason-admission_decision_scope_mismatch"><code>admission_decision_scope_mismatch</code></li>
+<li id="reason-admission_handoff_issuer_mismatch"><code>admission_handoff_issuer_mismatch</code></li>
+<li id="reason-admission_operation_id_mismatch"><code>admission_operation_id_mismatch</code></li>
+<li id="reason-admission_provider_id_mismatch"><code>admission_provider_id_mismatch</code></li>
+<li id="reason-admission_state_root_mismatch"><code>admission_state_root_mismatch</code></li>
+<li id="reason-admission_workflow_id_mismatch"><code>admission_workflow_id_mismatch</code></li>
+<li id="reason-conflicting_decision_evidence"><code>conflicting_decision_evidence</code></li>
+<li id="reason-evidence_verified_after_admission"><code>evidence_verified_after_admission</code></li>
+<li id="reason-missing_admission_commit"><code>missing_admission_commit</code></li>
+<li id="reason-missing_approval_evidence"><code>missing_approval_evidence</code></li>
+<li id="reason-missing_decision_evidence"><code>missing_decision_evidence</code></li>
+<li id="reason-original_approval_ref_mismatch"><code>original_approval_ref_mismatch</code></li>
+<li id="reason-referenced_approval_evidence_missing"><code>referenced_approval_evidence_missing</code></li>
+<li id="reason-referenced_decision_evidence_missing"><code>referenced_decision_evidence_missing</code></li>
+<li id="reason-verified_evidence_arguments_mismatch"><code>verified_evidence_arguments_mismatch</code></li>
+<li id="reason-verified_evidence_contradicted"><code>verified_evidence_contradicted</code></li>
+<li id="reason-verified_evidence_not_established"><code>verified_evidence_not_established</code></li>
+<li id="reason-missing_post_restart_recovery"><code>missing_post_restart_recovery</code></li>
+<li id="reason-recovery_admission_ref_mismatch"><code>recovery_admission_ref_mismatch</code></li>
+<li id="reason-recovery_decision_scope_mismatch"><code>recovery_decision_scope_mismatch</code></li>
+<li id="reason-recovery_not_after_commit"><code>recovery_not_after_commit</code></li>
+<li id="reason-recovery_observer_not_separate"><code>recovery_observer_not_separate</code></li>
+<li id="reason-recovery_operation_id_mismatch"><code>recovery_operation_id_mismatch</code></li>
+<li id="reason-recovery_provider_id_mismatch"><code>recovery_provider_id_mismatch</code></li>
+<li id="reason-recovery_state_root_mismatch"><code>recovery_state_root_mismatch</code></li>
+<li id="reason-recovery_workflow_id_mismatch"><code>recovery_workflow_id_mismatch</code></li>
+<li id="reason-fresh_handoff_after_reissue_resolution"><code>fresh_handoff_after_reissue_resolution</code></li>
+<li id="reason-reissued_approval_lacks_resolution"><code>reissued_approval_lacks_resolution</code></li>
+<li id="reason-reissued_approval_not_resolved_once"><code>reissued_approval_not_resolved_once</code></li>
+<li id="reason-resolution_arguments_mismatch"><code>resolution_arguments_mismatch</code></li>
+<li id="reason-resolution_authority_id_mismatch"><code>resolution_authority_id_mismatch</code></li>
+<li id="reason-resolution_decision_id_mismatch"><code>resolution_decision_id_mismatch</code></li>
+<li id="reason-resolution_decision_issuer_mismatch"><code>resolution_decision_issuer_mismatch</code></li>
+<li id="reason-resolution_decision_scope_mismatch"><code>resolution_decision_scope_mismatch</code></li>
+<li id="reason-resolution_lacks_reissued_evidence"><code>resolution_lacks_reissued_evidence</code></li>
+<li id="reason-resolution_not_after_admission"><code>resolution_not_after_admission</code></li>
+<li id="reason-resolution_operation_id_mismatch"><code>resolution_operation_id_mismatch</code></li>
+<li id="reason-resolution_original_admission_ref_mismatch"><code>resolution_original_admission_ref_mismatch</code></li>
+<li id="reason-resolution_original_approval_ref_mismatch"><code>resolution_original_approval_ref_mismatch</code></li>
+<li id="reason-resolution_precedes_reissued_evidence"><code>resolution_precedes_reissued_evidence</code></li>
+<li id="reason-resolution_provider_id_mismatch"><code>resolution_provider_id_mismatch</code></li>
+<li id="reason-resolution_workflow_id_mismatch"><code>resolution_workflow_id_mismatch</code></li>
+<li id="reason-terminal_operation_reopened_after_reissue"><code>terminal_operation_reopened_after_reissue</code></li>
+<li id="reason-conflicting_target_handoff"><code>conflicting_target_handoff</code></li>
+<li id="reason-handoff_approval_evidence_ref_mismatch"><code>handoff_approval_evidence_ref_mismatch</code></li>
+<li id="reason-handoff_approval_ref_mismatch"><code>handoff_approval_ref_mismatch</code></li>
+<li id="reason-handoff_arguments_mismatch"><code>handoff_arguments_mismatch</code></li>
+<li id="reason-handoff_checkpoint_decision_id_mismatch"><code>handoff_checkpoint_decision_id_mismatch</code></li>
+<li id="reason-handoff_checkpoint_decision_issuer_mismatch"><code>handoff_checkpoint_decision_issuer_mismatch</code></li>
+<li id="reason-handoff_checkpoint_decision_scope_mismatch"><code>handoff_checkpoint_decision_scope_mismatch</code></li>
+<li id="reason-handoff_checkpoint_handoff_id_mismatch"><code>handoff_checkpoint_handoff_id_mismatch</code></li>
+<li id="reason-handoff_checkpoint_handoff_ref_mismatch"><code>handoff_checkpoint_handoff_ref_mismatch</code></li>
+<li id="reason-handoff_checkpoint_issuer_mismatch"><code>handoff_checkpoint_issuer_mismatch</code></li>
+<li id="reason-handoff_checkpoint_operation_id_mismatch"><code>handoff_checkpoint_operation_id_mismatch</code></li>
+<li id="reason-handoff_checkpoint_workflow_id_mismatch"><code>handoff_checkpoint_workflow_id_mismatch</code></li>
+<li id="reason-handoff_decision_evidence_ref_mismatch"><code>handoff_decision_evidence_ref_mismatch</code></li>
+<li id="reason-handoff_idempotency_key_mismatch"><code>handoff_idempotency_key_mismatch</code></li>
+<li id="reason-handoff_issuer_mismatch"><code>handoff_issuer_mismatch</code></li>
+<li id="reason-handoff_lacks_recovery_evidence"><code>handoff_lacks_recovery_evidence</code></li>
+<li id="reason-handoff_not_after_recovery"><code>handoff_not_after_recovery</code></li>
+<li id="reason-missing_target_handoff"><code>missing_target_handoff</code></li>
+<li id="reason-target_handoff_not_unique"><code>target_handoff_not_unique</code></li>
+<li id="reason-execution_event_chain_break"><code>execution_event_chain_break</code></li>
+<li id="reason-execution_event_decision_scope_mismatch"><code>execution_event_decision_scope_mismatch</code></li>
+<li id="reason-execution_event_handoff_issuer_mismatch"><code>execution_event_handoff_issuer_mismatch</code></li>
+<li id="reason-execution_event_id_reused"><code>execution_event_id_reused</code></li>
+<li id="reason-execution_event_idempotency_key_mismatch"><code>execution_event_idempotency_key_mismatch</code></li>
+<li id="reason-execution_event_operation_id_mismatch"><code>execution_event_operation_id_mismatch</code></li>
+<li id="reason-execution_event_observer_mismatch"><code>execution_event_observer_mismatch</code></li>
+<li id="reason-execution_event_provider_id_mismatch"><code>execution_event_provider_id_mismatch</code></li>
+<li id="reason-execution_event_time_regression"><code>execution_event_time_regression</code></li>
+<li id="reason-execution_event_workflow_id_mismatch"><code>execution_event_workflow_id_mismatch</code></li>
+<li id="reason-manifest_cutoff_mismatch"><code>manifest_cutoff_mismatch</code></li>
+<li id="reason-manifest_decision_scope_mismatch"><code>manifest_decision_scope_mismatch</code></li>
+<li id="reason-manifest_event_count_mismatch"><code>manifest_event_count_mismatch</code></li>
+<li id="reason-manifest_handoff_issuer_mismatch"><code>manifest_handoff_issuer_mismatch</code></li>
+<li id="reason-manifest_head_event_ref_mismatch"><code>manifest_head_event_ref_mismatch</code></li>
+<li id="reason-manifest_idempotency_key_mismatch"><code>manifest_idempotency_key_mismatch</code></li>
+<li id="reason-manifest_not_at_cutoff"><code>manifest_not_at_cutoff</code></li>
+<li id="reason-manifest_operation_id_mismatch"><code>manifest_operation_id_mismatch</code></li>
+<li id="reason-manifest_provider_id_mismatch"><code>manifest_provider_id_mismatch</code></li>
+<li id="reason-manifest_workflow_id_mismatch"><code>manifest_workflow_id_mismatch</code></li>
+<li id="reason-missing_execution_events"><code>missing_execution_events</code></li>
+<li id="reason-missing_execution_manifest"><code>missing_execution_manifest</code></li>
+<li id="reason-effect_event_observer_mismatch"><code>effect_event_observer_mismatch</code></li>
+<li id="reason-effect_observer_not_separate"><code>effect_observer_not_separate</code></li>
+<li id="reason-missing_provider_snapshot"><code>missing_provider_snapshot</code></li>
+<li id="reason-provider_snapshot_count_mismatch"><code>provider_snapshot_count_mismatch</code></li>
+<li id="reason-provider_snapshot_decision_scope_mismatch"><code>provider_snapshot_decision_scope_mismatch</code></li>
+<li id="reason-provider_snapshot_effect_set_mismatch"><code>provider_snapshot_effect_set_mismatch</code></li>
+<li id="reason-provider_snapshot_handoff_issuer_mismatch"><code>provider_snapshot_handoff_issuer_mismatch</code></li>
+<li id="reason-provider_snapshot_idempotency_key_mismatch"><code>provider_snapshot_idempotency_key_mismatch</code></li>
+<li id="reason-provider_snapshot_not_at_cutoff"><code>provider_snapshot_not_at_cutoff</code></li>
+<li id="reason-provider_snapshot_operation_id_mismatch"><code>provider_snapshot_operation_id_mismatch</code></li>
+<li id="reason-provider_snapshot_provider_id_mismatch"><code>provider_snapshot_provider_id_mismatch</code></li>
+<li id="reason-provider_snapshot_state_ref_mismatch"><code>provider_snapshot_state_ref_mismatch</code></li>
+<li id="reason-provider_snapshot_workflow_id_mismatch"><code>provider_snapshot_workflow_id_mismatch</code></li>
+<li id="reason-attempt_at_or_after_handoff_expiry"><code>attempt_at_or_after_handoff_expiry</code></li>
+<li id="reason-attempt_at_or_after_handoff_signer_revocation"><code>attempt_at_or_after_handoff_signer_revocation</code></li>
+<li id="reason-attempt_before_handoff_validity"><code>attempt_before_handoff_validity</code></li>
+<li id="reason-attempt_handoff_ref_mismatch"><code>attempt_handoff_ref_mismatch</code></li>
+<li id="reason-attempt_not_after_recovery"><code>attempt_not_after_recovery</code></li>
+<li id="reason-attempt_outcome_not_exactly_one"><code>attempt_outcome_not_exactly_one</code></li>
+<li id="reason-effect_absent_conflicts_with_effect"><code>effect_absent_conflicts_with_effect</code></li>
+<li id="reason-effect_absent_reconciliation_has_effect"><code>effect_absent_reconciliation_has_effect</code></li>
+<li id="reason-effect_crosses_attempt_binding"><code>effect_crosses_attempt_binding</code></li>
+<li id="reason-effect_id_rebound_to_another_attempt"><code>effect_id_rebound_to_another_attempt</code></li>
+<li id="reason-effect_precedes_attempt"><code>effect_precedes_attempt</code></li>
+<li id="reason-effect_refund_tuple_mismatch"><code>effect_refund_tuple_mismatch</code></li>
+<li id="reason-event_references_unknown_attempt"><code>event_references_unknown_attempt</code></li>
+<li id="reason-first_attempt_not_initial"><code>first_attempt_not_initial</code></li>
+<li id="reason-later_attempt_follows_effect_or_success"><code>later_attempt_follows_effect_or_success</code></li>
+<li id="reason-later_attempt_follows_unresolved_attempt"><code>later_attempt_follows_unresolved_attempt</code></li>
+<li id="reason-later_attempt_has_invalid_disposition"><code>later_attempt_has_invalid_disposition</code></li>
+<li id="reason-later_attempt_precedes_prior_terminal"><code>later_attempt_precedes_prior_terminal</code></li>
+<li id="reason-later_attempt_predecessor_mismatch"><code>later_attempt_predecessor_mismatch</code></li>
+<li id="reason-missing_attempt_outcome"><code>missing_attempt_outcome</code></li>
+<li id="reason-missing_authenticated_handoff"><code>missing_authenticated_handoff</code></li>
+<li id="reason-missing_dispatch_attempt"><code>missing_dispatch_attempt</code></li>
+<li id="reason-multiple_refund_effects"><code>multiple_refund_effects</code></li>
+<li id="reason-observed_failure_conflicts_with_effect"><code>observed_failure_conflicts_with_effect</code></li>
+<li id="reason-observed_failure_has_effect_ref"><code>observed_failure_has_effect_ref</code></li>
+<li id="reason-observed_failure_without_response"><code>observed_failure_without_response</code></li>
+<li id="reason-outcome_crosses_attempt_binding"><code>outcome_crosses_attempt_binding</code></li>
+<li id="reason-outcome_precedes_attempt"><code>outcome_precedes_attempt</code></li>
+<li id="reason-provider_effect_lacks_typed_event"><code>provider_effect_lacks_typed_event</code></li>
+<li id="reason-reconciliation_after_terminal"><code>reconciliation_after_terminal</code></li>
+<li id="reason-reconciliation_after_terminal_outcome"><code>reconciliation_after_terminal_outcome</code></li>
+<li id="reason-reconciliation_crosses_attempt_binding"><code>reconciliation_crosses_attempt_binding</code></li>
+<li id="reason-reconciliation_effect_not_same_attempt"><code>reconciliation_effect_not_same_attempt</code></li>
+<li id="reason-reconciliation_precedes_effect"><code>reconciliation_precedes_effect</code></li>
+<li id="reason-reconciliation_precedes_outcome"><code>reconciliation_precedes_outcome</code></li>
+<li id="reason-reconciliation_predecessor_mismatch"><code>reconciliation_predecessor_mismatch</code></li>
+<li id="reason-success_effect_ref_not_same_attempt"><code>success_effect_ref_not_same_attempt</code></li>
+<li id="reason-success_precedes_effect"><code>success_precedes_effect</code></li>
+<li id="reason-success_without_response"><code>success_without_response</code></li>
+<li id="reason-terminal_effect_conflicts_with_provider_snapshot"><code>terminal_effect_conflicts_with_provider_snapshot</code></li>
+<li id="reason-unresolved_completion"><code>unresolved_completion</code></li>
+<li id="reason-unresolved_effect_ref_not_same_attempt"><code>unresolved_effect_ref_not_same_attempt</code></li>
+<li id="reason-unresolved_outcome_has_response"><code>unresolved_outcome_has_response</code></li>
+<li id="reason-unresolved_outcome_precedes_effect"><code>unresolved_outcome_precedes_effect</code></li>
+<li id="reason-unresolved_reconciliation_has_effect"><code>unresolved_reconciliation_has_effect</code></li>
+</ol>
+</body>
+</html>

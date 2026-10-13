@@ -1,0 +1,1275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1/report.schema.json",
+  "title": "Probity refund handoff 0.1 assessment report",
+  "description": "Closed output contract for the deterministic refund handoff verifier. The verifier derives overall from all claim states. It emits only registered reason URIs and keeps the PEER claim ceiling explicit.",
+  "type": "object",
+  "properties": {
+    "profile": {
+      "const": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1"
+    },
+    "schema": {
+      "const": "refund-handoff/0.1"
+    },
+    "cutoff": {
+      "$ref": "contract.schema.json#/$defs/utcSecond"
+    },
+    "target": {
+      "$ref": "contract.schema.json#/$defs/target"
+    },
+    "target_operation_id": {
+      "$ref": "contract.schema.json#/$defs/sha256"
+    },
+    "overall": {
+      "enum": [
+        "ESTABLISHED",
+        "CONTRADICTED",
+        "NOT_ESTABLISHED"
+      ]
+    },
+    "claims": {
+      "$ref": "#/$defs/claims"
+    },
+    "counts": {
+      "$ref": "#/$defs/counts"
+    },
+    "references": {
+      "$ref": "#/$defs/references"
+    },
+    "witness_scope": {
+      "const": "PEER"
+    },
+    "does_not_assert": {
+      "$ref": "#/$defs/doesNotAssert"
+    }
+  },
+  "required": [
+    "profile",
+    "schema",
+    "cutoff",
+    "target",
+    "target_operation_id",
+    "overall",
+    "claims",
+    "counts",
+    "references",
+    "witness_scope",
+    "does_not_assert"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "overall": {"const": "ESTABLISHED"},
+        "claims": {"$ref": "#/$defs/allClaimsEstablished"}
+      }
+    },
+    {
+      "properties": {
+        "overall": {"const": "CONTRADICTED"},
+        "claims": {"$ref": "#/$defs/anyClaimContradicted"}
+      }
+    },
+    {
+      "properties": {
+        "overall": {"const": "NOT_ESTABLISHED"},
+        "claims": {
+          "allOf": [
+            {"not": {"$ref": "#/$defs/anyClaimContradicted"}},
+            {"$ref": "#/$defs/anyClaimNotEstablished"}
+          ]
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "allClaimsEstablished": {
+      "type": "object",
+      "properties": {
+        "admission": {"properties": {"state": {"const": "ESTABLISHED"}}, "required": ["state"]},
+        "durable_admission": {"properties": {"state": {"const": "ESTABLISHED"}}, "required": ["state"]},
+        "approval_continuity": {"properties": {"state": {"const": "ESTABLISHED"}}, "required": ["state"]},
+        "authenticated_handoff": {"properties": {"state": {"const": "ESTABLISHED"}}, "required": ["state"]},
+        "selected_log_consistency": {"properties": {"state": {"const": "ESTABLISHED"}}, "required": ["state"]},
+        "selected_effect_coverage": {"properties": {"state": {"const": "ESTABLISHED"}}, "required": ["state"]},
+        "completion": {"properties": {"state": {"const": "ESTABLISHED"}}, "required": ["state"]}
+      },
+      "required": [
+        "admission",
+        "durable_admission",
+        "approval_continuity",
+        "authenticated_handoff",
+        "selected_log_consistency",
+        "selected_effect_coverage",
+        "completion"
+      ]
+    },
+    "anyClaimContradicted": {
+      "type": "object",
+      "anyOf": [
+        {"properties": {"admission": {"properties": {"state": {"const": "CONTRADICTED"}}, "required": ["state"]}}, "required": ["admission"]},
+        {"properties": {"durable_admission": {"properties": {"state": {"const": "CONTRADICTED"}}, "required": ["state"]}}, "required": ["durable_admission"]},
+        {"properties": {"approval_continuity": {"properties": {"state": {"const": "CONTRADICTED"}}, "required": ["state"]}}, "required": ["approval_continuity"]},
+        {"properties": {"authenticated_handoff": {"properties": {"state": {"const": "CONTRADICTED"}}, "required": ["state"]}}, "required": ["authenticated_handoff"]},
+        {"properties": {"selected_log_consistency": {"properties": {"state": {"const": "CONTRADICTED"}}, "required": ["state"]}}, "required": ["selected_log_consistency"]},
+        {"properties": {"selected_effect_coverage": {"properties": {"state": {"const": "CONTRADICTED"}}, "required": ["state"]}}, "required": ["selected_effect_coverage"]},
+        {"properties": {"completion": {"properties": {"state": {"const": "CONTRADICTED"}}, "required": ["state"]}}, "required": ["completion"]}
+      ]
+    },
+    "anyClaimNotEstablished": {
+      "type": "object",
+      "anyOf": [
+        {"properties": {"admission": {"properties": {"state": {"const": "NOT_ESTABLISHED"}}, "required": ["state"]}}, "required": ["admission"]},
+        {"properties": {"durable_admission": {"properties": {"state": {"const": "NOT_ESTABLISHED"}}, "required": ["state"]}}, "required": ["durable_admission"]},
+        {"properties": {"approval_continuity": {"properties": {"state": {"const": "NOT_ESTABLISHED"}}, "required": ["state"]}}, "required": ["approval_continuity"]},
+        {"properties": {"authenticated_handoff": {"properties": {"state": {"const": "NOT_ESTABLISHED"}}, "required": ["state"]}}, "required": ["authenticated_handoff"]},
+        {"properties": {"selected_log_consistency": {"properties": {"state": {"const": "NOT_ESTABLISHED"}}, "required": ["state"]}}, "required": ["selected_log_consistency"]},
+        {"properties": {"selected_effect_coverage": {"properties": {"state": {"const": "NOT_ESTABLISHED"}}, "required": ["state"]}}, "required": ["selected_effect_coverage"]},
+        {"properties": {"completion": {"properties": {"state": {"const": "NOT_ESTABLISHED"}}, "required": ["state"]}}, "required": ["completion"]}
+      ]
+    },
+    "admissionContradictedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_arguments_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_authority_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_checkpoint_admission_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_checkpoint_authority_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_checkpoint_decision_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_checkpoint_decision_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_checkpoint_decision_scope_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_checkpoint_operation_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_checkpoint_state_root_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_checkpoint_workflow_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_decision_binding_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_decision_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_decision_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_decision_scope_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_handoff_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_operation_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_provider_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_state_root_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-admission_workflow_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-conflicting_decision_evidence",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-evidence_verified_after_admission",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-original_approval_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-verified_evidence_arguments_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-verified_evidence_contradicted"
+      ]
+    },
+    "admissionNotEstablishedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_admission_commit",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_approval_evidence",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_decision_evidence",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-referenced_approval_evidence_missing",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-referenced_decision_evidence_missing",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-verified_evidence_not_established"
+      ]
+    },
+    "durableAdmissionContradictedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-recovery_admission_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-recovery_decision_scope_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-recovery_not_after_commit",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-recovery_observer_not_separate",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-recovery_operation_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-recovery_provider_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-recovery_state_root_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-recovery_workflow_id_mismatch"
+      ]
+    },
+    "durableAdmissionNotEstablishedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_admission_commit",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_post_restart_recovery"
+      ]
+    },
+    "approvalContinuityContradictedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-fresh_handoff_after_reissue_resolution",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reissued_approval_not_resolved_once",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_arguments_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_authority_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_decision_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_decision_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_decision_scope_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_lacks_reissued_evidence",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_not_after_admission",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_operation_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_original_admission_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_original_approval_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_precedes_reissued_evidence",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_provider_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-resolution_workflow_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-terminal_operation_reopened_after_reissue"
+      ]
+    },
+    "approvalContinuityNotEstablishedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_admission_commit",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reissued_approval_lacks_resolution"
+      ]
+    },
+    "authenticatedHandoffContradictedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-conflicting_target_handoff",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_approval_evidence_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_approval_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_arguments_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_checkpoint_decision_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_checkpoint_decision_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_checkpoint_decision_scope_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_checkpoint_handoff_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_checkpoint_handoff_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_checkpoint_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_checkpoint_operation_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_checkpoint_workflow_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_decision_evidence_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_idempotency_key_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_not_after_recovery",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-target_handoff_not_unique"
+      ]
+    },
+    "authenticatedHandoffNotEstablishedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-handoff_lacks_recovery_evidence",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_admission_commit",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_target_handoff"
+      ]
+    },
+    "selectedLogConsistencyContradictedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_chain_break",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_decision_scope_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_handoff_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_id_reused",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_idempotency_key_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_operation_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_observer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_provider_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_time_regression",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-execution_event_workflow_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_cutoff_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_decision_scope_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_event_count_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_handoff_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_head_event_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_idempotency_key_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_not_at_cutoff",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_operation_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_provider_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-manifest_workflow_id_mismatch"
+      ]
+    },
+    "selectedLogConsistencyNotEstablishedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_execution_events",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_execution_manifest"
+      ]
+    },
+    "selectedEffectCoverageContradictedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-effect_event_observer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-effect_observer_not_separate",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_count_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_decision_scope_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_effect_set_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_handoff_issuer_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_idempotency_key_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_not_at_cutoff",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_operation_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_provider_id_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_state_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_snapshot_workflow_id_mismatch"
+      ]
+    },
+    "selectedEffectCoverageNotEstablishedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_provider_snapshot"
+      ]
+    },
+    "completionContradictedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-attempt_at_or_after_handoff_expiry",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-attempt_at_or_after_handoff_signer_revocation",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-attempt_before_handoff_validity",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-attempt_handoff_ref_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-attempt_not_after_recovery",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-attempt_outcome_not_exactly_one",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-effect_absent_conflicts_with_effect",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-effect_absent_reconciliation_has_effect",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-effect_crosses_attempt_binding",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-effect_id_rebound_to_another_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-effect_precedes_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-effect_refund_tuple_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-event_references_unknown_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-first_attempt_not_initial",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-later_attempt_follows_effect_or_success",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-later_attempt_follows_unresolved_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-later_attempt_has_invalid_disposition",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-later_attempt_precedes_prior_terminal",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-later_attempt_predecessor_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-multiple_refund_effects",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-observed_failure_conflicts_with_effect",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-observed_failure_has_effect_ref",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-observed_failure_without_response",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-outcome_crosses_attempt_binding",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-outcome_precedes_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-provider_effect_lacks_typed_event",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reconciliation_after_terminal",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reconciliation_after_terminal_outcome",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reconciliation_crosses_attempt_binding",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reconciliation_effect_not_same_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reconciliation_precedes_effect",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reconciliation_precedes_outcome",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-reconciliation_predecessor_mismatch",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-success_effect_ref_not_same_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-success_precedes_effect",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-success_without_response",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-terminal_effect_conflicts_with_provider_snapshot",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-unresolved_effect_ref_not_same_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-unresolved_outcome_has_response",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-unresolved_outcome_precedes_effect",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-unresolved_reconciliation_has_effect"
+      ]
+    },
+    "completionNotEstablishedReason": {
+      "type": "string",
+      "enum": [
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_attempt_outcome",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_authenticated_handoff",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-missing_dispatch_attempt",
+        "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1#reason-unresolved_completion"
+      ]
+    },
+    "reasonUri": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/admissionContradictedReason"
+        },
+        {
+          "$ref": "#/$defs/admissionNotEstablishedReason"
+        },
+        {
+          "$ref": "#/$defs/durableAdmissionContradictedReason"
+        },
+        {
+          "$ref": "#/$defs/durableAdmissionNotEstablishedReason"
+        },
+        {
+          "$ref": "#/$defs/approvalContinuityContradictedReason"
+        },
+        {
+          "$ref": "#/$defs/approvalContinuityNotEstablishedReason"
+        },
+        {
+          "$ref": "#/$defs/authenticatedHandoffContradictedReason"
+        },
+        {
+          "$ref": "#/$defs/authenticatedHandoffNotEstablishedReason"
+        },
+        {
+          "$ref": "#/$defs/selectedLogConsistencyContradictedReason"
+        },
+        {
+          "$ref": "#/$defs/selectedLogConsistencyNotEstablishedReason"
+        },
+        {
+          "$ref": "#/$defs/selectedEffectCoverageContradictedReason"
+        },
+        {
+          "$ref": "#/$defs/selectedEffectCoverageNotEstablishedReason"
+        },
+        {
+          "$ref": "#/$defs/completionContradictedReason"
+        },
+        {
+          "$ref": "#/$defs/completionNotEstablishedReason"
+        }
+      ],
+      "description": "A URI from the closed refund-handoff/0.1 reason-code registry."
+    },
+    "admissionClaim": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "ESTABLISHED",
+            "CONTRADICTED",
+            "NOT_ESTABLISHED"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 160,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reasonUri"
+          },
+          "description": "Reason URIs are unique and sorted lexically by the reference verifier."
+        }
+      },
+      "required": [
+        "state",
+        "reasons"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "CONTRADICTED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/admissionContradictedReason"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "NOT_ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/admissionNotEstablishedReason"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "durableAdmissionClaim": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "ESTABLISHED",
+            "CONTRADICTED",
+            "NOT_ESTABLISHED"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 160,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reasonUri"
+          },
+          "description": "Reason URIs are unique and sorted lexically by the reference verifier."
+        }
+      },
+      "required": [
+        "state",
+        "reasons"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "CONTRADICTED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/durableAdmissionContradictedReason"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "NOT_ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/durableAdmissionNotEstablishedReason"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "approvalContinuityClaim": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "ESTABLISHED",
+            "CONTRADICTED",
+            "NOT_ESTABLISHED"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 160,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reasonUri"
+          },
+          "description": "Reason URIs are unique and sorted lexically by the reference verifier."
+        }
+      },
+      "required": [
+        "state",
+        "reasons"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "CONTRADICTED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/approvalContinuityContradictedReason"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "NOT_ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/approvalContinuityNotEstablishedReason"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "authenticatedHandoffClaim": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "ESTABLISHED",
+            "CONTRADICTED",
+            "NOT_ESTABLISHED"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 160,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reasonUri"
+          },
+          "description": "Reason URIs are unique and sorted lexically by the reference verifier."
+        }
+      },
+      "required": [
+        "state",
+        "reasons"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "CONTRADICTED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/authenticatedHandoffContradictedReason"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "NOT_ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/authenticatedHandoffNotEstablishedReason"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "selectedLogConsistencyClaim": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "ESTABLISHED",
+            "CONTRADICTED",
+            "NOT_ESTABLISHED"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 160,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reasonUri"
+          },
+          "description": "Reason URIs are unique and sorted lexically by the reference verifier."
+        }
+      },
+      "required": [
+        "state",
+        "reasons"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "CONTRADICTED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/selectedLogConsistencyContradictedReason"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "NOT_ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/selectedLogConsistencyNotEstablishedReason"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "selectedEffectCoverageClaim": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "ESTABLISHED",
+            "CONTRADICTED",
+            "NOT_ESTABLISHED"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 160,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reasonUri"
+          },
+          "description": "Reason URIs are unique and sorted lexically by the reference verifier."
+        },
+        "value": {
+          "enum": [
+            "unknown",
+            "present",
+            "absent"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "reasons",
+        "value"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "CONTRADICTED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/selectedEffectCoverageContradictedReason"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "NOT_ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/selectedEffectCoverageNotEstablishedReason"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "completionClaim": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "ESTABLISHED",
+            "CONTRADICTED",
+            "NOT_ESTABLISHED"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "maxItems": 160,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/reasonUri"
+          },
+          "description": "Reason URIs are unique and sorted lexically by the reference verifier."
+        },
+        "value": {
+          "enum": [
+            "unknown",
+            "effect_committed",
+            "no_effect"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "reasons",
+        "value"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "CONTRADICTED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/completionContradictedReason"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "NOT_ESTABLISHED"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/completionNotEstablishedReason"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "claims": {
+      "type": "object",
+      "properties": {
+        "admission": {
+          "$ref": "#/$defs/admissionClaim"
+        },
+        "durable_admission": {
+          "$ref": "#/$defs/durableAdmissionClaim"
+        },
+        "approval_continuity": {
+          "$ref": "#/$defs/approvalContinuityClaim"
+        },
+        "authenticated_handoff": {
+          "$ref": "#/$defs/authenticatedHandoffClaim"
+        },
+        "selected_log_consistency": {
+          "$ref": "#/$defs/selectedLogConsistencyClaim"
+        },
+        "selected_effect_coverage": {
+          "$ref": "#/$defs/selectedEffectCoverageClaim"
+        },
+        "completion": {
+          "$ref": "#/$defs/completionClaim"
+        }
+      },
+      "required": [
+        "admission",
+        "durable_admission",
+        "approval_continuity",
+        "authenticated_handoff",
+        "selected_log_consistency",
+        "selected_effect_coverage",
+        "completion"
+      ],
+      "additionalProperties": false
+    },
+    "excludedByKind": {
+      "type": "object",
+      "properties": {
+        "verified_evidence": {
+          "$ref": "contract.schema.json#/$defs/positiveSafeInteger"
+        },
+        "approval_resolution": {
+          "$ref": "contract.schema.json#/$defs/positiveSafeInteger"
+        },
+        "refund_handoff": {
+          "$ref": "contract.schema.json#/$defs/positiveSafeInteger"
+        },
+        "event": {
+          "$ref": "contract.schema.json#/$defs/positiveSafeInteger"
+        },
+        "admission_commit": {
+          "$ref": "contract.schema.json#/$defs/positiveSafeInteger"
+        },
+        "admission_recovery": {
+          "$ref": "contract.schema.json#/$defs/positiveSafeInteger"
+        },
+        "execution_manifest": {
+          "$ref": "contract.schema.json#/$defs/positiveSafeInteger"
+        },
+        "provider_snapshot": {
+          "$ref": "contract.schema.json#/$defs/positiveSafeInteger"
+        }
+      },
+      "additionalProperties": false
+    },
+    "counts": {
+      "type": "object",
+      "properties": {
+        "inputs": {
+          "$ref": "contract.schema.json#/$defs/nonnegativeSafeInteger"
+        },
+        "handoffs": {
+          "$ref": "contract.schema.json#/$defs/nonnegativeSafeInteger"
+        },
+        "unique_handoffs": {
+          "$ref": "contract.schema.json#/$defs/nonnegativeSafeInteger"
+        },
+        "events": {
+          "$ref": "contract.schema.json#/$defs/nonnegativeSafeInteger"
+        },
+        "attempts": {
+          "$ref": "contract.schema.json#/$defs/nonnegativeSafeInteger"
+        },
+        "effects": {
+          "$ref": "contract.schema.json#/$defs/nonnegativeSafeInteger"
+        },
+        "excluded_after_cutoff": {
+          "$ref": "contract.schema.json#/$defs/nonnegativeSafeInteger"
+        },
+        "excluded_by_kind": {
+          "$ref": "#/$defs/excludedByKind"
+        }
+      },
+      "required": [
+        "inputs",
+        "handoffs",
+        "unique_handoffs",
+        "events",
+        "attempts",
+        "effects",
+        "excluded_after_cutoff",
+        "excluded_by_kind"
+      ],
+      "additionalProperties": false
+    },
+    "references": {
+      "type": "object",
+      "properties": {
+        "bundle_ref": {
+          "$ref": "contract.schema.json#/$defs/sha256"
+        },
+        "trust_snapshot_ref": {
+          "$ref": "contract.schema.json#/$defs/sha256"
+        },
+        "admission_checkpoint_ref": {
+          "$ref": "contract.schema.json#/$defs/sha256"
+        },
+        "handoff_checkpoint_ref": {
+          "$ref": "contract.schema.json#/$defs/sha256"
+        },
+        "admission_ref": {
+          "$ref": "contract.schema.json#/$defs/nullableSha256"
+        },
+        "handoff_ref": {
+          "$ref": "contract.schema.json#/$defs/nullableSha256"
+        },
+        "execution_manifest_ref": {
+          "$ref": "contract.schema.json#/$defs/nullableSha256"
+        },
+        "provider_snapshot_ref": {
+          "$ref": "contract.schema.json#/$defs/nullableSha256"
+        },
+        "effect_refs": {
+          "type": "array",
+          "maxItems": 512,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "contract.schema.json#/$defs/sha256"
+          },
+          "description": "References are sorted lexically by the reference verifier."
+        },
+        "terminal_refs": {
+          "type": "array",
+          "maxItems": 512,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "contract.schema.json#/$defs/sha256"
+          },
+          "description": "References are sorted lexically by the reference verifier."
+        }
+      },
+      "required": [
+        "bundle_ref",
+        "trust_snapshot_ref",
+        "admission_checkpoint_ref",
+        "handoff_checkpoint_ref",
+        "admission_ref",
+        "handoff_ref",
+        "execution_manifest_ref",
+        "provider_snapshot_ref",
+        "effect_refs",
+        "terminal_refs"
+      ],
+      "additionalProperties": false
+    },
+    "doesNotAssert": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "prefixItems": [
+        {
+          "const": "merchant authority or delegated business authority"
+        },
+        {
+          "const": "production deployment or host adoption"
+        },
+        {
+          "const": "independent durability or non-operator custody"
+        },
+        {
+          "const": "complete admission history or global decision single-consumption"
+        },
+        {
+          "const": "handoff history beyond the selected consumer checkpoint"
+        },
+        {
+          "const": "execution-event coverage beyond the selected observer and manifest scope"
+        },
+        {
+          "const": "provider coverage beyond the selected observer and query scope"
+        },
+        {
+          "const": "remote exactly-once execution"
+        },
+        {
+          "const": "independent operation, adoption, or commercial agreement"
+        }
+      ],
+      "items": false
+    }
+  }
+}

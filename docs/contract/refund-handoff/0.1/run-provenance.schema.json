@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1/run-provenance.schema.json",
+  "title": "Probity refund handoff 0.1 retained-run provenance",
+  "description": "Closed provenance for one installed-wheel conformance run. Digests are verified by the runner; JSON Schema alone does not read the referenced wheel, source archive, or lock file.",
+  "type": "object",
+  "properties": {
+    "schema": {"const": "probity-refund-handoff-run-provenance-v0.1"},
+    "profile": {"const": "https://probityai.github.io/agent-evidence-observer/contract/refund-handoff/0.1"},
+    "source": {
+      "type": "object",
+      "properties": {
+        "commit": {"$ref": "#/$defs/gitObject"},
+        "dirty": {"const": false},
+        "bundle_file": {"const": "source.bundle"},
+        "bundle_sha256": {"$ref": "#/$defs/sha256"},
+        "archive_file": {"const": "source-at-commit.tar"},
+        "archive_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["commit", "dirty", "bundle_file", "bundle_sha256", "archive_file", "archive_sha256"],
+      "additionalProperties": false
+    },
+    "wheel": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 260,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\.whl$"
+        },
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "size": {"$ref": "#/$defs/positiveSafeInteger"}
+      },
+      "required": ["file", "sha256", "size"],
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "properties": {
+        "python": {"$ref": "#/$defs/asciiText"},
+        "python_implementation": {"$ref": "#/$defs/asciiText"},
+        "python_sha256": {"$ref": "#/$defs/sha256"},
+        "platform": {"$ref": "#/$defs/asciiText"},
+        "uv": {"$ref": "#/$defs/asciiText"},
+        "uv_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["python", "python_implementation", "python_sha256", "platform", "uv", "uv_sha256"],
+      "additionalProperties": false
+    },
+    "locks": {
+      "type": "object",
+      "properties": {
+        "requirements_file": {"const": "requirements.lock"},
+        "requirements_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["requirements_file", "requirements_sha256"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["schema", "profile", "source", "wheel", "environment", "locks"],
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "gitObject": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "positiveSafeInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "asciiText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[\\u0000-\\u007F]+$"
+    }
+  }
+}

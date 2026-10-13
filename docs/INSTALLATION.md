@@ -44,6 +44,7 @@ Select packet hashes, reader hashes and keys through the consumer's accepted pro
 | Apply consumer policy to a broker packet | `agent-evidence-admit` | [Admission policy and retained state](https://github.com/probityai/agent-evidence-observer/blob/main/docs/CONSUMER-ADMISSION.md) |
 | Read bounded Inspect execution or A2A SDK packets | `agent-evidence-read-native` | A matching immutable checkout and a separately selected manifest; [consumer CI guide](https://github.com/probityai/agent-evidence-observer/blob/main/docs/NATIVE-CONSUMER-CI.md) |
 | Read Atomic native delegation tests | `agent-evidence-read-atomic` | Selected native test packet and manifest; [Atomic guide](https://github.com/probityai/agent-evidence-observer/blob/main/docs/ATOMIC-NATIVE-READER.md). No separate source checkout |
+| Verify a refund admission-to-effect handoff | `agent-evidence-read-refund-handoff` | Consumer-selected trust snapshot and a [`refund-handoff/0.1` evidence bundle](https://github.com/probityai/agent-evidence-observer/blob/main/docs/reference/REFUND-HANDOFF-CONFORMANCE.md) |
 | Demonstrate and read a witnessed run selection | `python -I -m probity_observer.selection_profile` | [Opening, closing, operator and witness pins](https://github.com/probityai/agent-evidence-observer/blob/main/docs/WITNESSED-RUN-SELECTION.md) |
 
 The root wheel contains `probity_observer` modules and the Apache license.
