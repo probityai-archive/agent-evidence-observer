@@ -37,7 +37,7 @@ exposed. Running an unmodified agent that way, and a separately operated witness
 
 ## Documentation
 
-Start with [worked examples](docs/README.md) to follow a practical question,
+Start with [worked examples](https://github.com/probityai/agent-evidence-observer/blob/main/docs/README.md) to follow a practical question,
 then open its technical reference for commands and exact evidence.
 
 | page | read it for |
@@ -48,6 +48,7 @@ then open its technical reference for commands and exact evidence.
 | [Isolated producer](https://github.com/probityai/agent-evidence-observer/blob/main/docs/ISOLATED-PRODUCER.md) | the acceptance criteria for running an unmodified agent behind the broker |
 | [Witness ledger](https://github.com/probityai/agent-evidence-observer/blob/main/docs/WITNESS-LEDGER.md) | signed begin and terminal receipts, and how a reader checks them |
 | [Installation and profile selection](https://github.com/probityai/agent-evidence-observer/blob/main/docs/INSTALLATION.md) | choose the root wheel, a separate profile wheel or a selected source reader; runtime requirements and installed examples |
+| [Release the root package](https://github.com/probityai/agent-evidence-observer/blob/main/docs/RELEASING.md) | qualify a wheel and source distribution, then publish with a bound source tag |
 | [Atomic native reader](https://github.com/probityai/agent-evidence-observer/blob/main/docs/ATOMIC-NATIVE-READER.md) | install an offline reader for selected native delegation runs and their refusal controls |
 | [Witnessed run selection](https://github.com/probityai/agent-evidence-observer/blob/main/docs/WITNESSED-RUN-SELECTION.md) | check a selected run against consumer-retained opening and closing checkpoints |
 | [Approved refund retries](https://github.com/probityai/agent-evidence-observer/blob/main/docs/APS-REFUND-RETRIES.md) | run the APS approval and local SQLite example, then check retries and refusals with a separately installed reader |

@@ -7,3 +7,6 @@ __pycache__/
 sample-run*/
 admission-run*/
 build/
+.release-qualification/
+dist/
+rebuilt/

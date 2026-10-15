@@ -20,6 +20,8 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
+from distribution_checks import check_source_archive, check_wheel_metadata
+
 
 def require(condition: bool, message: str) -> None:
     """Keep distribution refusals active when Python runs with optimization."""
@@ -92,8 +94,8 @@ def check_record(archive: ZipFile, names: list[str], info: str) -> None:
         require(encoded == expected and size == str(len(raw)), f"wheel RECORD bytes: {name}")
 
 
-def check(wheel: Path) -> None:
-    root = Path(__file__).resolve().parent.parent
+def check(wheel: Path, sdist: Path | None = None, source_root: Path | None = None) -> None:
+    root = source_root.resolve() if source_root is not None else Path(__file__).resolve().parent.parent
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
     guide = (root / "docs/INSTALLATION.md").read_text()
     routes = profile_guides(root)
@@ -126,6 +128,8 @@ def check(wheel: Path) -> None:
         require(len(metadata_paths) == 1, "wheel metadata population")
         metadata_path = metadata_paths[0]
         info = metadata_path.rsplit("/", 1)[0]
+        if sdist is not None:
+            metadata_raw = check_wheel_metadata(archive, info, root, project, "probity_observer", ["LICENSE"])
         expected_info = f"{canonicalize_name(project['name']).replace('-', '_')}-{Version(project['version'])}.dist-info"
         require(info == expected_info, "wheel metadata location")
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
@@ -169,9 +173,19 @@ def check(wheel: Path) -> None:
         check_record(archive, names, info)
         print(f"wheel metadata, commands, dependencies, license and {len(expected)} source modules match; "
               "all member sizes and hashes and profile routes match")
+    if sdist is not None:
+        authored = {"LICENSE", "README.md", "pyproject.toml"}
+        authored.update(path.relative_to(root).as_posix() for path in (root / "src/probity_observer").glob("*.py"))
+        authored.update(path.relative_to(root).as_posix() for path in (root / "tests").glob("test*.py"))
+        check_source_archive(sdist, root, project, metadata_raw, authored,
+                             "src/agent_evidence_observer.egg-info", "probity_observer")
+        print("source archive population, authored bytes and generated metadata match")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wheel", type=Path)
-    check(parser.parse_args().wheel)
+    parser.add_argument("sdist", type=Path, nargs="?")
+    parser.add_argument("--source-root", type=Path, help="compare a retained artifact with its matching source snapshot")
+    args = parser.parse_args()
+    check(args.wheel, args.sdist, args.source_root)
