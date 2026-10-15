@@ -83,6 +83,36 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  attest:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'probityai/agent-evidence-observer'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-distributions
+          path: qualified-artifacts
+      - name: Check the qualified artifact hashes and source after transfer
+        run: |
+          cd qualified-artifacts
+          test "$(cat SOURCE-COMMIT)" = "$GITHUB_SHA"
+          sha256sum --check SHA256SUMS
+      - name: Attest the checked wheel and source distribution
+        id: build-provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: qualified-artifacts/dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-build-provenance
+          path: ${{ steps.build-provenance.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     if: github.event_name == 'release' && !github.event.release.prerelease && github.repository == 'probityai/agent-evidence-observer'
     needs: build
