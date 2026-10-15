@@ -1,14 +1,27 @@
 # Install Observer and choose a native reader
 
-Observer is source-only. The root distribution is `agent-evidence-observer` 0.0.1,
-with Python 3.12 or later and Apache-2.0 terms. A version string does not select
-the source: install an immutable revision or a wheel whose bytes you reviewed.
-The profile distributions below are separate source install units, not registry releases.
+The root distribution, `agent-evidence-observer` 0.0.1, is available on
+[PyPI](https://pypi.org/project/agent-evidence-observer/0.0.1/). It requires
+Python 3.12 or later and uses Apache-2.0 terms. With Python 3.12 and
+[uv](https://docs.astral.sh/uv/), install it in its own environment:
+
+```sh
+uv venv observer-release-env --python python3.12
+uv pip install --python observer-release-env/bin/python 'agent-evidence-observer==0.0.1'
+```
+
+This installs the root package. The profile distributions below remain separate
+source install units, not registry releases. Select reviewed release-file hashes
+or an immutable source revision when your installation policy requires byte pins.
 
 For a source-pinned joint installation of Observer and Verify, use the
 [joint-install controls](JOINT-INSTALL.md).
 
-## Try the installed broker
+## Try the source-pinned broker
+
+The broker and native-reader recipe below retains one historical source
+snapshot. Use its separate environment and keep the root install and reader
+checkout pins together.
 
 With Python 3.12 and [uv](https://docs.astral.sh/uv/):
 
