@@ -6,7 +6,7 @@ Use it in agent harnesses and evaluation pipelines that need replayable action r
 
 ## Quick start
 
-No release is published yet, so pin a commit. Python 3.12 or later and
+These commands install a pinned source snapshot. Python 3.12 or later and
 [`uv`](https://docs.astral.sh/uv/) are needed:
 
 ```sh
@@ -30,7 +30,7 @@ file-tree snapshots found no change it did not make. It does not mean every agen
 
 ## Status
 
-Version 0.0.1, unreleased. Every record says `witnessScope: PEER`: the witness key runs on the same
+The root distribution is version 0.0.1. Every record says `witnessScope: PEER`: the witness key runs on the same
 host under the same operator, so the records show what this broker saw, not what an independent
 observer saw. Linux runs can launch a fixed workload under bubblewrap with only the broker's socket
 exposed. Running an unmodified agent that way, and a separately operated witness, are the next steps.
