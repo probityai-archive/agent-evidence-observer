@@ -9,6 +9,7 @@ from configparser import ConfigParser
 import csv
 from email.parser import BytesParser
 import hashlib
+import importlib.util
 import io
 from pathlib import Path, PurePosixPath
 import stat
@@ -19,9 +20,6 @@ from packaging.markers import Marker
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
-
-from distribution_checks import check_source_archive, check_wheel_metadata
-
 
 def require(condition: bool, message: str) -> None:
     """Keep distribution refusals active when Python runs with optimization."""
@@ -97,6 +95,15 @@ def check_record(archive: ZipFile, names: list[str], info: str) -> None:
 def check(wheel: Path, sdist: Path | None = None, source_root: Path | None = None) -> None:
     root = source_root.resolve() if source_root is not None else Path(__file__).resolve().parent.parent
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    if sdist is not None:
+        # Isolated Python excludes sibling imports. Load this optional release
+        # helper from the checker's own directory, never the working directory.
+        specification = importlib.util.spec_from_file_location(
+            "distribution_checks", Path(__file__).resolve().with_name("distribution_checks.py")
+        )
+        require(specification is not None and specification.loader is not None, "release check helper")
+        release_checks = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(release_checks)
     guide = (root / "docs/INSTALLATION.md").read_text()
     routes = profile_guides(root)
     rows = [line for line in guide.splitlines() if line.startswith("| [")]
@@ -129,7 +136,7 @@ def check(wheel: Path, sdist: Path | None = None, source_root: Path | None = Non
         metadata_path = metadata_paths[0]
         info = metadata_path.rsplit("/", 1)[0]
         if sdist is not None:
-            metadata_raw = check_wheel_metadata(archive, info, root, project, "probity_observer", ["LICENSE"])
+            metadata_raw = release_checks.check_wheel_metadata(archive, info, root, project, "probity_observer", ["LICENSE"])
         expected_info = f"{canonicalize_name(project['name']).replace('-', '_')}-{Version(project['version'])}.dist-info"
         require(info == expected_info, "wheel metadata location")
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
@@ -177,7 +184,7 @@ def check(wheel: Path, sdist: Path | None = None, source_root: Path | None = Non
         authored = {"LICENSE", "README.md", "pyproject.toml"}
         authored.update(path.relative_to(root).as_posix() for path in (root / "src/probity_observer").glob("*.py"))
         authored.update(path.relative_to(root).as_posix() for path in (root / "tests").glob("test*.py"))
-        check_source_archive(sdist, root, project, metadata_raw, authored,
+        release_checks.check_source_archive(sdist, root, project, metadata_raw, authored,
                              "src/agent_evidence_observer.egg-info", "probity_observer")
         print("source archive population, authored bytes and generated metadata match")
 
