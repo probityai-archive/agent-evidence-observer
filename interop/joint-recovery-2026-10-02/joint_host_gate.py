@@ -206,7 +206,7 @@ def reader_closure(reader: Path) -> dict[str, Any]:
     require(len(sites) == 1, "reader-installed-site")
     inventory = installation_inventory(prefix)
     packages = installed_versions(sites[0])
-    require(packages.get("probity-joint-recovery-reader") in {"0.0.1", "0.0.2"} and packages.get("agent-evidence-observer") == "0.0.1", "reader-installed-versions")
+    require(packages.get("probity-joint-recovery-reader") in {"0.0.1", "0.0.2"} and packages.get("agent-evidence-observer") in {"0.0.1", "0.0.2"}, "reader-installed-versions")
     interpreter = prefix / "bin/python"
     selected = launcher_interpreter(selected_contents(reader)[0])
     require(selected.parent.resolve(strict=True) == prefix / "bin" and selected.resolve(strict=True) == interpreter.resolve(strict=True), "reader-installed-shebang")

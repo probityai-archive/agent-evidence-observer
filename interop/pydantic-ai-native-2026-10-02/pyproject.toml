@@ -7,7 +7,7 @@ name = "probity-pydantic-reference"
 version = "0.0.1"
 description = "Finite Pydantic AI typed-tool to authorized HTTP effect reference"
 requires-python = ">=3.12"
-dependencies = ["agent-evidence-observer==0.0.1"]
+dependencies = ["agent-evidence-observer==0.0.2"]
 
 [project.optional-dependencies]
 producer = ["pydantic-ai-slim==1.68.0"]

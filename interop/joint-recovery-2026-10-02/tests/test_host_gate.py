@@ -42,10 +42,10 @@ def selected_files(tmp_path: Path, report: dict[str, Any]) -> tuple[Path, Path, 
 
 def fixture_modules(site: Path) -> None:
     """Create explicit tiny package identities without importing their code."""
-    for name in ["probity-joint-recovery-reader", "agent-evidence-observer"]:
-        metadata = site / (name + "-0.0.1.dist-info/METADATA")
+    for name, version in [("probity-joint-recovery-reader", "0.0.1"), ("agent-evidence-observer", "0.0.2")]:
+        metadata = site / (name + "-" + version + ".dist-info/METADATA")
         metadata.parent.mkdir()
-        metadata.write_text("Metadata-Version: 2.1\nName: " + name + "\nVersion: 0.0.1\n")
+        metadata.write_text("Metadata-Version: 2.1\nName: " + name + "\nVersion: " + version + "\n")
     (site / "probity_observer").mkdir()
     for name in ["joint_reader.py", "joint_common.py", "probity_observer/crypto.py"]:
         (site / name).write_text("raise RuntimeError('nonreader fixture')\n")

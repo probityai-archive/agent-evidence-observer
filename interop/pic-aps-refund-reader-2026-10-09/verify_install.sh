@@ -54,9 +54,9 @@ for source in "$source_root" "$aps_profile" "$evidence/PIC-source" "$profile"; d
     step "wheel-$name" env -u PYTHONDONTWRITEBYTECODE "$python" -I -B -m build --wheel --no-isolation --outdir "$evidence/wheels" "$source"
 done
 sha256sum "$evidence"/wheels/*.whl > "$evidence/wheel-SHA256.txt"
-step root-wheel-distribution "$python" -I -B "$source_root/scripts/check-distribution.py" "$evidence/wheels/agent_evidence_observer-0.0.1-py3-none-any.whl"
+step root-wheel-distribution "$python" -I -B "$source_root/scripts/check-distribution.py" "$evidence/wheels/agent_evidence_observer-0.0.2-py3-none-any.whl"
 export COVERAGE_FILE="$evidence/distribution.coverage"
-step distribution-refusal-controls "$python" -I -B -m coverage run --include='*/scripts/check-distribution-controls.py' "$source_root/scripts/check-distribution-controls.py" "$evidence/wheels/agent_evidence_observer-0.0.1-py3-none-any.whl"
+step distribution-refusal-controls "$python" -I -B -m coverage run --include='*/scripts/check-distribution-controls.py' "$source_root/scripts/check-distribution-controls.py" "$evidence/wheels/agent_evidence_observer-0.0.2-py3-none-any.whl"
 step distribution-control-coverage "$python" -I -B -m coverage json -o "$evidence/distribution-coverage.json"
 step distribution-coverage-floor "$python" -I -B - "$evidence/distribution-coverage.json" "$source_root/scripts/check-distribution-controls.py" <<'PY'
 import json, pathlib, sys

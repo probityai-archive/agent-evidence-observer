@@ -181,8 +181,8 @@ def run(wheel: Path, optimized: bool) -> None:
                 archive.writestr("probity_observer/__init__.py", members["probity_observer/__init__.py"][1] + extra)
             expect(name, controlled, False)
         raw_metadata = members[metadata][1]
-        for name, header in (("repeated-wheel-version", b"Version: 0.0.1\n"),
-                             ("conflicting-wheel-version", b"Version: 0.0.2\n"),
+        for name, header in (("repeated-wheel-version", b"Version: 0.0.2\n"),
+                             ("conflicting-wheel-version", b"Version: 0.0.1\n"),
                              ("repeated-wheel-project-url", b"Project-URL: Source, https://github.com/probityai/agent-evidence-observer\n"),
                              ("repeated-wheel-extra", b"Provides-Extra: test\n"),
                              ("repeated-wheel-dependency", b"Requires-Dist: cryptography>=46,<47\n"),

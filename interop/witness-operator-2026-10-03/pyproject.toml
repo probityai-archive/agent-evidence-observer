@@ -7,7 +7,7 @@ name = "probity-witness-operator-reference"
 version = "0.0.1"
 description = "Installed local witness operator and public-key-only client"
 requires-python = ">=3.12"
-dependencies = ["agent-evidence-observer==0.0.1"]
+dependencies = ["agent-evidence-observer==0.0.2"]
 
 [project.scripts]
 agent-evidence-witness = "probity_witness_operator.cli:main"

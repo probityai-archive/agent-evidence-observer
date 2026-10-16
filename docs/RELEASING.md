@@ -1,6 +1,6 @@
 # Release the root Python package
 
-The root distribution is `agent-evidence-observer` 0.0.1. It installs the
+The root distribution is `agent-evidence-observer` 0.0.2. It installs the
 `probity_observer` modules and five declared console commands. Separate
 `interop/` distributions keep their own names, dependencies, source pins and
 qualification. Publishing the root wheel does not publish those profiles.
@@ -47,7 +47,7 @@ attestation is separate from a PyPI Publish attestation and registry publication
 
 ## Publish with a bound source tag
 
-Only a non-prerelease GitHub release can reach the publish job. Its `v0.0.1`
+Only a non-prerelease GitHub release can reach the publish job. Its `v0.0.2`
 tag must match the root metadata and point to a commit on main. The publish job
 downloads the checked files from the build job. It receives `contents: read`
 and `id-token: write`. It has no account-token or password fallback.

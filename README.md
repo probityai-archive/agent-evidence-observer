@@ -7,7 +7,7 @@ Record brokered agent writes and check selected native framework reports offline
 
 Use it in agent harnesses and evaluation pipelines that need replayable action records or a consumer gate for retained reports.
 
-Install the root package: `pip install agent-evidence-observer==0.0.1`.
+Install the root package: `pip install agent-evidence-observer==0.0.2`.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ file-tree snapshots found no change it did not make. It does not mean every agen
 
 ## Status
 
-The root distribution is version 0.0.1. Every record says `witnessScope: PEER`: the witness key runs on the same
+The root distribution is version 0.0.2. Every record says `witnessScope: PEER`: the witness key runs on the same
 host under the same operator, so the records show what this broker saw, not what an independent
 observer saw. Linux runs can launch a fixed probe, or a Python script given to `run-workload`, under
 bubblewrap with only the broker's socket exposed. Running a real agent that way, and a separately operated

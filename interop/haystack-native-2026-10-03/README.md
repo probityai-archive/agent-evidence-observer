@@ -2,7 +2,7 @@
 
 This profile gates native Haystack 3.3.0 tool writes and publishes verified evidence.
 It is for hosts that use `Pipeline`, `Agent`, and `Tool`.
-The source package depends on `agent-evidence-observer==0.0.1`.
+The source package depends on `agent-evidence-observer==0.0.2`.
 
 From a selected source checkout, run the complete installed verification:
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-evidence-observer"
-version = "0.0.1"
+version = "0.0.2"
 description = "Record brokered agent writes and check selected native reports offline"
 readme = "README.md"
 license = "Apache-2.0"
