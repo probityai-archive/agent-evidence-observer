@@ -40,6 +40,21 @@ from .run_selection import (
 CHECKER = b"def check(value, threshold):\n    return value >= threshold\n"
 ALTERNATE_CHECKER = b"def check(value, threshold):\n    return value > threshold\n"
 CONTROLS = b'{"belowThreshold":0,"atThreshold":1}'
+
+
+def _check_at_least(value: int, threshold: int) -> bool:
+    """The function whose exact source text is CHECKER."""
+    return value >= threshold
+
+
+def _check_above(value: int, threshold: int) -> bool:
+    """The function whose exact source text is ALTERNATE_CHECKER."""
+    return value > threshold
+
+
+# The retained checker bytes name which bundled function runs. Nothing is
+# compiled or executed from the bytes themselves, so a packet cannot carry code.
+_BUNDLED_CHECKERS = {CHECKER: _check_at_least, ALTERNATE_CHECKER: _check_above}
 OPERATOR = "local-installed-profile"
 END = "2026-10-04T10:00:03Z"
 
@@ -90,14 +105,10 @@ def _configuration(configuration, controls):
 
 def _execute(plan, configuration, controls, sources):
     """Actually invoke the selected retained checker and its negative control."""
-    checker_bytes = sources["checker.json"]
-    if checker_bytes not in (CHECKER, ALTERNATE_CHECKER):
+    checker = _BUNDLED_CHECKERS.get(sources["checker.json"])
+    if checker is None:
         raise VerificationError("finite runner only executes its bundled checker")
     config, cases = _configuration(configuration, controls)
-    namespace: dict[str, Any] = {}
-    # The source is the exact bundled finite checker checked above.
-    exec(compile(checker_bytes, "retained-finite-checker", "exec"), namespace)  # noqa: S102
-    checker = namespace["check"]
     negative = checker(cases["belowThreshold"], config["threshold"])
     observed = checker(cases["atThreshold"], config["threshold"])
     outcome = "pass" if observed and not negative else "fail"
