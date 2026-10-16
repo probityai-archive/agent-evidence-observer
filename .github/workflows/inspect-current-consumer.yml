@@ -99,7 +99,7 @@ jobs:
           "$RUNNER_TEMP/reader-env/bin/python" -I -B -m pytest -q -c /dev/null -p no:cacheprovider --import-mode=importlib owned-consumer/interop/inspect-current-host-2026-10-03/test_native_packet.py --junitxml="$RUNNER_TEMP/inspect-native-controls.xml"
       - name: Retain originals, pre-run selection, installed wheels and refusals
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: inspect-current-installed-consumer
           path: |

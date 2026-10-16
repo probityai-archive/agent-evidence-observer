@@ -36,7 +36,7 @@ jobs:
         run: bash interop/smolagents-native-2026-10-03/verify_install.sh "$RUNNER_TEMP/smolagents-native" "$GITHUB_WORKSPACE/vendor-smolagents"
       - name: Retain actual native bytes and installed consumer results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: smolagents-native-installed-consumer
           path: |
