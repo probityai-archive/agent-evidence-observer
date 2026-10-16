@@ -32,8 +32,9 @@ file-tree snapshots found no change it did not make. It does not mean every agen
 
 The root distribution is version 0.0.1. Every record says `witnessScope: PEER`: the witness key runs on the same
 host under the same operator, so the records show what this broker saw, not what an independent
-observer saw. Linux runs can launch a fixed workload under bubblewrap with only the broker's socket
-exposed. Running an unmodified agent that way, and a separately operated witness, are the next steps.
+observer saw. Linux runs can launch a fixed probe, or a Python script given to `run-workload`, under
+bubblewrap with only the broker's socket exposed. Running a real agent that way, and a separately operated
+witness, are the next steps.
 
 ## Documentation
 
@@ -46,6 +47,7 @@ then open its technical reference for commands and exact evidence.
 | <a name="run-the-demo"></a>[Running the demo](https://github.com/probityai/agent-evidence-observer/blob/main/docs/RUNNING.md) | the full install with tests, and what each output field means |
 | <a name="claim-and-trust-boundary"></a><a name="tests-and-remaining-gaps"></a><a name="linux-boundary-gate"></a><a name="consumer-admission"></a><a name="roadmap"></a>[Design, trust boundary and roadmap](https://github.com/probityai/agent-evidence-observer/blob/main/docs/DESIGN.md) | what each mechanism checks and does not establish, the Linux boundary gate, recovery, consumer admission, and the roadmap |
 | [Isolated producer](https://github.com/probityai/agent-evidence-observer/blob/main/docs/ISOLATED-PRODUCER.md) | the acceptance criteria for running an unmodified agent behind the broker |
+| [Brokered workload](https://github.com/probityai/agent-evidence-observer/blob/main/docs/WORKLOAD.md) | run a Python script behind the write broker with `run-workload`, then check it offline with `verify-workload` |
 | [Witness ledger](https://github.com/probityai/agent-evidence-observer/blob/main/docs/WITNESS-LEDGER.md) | signed begin and terminal receipts, and how a reader checks them |
 | [Installation and profile selection](https://github.com/probityai/agent-evidence-observer/blob/main/docs/INSTALLATION.md) | choose the root wheel, a separate profile wheel or a selected source reader; runtime requirements and installed examples |
 | [Release the root package](https://github.com/probityai/agent-evidence-observer/blob/main/docs/RELEASING.md) | qualify a wheel and source distribution, then publish with a bound source tag |

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .crypto import SigningKey, VerificationError, canonical, digest
-from .history import append_history, read_history, unresolved_intents, verify_checkpoint
+from .history import ABORT_REASONS, append_history, read_history, unresolved_intents, verify_checkpoint
 from .witness_port import WitnessPort
 
 LOGGER = logging.getLogger(__name__)
@@ -200,8 +200,10 @@ class Broker:
         if self.history_path.exists() and self.history_path.stat().st_size:
             raise CoverageError("interval history must start empty")
         required = {"intervalId", "scope", "operation"}
-        measured = {"probeSha256", "interpreterSha256", "bwrapSha256", "launchPolicySha256", "observerBuildDigest", "beforeRoot", "expiresAt"}
-        if not required <= set(self.authority) or set(self.authority) - required not in (set(), measured) or self.authority["operation"] != "write-file":
+        measured = {"interpreterSha256", "bwrapSha256", "launchPolicySha256", "observerBuildDigest", "beforeRoot", "expiresAt"}
+        allowed = (set(), measured | {"probeSha256"}, measured | {"workloadSha256"})
+        extras = set(self.authority) - required
+        if not required <= set(self.authority) or extras not in allowed or self.authority["operation"] != "write-file":
             raise CoverageError("authority must name intervalId, scope, and write-file")
         scope = self.authority["scope"]
         if not scope.isascii() or not scope.startswith("/") or scope.endswith("/") or any(
@@ -209,8 +211,8 @@ class Broker:
         ):
             raise CoverageError("authority scope must be a normalized absolute path")
         canonical(self.authority)
-        if measured <= set(self.authority):
-            hashes = measured - {"expiresAt"}
+        if extras:
+            hashes = extras - {"expiresAt"}
             if any(len(self.authority[key]) != 64 or any(char not in "0123456789abcdef" for char in self.authority[key]) for key in hashes):
                 raise CoverageError("measured authority has an invalid digest")
             try:
@@ -222,7 +224,7 @@ class Broker:
         """Witness an incomplete interval when launch or boundary checks fail."""
         self._require_active()
         self._require_resolved_history()
-        if reason not in {"isolation setup failed", "boundary probes failed"}:
+        if reason not in ABORT_REASONS:
             raise CoverageError("unknown abort reason")
         event = {"kind": "incomplete", "reason": reason, "requestIds": []}
         append_history(self.history_path, event)
