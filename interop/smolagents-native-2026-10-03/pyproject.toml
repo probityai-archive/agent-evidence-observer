@@ -7,7 +7,7 @@ name = "probity-smolagents-reference"
 version = "0.0.1"
 description = "Source-qualified smolagents finite publication reference"
 requires-python = ">=3.12"
-dependencies = ["agent-evidence-observer==0.0.1"]
+dependencies = ["agent-evidence-observer==0.0.2"]
 
 [project.scripts]
 probity-smolagents-produce = "probity_smolagents.producer:main"

@@ -116,6 +116,7 @@ def verify(baseline: Path, packet: Path, output: Path, dependencies: Path) -> di
                for label, folder in (("baseline", baseline), ("candidate", current))}
     write(output / "selected-sources.json", sources)
     observer = wheel(root, output, "observer-wheel")
+    baseline_observer = wheel(baseline.parents[1], output, "baseline-observer-wheel")
     original = wheel(baseline, output, "baseline-wheel")
     candidate = wheel(current, output, "candidate-wheel")
     environment = output / "reader-environment"
@@ -129,7 +130,7 @@ def verify(baseline: Path, packet: Path, output: Path, dependencies: Path) -> di
              "--only-binary=:all:", "-r", str(current / "requirements-reader.lock")],
             output, "reader-dependencies")
     command([str(python), "-I", "-m", "pip", "--isolated", "install", "--no-deps",
-             "--no-index", str(observer), str(original)], output, "baseline-install")
+             "--no-index", str(baseline_observer), str(original)], output, "baseline-install")
     command([str(python), "-I", "-m", "pip", "--isolated", "check"], output, "baseline-pip-check")
     invocation = [str(python), "-I", str(reader), str(packet), "--pins-file", str(pins)]
     before = command(invocation, output, "baseline-reader")
@@ -138,7 +139,7 @@ def verify(baseline: Path, packet: Path, output: Path, dependencies: Path) -> di
     baseline_gate = gate(packet, pins, baseline_policy, sha(baseline_policy.read_bytes()),
                          reader, output / "baseline-gate")
     command([str(python), "-I", "-m", "pip", "--isolated", "install", "--no-deps",
-             "--no-index", "--upgrade", str(candidate)], output, "candidate-upgrade")
+             "--no-index", "--upgrade", str(observer), str(candidate)], output, "candidate-upgrade")
     command([str(python), "-I", "-m", "pip", "--isolated", "check"], output, "candidate-pip-check")
     after = command(invocation, output, "candidate-reader")
     if before != after:
@@ -158,7 +159,8 @@ def verify(baseline: Path, packet: Path, output: Path, dependencies: Path) -> di
                             for name in ("pip", "setuptools", "wheel")},
               "wheels": {name: {"file": path.name, "bytes": path.stat().st_size,
                                 "sha256": sha(path.read_bytes())}
-                         for name, path in (("observer", observer), ("baseline", original),
+                         for name, path in (("observer", observer), ("baselineObserver", baseline_observer),
+                                            ("baseline", original),
                                             ("candidate", candidate))},
               "originalStdoutSha256": sha(before), "stdoutExact": before == after,
               "baselineGate": baseline_gate, "staleSelectionGate": stale_gate,

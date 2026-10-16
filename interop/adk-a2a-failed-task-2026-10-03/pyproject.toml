@@ -7,7 +7,7 @@ name = "probity-adk-failure-reference"
 version = "0.0.1"
 description = "Native ADK A2A failed-task and durable-effect publication reference"
 requires-python = ">=3.12"
-dependencies = ["agent-evidence-observer==0.0.1"]
+dependencies = ["agent-evidence-observer==0.0.2"]
 
 [project.scripts]
 probity-adk-failure-produce = "probity_adk_failure.producer:main"

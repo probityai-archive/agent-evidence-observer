@@ -8,7 +8,7 @@ version = "0.0.1"
 description = "Separate authorization witness and protected-action operator recipe"
 readme = "PROFILE.md"
 requires-python = ">=3.12"
-dependencies = ["agent-evidence-observer==0.0.1", "probity-witness-operator-reference==0.0.1"]
+dependencies = ["agent-evidence-observer==0.0.2", "probity-witness-operator-reference==0.0.1"]
 
 [project.scripts]
 agent-evidence-authorization-witness = "probity_protected_operator.cli:main"
