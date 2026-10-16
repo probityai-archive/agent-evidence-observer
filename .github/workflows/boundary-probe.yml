@@ -53,11 +53,31 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" ./boundary-run
           sudo diff -qr /tmp/probity-boundary-run ./boundary-run
         if: always()
+      - run: sudo "$(command -v agent-evidence-observer)" run-workload /tmp/probity-workload-run examples/write_agent.py
+      - name: Copy and verify the retained workload run with its pinned keys
+        if: always()
+        run: |
+          sudo cp -a /tmp/probity-workload-run ./workload-run
+          sudo chown -R "$(id -u):$(id -g)" ./workload-run
+          sudo diff -qr /tmp/probity-workload-run ./workload-run
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from probity_observer.workload import verify_workload_bundle
+          output = Path("workload-run")
+          keys = json.loads((output / "trusted-keys.json").read_text())
+          assert verify_workload_bundle(output, keys["observer"], keys["witness"])["status"] == "completed"
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: boundary-run
           path: boundary-run/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: workload-run
+          path: workload-run/
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

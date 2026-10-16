@@ -19,6 +19,8 @@ LOGGER = logging.getLogger(__name__)
 _HISTORY_FIELDS = frozenset({"sequence", "previous", "event", "hash"})
 _CHECKPOINT_FIELDS = frozenset({"count", "head", "keyid", "signature"})
 _NATIVE_CHECKPOINT_FIELDS = _CHECKPOINT_FIELDS | {"ledgerReceipt"}
+# Reasons a broker interval may end incomplete with no pending write.
+ABORT_REASONS = frozenset({"isolation setup failed", "boundary probes failed", "workload failed", "broker channel incomplete"})
 
 
 def read_history(path: Path) -> list[dict[str, Any]]:
@@ -108,7 +110,8 @@ def verify_incomplete_terminal(terminal: dict[str, Any], pending: list[dict[str,
     Raises:
         VerificationError: Unknown reason or inconsistent pending request IDs.
 
-    Setup and boundary aborts require no pending intent or request IDs.
+    Setup, boundary, workload and channel aborts require no pending intent
+    or request IDs.
     Completed writes may precede an abort. An interruption must name every
     pending ID exactly once. This check establishes neither absence of effects
     nor independent custody.
@@ -116,7 +119,7 @@ def verify_incomplete_terminal(terminal: dict[str, Any], pending: list[dict[str,
     if terminal["reason"] == "write outcome unresolved after interruption":
         _verify_unresolved_request_ids(terminal, pending)
         return
-    if terminal["reason"] not in {"isolation setup failed", "boundary probes failed"}:
+    if terminal["reason"] not in ABORT_REASONS:
         _refuse_incomplete("incomplete event has an unknown reason")
     if pending or terminal["requestIds"] != []:
         _refuse_incomplete("aborted interval has unresolved writes")
