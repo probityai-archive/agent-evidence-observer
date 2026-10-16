@@ -1,8 +1,13 @@
 # Agent Evidence Observer (prototype)
 
+[![PyPI](https://img.shields.io/pypi/v/agent-evidence-observer.svg)](https://pypi.org/project/agent-evidence-observer/)
+[![Downloads (PePy)](https://static.pepy.tech/badge/agent-evidence-observer)](https://pepy.tech/projects/agent-evidence-observer)
+
 Record brokered agent writes and check selected native framework reports offline.
 
 Use it in agent harnesses and evaluation pipelines that need replayable action records or a consumer gate for retained reports.
+
+Install the root package: `pip install agent-evidence-observer==0.0.1`.
 
 ## Quick start
 
