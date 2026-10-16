@@ -28,7 +28,7 @@ jobs:
         run: python interop/authority-unreachable-2026-10-03/implementation_records.py interop/authority-unreachable-2026-10-03/implementation-records "$RUNNER_TEMP/implementation-records-upstream.json" --check-upstream
       - name: Build isolated installed producer and reader
         run: bash interop/authority-unreachable-2026-10-03/verify_install.sh "$RUNNER_TEMP/authority-reference" "$GITHUB_SHA" "$RUNNER_TEMP/alakris-publication_jobs.py"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: authority-unreachable-reference

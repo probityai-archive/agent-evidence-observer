@@ -53,7 +53,7 @@ jobs:
           python companion.py read native-run --pins-file "$RUNNER_TEMP/execsurface-pins.json" --policy-file "$RUNNER_TEMP/execsurface-policy.json" --policy-sha256 "$policy_digest" > publication-report.json
       - name: Retain original trace, state bytes, authority, commitment and source selection
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: execsurface-state-${{ github.sha }}
           path: |

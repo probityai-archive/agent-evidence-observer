@@ -58,7 +58,7 @@ jobs:
           python durable_reader.py durable-run --pins-file "$RUNNER_TEMP/langgraph-durable-selected-pins.json" > durable-reader.json
       - name: Retain native checkpoints, HTTP bytes, sources, resource and install evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: langgraph-native-ticket-${{ github.sha }}
           path: |
