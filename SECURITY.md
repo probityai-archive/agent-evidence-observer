@@ -21,7 +21,8 @@ reporter unless they ask not to be named.
 | Version | Supported |
 |---------|-----------|
 | main | Yes |
-| 0.0.1 | Fixes land in the next release only |
+| 0.0.2 | Fixes land in the next release only |
+| 0.0.1 | No; upgrade to 0.0.2 |
 
 ## What the package reads and runs on the host
 
@@ -55,6 +56,6 @@ the build if one appears.
 Version 0.0.1 had one such call in `selection_profile.py`. It compiled one of two
 fixed checker strings bundled in the same file, after refusing any other bytes,
 so it could not run code from a packet. A package scanner reported it on
-2026-10-15 as GCVE-110-PYPI-2026-021429. The call has since been replaced by a
+2026-10-15 as GCVE-110-PYPI-2026-021429. Version 0.0.2 replaces the call with a
 lookup from those exact bytes to two ordinary functions, and a test checks that
 each function's source matches its retained text.

@@ -2,7 +2,7 @@
 
 > Record brokered agent writes and check selected native reports offline.
 
-Source-only root package `agent-evidence-observer` 0.0.1, Python 3.12 or later,
+Source-only root package `agent-evidence-observer` 0.0.2, Python 3.12 or later,
 Apache-2.0. Pin a reviewed commit or retained wheel. The root install supplies
 the broker, admission command and bounded Inspect/A2A and Atomic reader entry points.
 Other native profiles have separate install units or source workflows.

@@ -1,13 +1,13 @@
 # Install Observer and choose a native reader
 
-The root distribution, `agent-evidence-observer` 0.0.1, is available on
-[PyPI](https://pypi.org/project/agent-evidence-observer/0.0.1/). It requires
+The root distribution, `agent-evidence-observer` 0.0.2, is available on
+[PyPI](https://pypi.org/project/agent-evidence-observer/0.0.2/). It requires
 Python 3.12 or later and uses Apache-2.0 terms. With Python 3.12 and
 [uv](https://docs.astral.sh/uv/), install it in its own environment:
 
 ```sh
 uv venv observer-release-env --python python3.12
-uv pip install --python observer-release-env/bin/python 'agent-evidence-observer==0.0.1'
+uv pip install --python observer-release-env/bin/python 'agent-evidence-observer==0.0.2'
 ```
 
 This installs the root package. The profile distributions below remain separate

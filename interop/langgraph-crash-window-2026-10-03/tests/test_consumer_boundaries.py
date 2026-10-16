@@ -22,7 +22,7 @@ def selected(tmp_path, body="raise SystemExit(17)\n"):
     (prefix / "pyvenv.cfg").write_text("include-system-site-packages = false\n")
     site = prefix / ("lib/python" + str(sys.version_info.major) + "." + str(sys.version_info.minor) + "/site-packages")
     site.mkdir(parents=True)
-    for name, version in (("probity-joint-recovery-reader", "0.0.2"), ("agent-evidence-observer", "0.0.1")):
+    for name, version in (("probity-joint-recovery-reader", "0.0.2"), ("agent-evidence-observer", "0.0.2")):
         metadata = site / (name + ".dist-info/METADATA")
         metadata.parent.mkdir()
         metadata.write_text("Name: " + name + "\nVersion: " + version + "\n")

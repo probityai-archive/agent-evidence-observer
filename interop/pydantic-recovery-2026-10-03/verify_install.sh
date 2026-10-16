@@ -12,7 +12,7 @@ trap 'rm -rf "$reader_root"' EXIT
 "$native_python" -m pip wheel --no-deps --no-build-isolation --wheel-dir wheels ../.. .
 "$native_python" - <<'PY'
 from pathlib import Path
-assert {path.name for path in Path("wheels").iterdir()} == {"agent_evidence_observer-0.0.1-py3-none-any.whl", "probity_pydantic_recovery_reader-0.0.1-py3-none-any.whl"}, "unexpected-built-wheel-population"
+assert {path.name for path in Path("wheels").iterdir()} == {"agent_evidence_observer-0.0.2-py3-none-any.whl", "probity_pydantic_recovery_reader-0.0.1-py3-none-any.whl"}, "unexpected-built-wheel-population"
 PY
 sha256sum wheels/*.whl > wheels-sha256.txt
 "$native_python" -m venv "$reader_root/venv"
