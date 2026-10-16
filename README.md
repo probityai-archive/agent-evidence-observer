@@ -48,6 +48,7 @@ then open its technical reference for commands and exact evidence.
 
 | page | read it for |
 | --- | --- |
+| [Start a project](https://github.com/new?template_name=evidence-starter&template_owner=probityai) | a template that records a write with this package and checks it with probity-verify, pinned and in CI |
 | [Component tour](https://github.com/probityai/agent-evidence-observer/blob/main/docs/OVERVIEW.md) | every part of the prototype in one paragraph each, with links: ticket service, replay, evaluation history, A2A, AAE, protected dispatch |
 | <a name="run-the-demo"></a>[Running the demo](https://github.com/probityai/agent-evidence-observer/blob/main/docs/RUNNING.md) | the full install with tests, and what each output field means |
 | <a name="claim-and-trust-boundary"></a><a name="tests-and-remaining-gaps"></a><a name="linux-boundary-gate"></a><a name="consumer-admission"></a><a name="roadmap"></a>[Design, trust boundary and roadmap](https://github.com/probityai/agent-evidence-observer/blob/main/docs/DESIGN.md) | what each mechanism checks and does not establish, the Linux boundary gate, recovery, consumer admission, and the roadmap |
