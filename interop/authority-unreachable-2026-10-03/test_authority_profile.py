@@ -16,8 +16,9 @@ from probity_observer.authorization import ActionRequest, GrantPolicy, verify_gr
 from probity_observer.crypto import SigningKey, VerificationError, canonical, digest, strict_loads
 from probity_observer.ticket_service import DOMAIN
 
-from authority_profile import (AUTHORITY_DOMAIN, CONTRACT_ID, RESIDUAL_RISKS, MAX_AGE_SECONDS, PROFILE, RECORD_DOMAIN, check_authority,
-                               check_delegation, checked_record, content_bytes, reference_time, sign_record)
+from authority_profile import (AUTHORITY_DOMAIN, CONTRACT_ID, RESIDUAL_RISKS, MAX_AGE_SECONDS, PROFILE, RECORD_DOMAIN, VETO_DOMAIN,
+                               check_authority, check_delegation, check_veto, checked_record, content_bytes, reference_time,
+                               sign_record)
 from producer import START, _case, produce
 from reader import read_case, read_run
 from source_discriminator import inspect_fingerprint
@@ -135,6 +136,57 @@ class TestAuthorityProfile:
             assert str(error.value) == reason
             assert "authority profile refused: " + reason in caplog.messages
 
+        @pytest.mark.parametrize("latest_change,reason", [
+            ({"observedAt": START - 5, "status": "revoked"}, "authority evidence superseded by newer status"),
+            ({"observedAt": START + 1}, "authority time is invalid"),
+            ({"principalId": "other"}, "authority identity or fields differ"),
+        ])
+        def test_presented_status_older_than_gate_read_is_refused(self, latest_change, reason, caplog):
+            key = SigningKey.generate()
+            fields = {"principalId": "approver", "observedAt": START - 60, "status": "active", "sourceRevision": "revision-1"}
+            presented = sign_record(fields, key, AUTHORITY_DOMAIN)
+            # Inside the freshness window the presented snapshot is admitted on its own.
+            assert check_authority(presented, key.public_hex, "approver", START)["ageSeconds"] == 60
+            latest = sign_record({**fields, "sourceRevision": "revision-2", **latest_change}, key, AUTHORITY_DOMAIN)
+            with caplog.at_level(logging.WARNING), pytest.raises(VerificationError) as error:
+                check_authority(presented, key.public_hex, "approver", START, latest)
+            assert str(error.value) == reason
+            assert "authority profile refused: " + reason in caplog.messages
+
+        def test_gate_read_of_the_same_snapshot_is_not_superseded(self):
+            key = SigningKey.generate()
+            record = sign_record({"principalId": "approver", "observedAt": START - 60, "status": "active",
+                                  "sourceRevision": "revision-1"}, key, AUTHORITY_DOMAIN)
+            assert check_authority(record, key.public_hex, "approver", START, record)["ageSeconds"] == 60
+
+        @pytest.mark.parametrize("change,reason", [
+            ({}, "binding veto recorded for request"),
+            ({"requestId": "request-2"}, "veto identity or fields differ"),
+            ({"runId": "other-run"}, "veto identity or fields differ"),
+            ({"decidedAt": START + 1}, "veto time or decision is invalid"),
+            ({"decision": "allow"}, "veto time or decision is invalid"),
+        ])
+        def test_binding_veto_refusals_are_exact_and_logged(self, change, reason, caplog):
+            key = SigningKey.generate()
+            request = ActionRequest("run-1", "attempt-1", "request-1", "tenant-1", "approver-1",
+                                    "ticket-update", "/work/tickets/publication-1", "0" * 64)
+            veto = sign_record({"runId": "run-1", "requestId": "request-1", "decidedAt": START - 5,
+                                "decision": "veto", "sourceRevision": "decision-1", **change}, key, VETO_DOMAIN)
+            with caplog.at_level(logging.WARNING), pytest.raises(VerificationError) as error:
+                check_veto(veto, key.public_hex, request, START)
+            assert str(error.value) == reason
+            assert "authority profile refused: " + reason in caplog.messages
+
+        def test_veto_signed_under_status_domain_is_refused(self):
+            key = SigningKey.generate()
+            request = ActionRequest("run-1", "attempt-1", "request-1", "tenant-1", "approver-1",
+                                    "ticket-update", "/work/tickets/publication-1", "0" * 64)
+            veto = sign_record({"runId": "run-1", "requestId": "request-1", "decidedAt": START - 5,
+                                "decision": "veto", "sourceRevision": "decision-1"}, key, AUTHORITY_DOMAIN)
+            with pytest.raises(VerificationError) as error:
+                check_veto(veto, key.public_hex, request, START)
+            assert str(error.value) == "evidence signature does not verify"
+
 
         @pytest.mark.parametrize("hops,reason", [
             ([], "delegation chain is broken"),
@@ -190,6 +242,9 @@ class TestReader:
             ("effect-then-authority-revoked", 1, "failed", False),
             ("incomplete-proof-after-effect", 1, "completed", False),
             ("delegation-hop-amplified", 0, "failed", False),
+            ("binding-veto-override-attempt", 0, "failed", False),
+            ("revoked-authority-superseded-evidence", 0, "failed", False),
+            ("authority-source-unreachable", 0, "failed", False),
         ])
         def test_effect_task_and_publication_are_separate(self, produced, case_id, revision, terminal, publish):
             root, pins = produced
@@ -210,6 +265,44 @@ class TestReader:
             assert payload["attempts"][0]["reason"] == "original decision window has closed"
             assert read_case(root / payload["caseId"], pins)["nativeRevision"] == 0
 
+        @pytest.mark.parametrize("case_id,reason", [
+            ("binding-veto-override-attempt", "binding veto recorded for request"),
+            ("revoked-authority-superseded-evidence", "authority evidence superseded by newer status"),
+            ("authority-source-unreachable", "authority source unreachable"),
+            ("unreachable-no-fallback", "no pre-authorized fallback"),
+        ])
+        def test_matched_case_refusal_reason_is_shared_by_gate_and_reader(self, produced, case_id, reason):
+            root, pins = produced
+            payload = json.loads((root / case_id / "record.json").read_text())["payload"]
+            result = read_case(root / case_id, pins)
+            assert payload["attempts"][0]["reason"] == reason
+            assert result["dispatchReasons"] == [reason]
+            assert result["authorityReason"] == reason and result["authorityStatus"] == "not-admitted"
+            assert result["nativeRevision"] == 0 and result["effectObserved"] is False
+
+        @pytest.mark.parametrize("case_id", ["binding-veto-override-attempt", "authority-source-unreachable",
+                                             "revoked-authority-superseded-evidence"])
+        def test_executor_held_a_valid_prior_grant(self, produced, case_id):
+            root, _ = produced
+            payload = json.loads((root / case_id / "record.json").read_text())["payload"]
+            # The refusal is not a grant failure: the executor's grant verifies at decision time.
+            verify_grant(payload["grant"], ActionRequest(**payload["request"]), GrantPolicy(**payload["grantPolicy"]),
+                         now=reference_time(payload["decisionAt"]))
+            assert payload["priorFallback"] is True
+
+        def test_superseded_snapshot_was_inside_the_freshness_window(self, produced):
+            root, pins = produced
+            payload = json.loads((root / "revoked-authority-superseded-evidence" / "record.json").read_text())["payload"]
+            presented = check_authority(payload["authorityEvidence"], pins["authorityKey"], "approver-1", payload["decisionAt"])
+            assert presented["status"] == "active" and presented["ageSeconds"] == 60 < MAX_AGE_SECONDS
+            assert payload["authorityLatest"]["payload"]["status"] == "revoked"
+
+        def test_unreachable_source_reports_no_evidence_age(self, produced):
+            root, pins = produced
+            assert read_case(root / "approved-human-reachable", pins)["evidenceAgeSeconds"] == 0
+            assert read_case(root / "revoked-authority-superseded-evidence", pins)["evidenceAgeSeconds"] == 60
+            assert read_case(root / "authority-source-unreachable", pins)["evidenceAgeSeconds"] is None
+
         def test_retry_reuses_one_effect_identity(self, produced):
             root, pins = produced
             payload = json.loads((root / "same-request-retry" / "record.json").read_text())["payload"]
@@ -227,7 +320,7 @@ class TestReader:
         def test_run_reports_the_full_selected_case_set(self, produced):
             root, pins = produced
             result = read_run(root, pins)
-            assert result["caseCount"] == 19
+            assert result["caseCount"] == 22
             assert sum(row["effectObserved"] for row in result["results"]) == 6
             assert sum(row["publicationReady"] for row in result["results"]) == 3
             assert result["independentCustody"] is False
@@ -239,6 +332,9 @@ class TestReader:
                 payload = json.loads((case / "record.json").read_text())["payload"]
                 assert payload["contractId"] == CONTRACT_ID
                 assert payload["freshnessLimitSeconds"] == MAX_AGE_SECONDS
+                if payload["authorityEvidence"] is None:
+                    assert case.name == "authority-source-unreachable" and payload["evidenceAgeSeconds"] is None
+                    continue
                 observed = checked_record(payload["authorityEvidence"], json.loads(
                     (root / "consumer-pins.json").read_text())["authorityKey"], AUTHORITY_DOMAIN)["observedAt"]
                 assert payload["evidenceAgeSeconds"] == payload["decisionAt"] - observed
@@ -280,6 +376,19 @@ class TestReader:
                 read_case(case, pins)
             assert str(error.value) == reason
             assert "authority profile refused: " + reason in caplog.messages
+
+        def test_unreachable_trace_that_claims_an_evidence_age_is_rejected(self, signable_case, caplog):
+            root, keys, pins = signable_case
+            _case(root, "authority-source-unreachable", keys)
+            case = root / "authority-source-unreachable"
+            assert read_case(case, pins)["authorityReason"] == "authority source unreachable"
+            payload = json.loads((case / "record.json").read_text())["payload"]
+            payload["evidenceAgeSeconds"] = 0
+            (case / "record.json").write_bytes(canonical(sign_record(payload, keys["record"], RECORD_DOMAIN)))
+            with caplog.at_level(logging.WARNING), pytest.raises(VerificationError) as error:
+                read_case(case, pins)
+            assert str(error.value) == "evidence age differs from decision time"
+            assert "authority profile refused: evidence age differs from decision time" in caplog.messages
 
         @pytest.mark.parametrize("mutation,reason", [
             ("dropped", "record closes a residual risk this profile leaves open"),

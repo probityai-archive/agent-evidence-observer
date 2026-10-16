@@ -14,7 +14,7 @@ from probity_observer.crypto import VerificationError, digest, strict_loads
 from probity_observer.ticket_service import DOMAIN, STATE_FIELDS, _checked as checked_native_receipt, _state_schema, verify_ticket_result
 
 from authority_profile import (AUTHORITY_DOMAIN, CASE_IDS, CONTRACT_ID, MAX_AGE_SECONDS, PROFILE, RECORD_DOMAIN, RESIDUAL_RISKS, check_authority, check_delegation,
-                               checked_record, reference_time, refuse)
+                               check_veto, checked_record, reference_time, refuse)
 
 
 def _native_envelope(raw: bytes, key: str) -> dict[str, Any]:
@@ -126,13 +126,24 @@ def read_native(path: Path, payload: dict[str, Any], pins: dict[str, str]) -> tu
 
 
 def _authorization(payload: dict[str, Any], pins: dict[str, str]) -> tuple[str, str | None]:
-    """Recompute action-time authority without implying the action completed."""
+    """Recompute action-time authority without implying the action completed.
+
+    The checks run in the gate's own order, so each refusal carries the same
+    reason the dispatch attempt recorded: veto, missing fallback, closed
+    decision window, unreachable or invalid status, then grant validity.
+    """
     request = ActionRequest(**payload["request"])
+    at = payload["decisionAt"]
     try:
-        if payload["decisionAt"] >= payload["requestDeadline"]:
+        check_veto(payload["vetoEvidence"], pins["authorityKey"], request, at)
+        if payload["grant"] is None:
+            refuse("no pre-authorized fallback")
+        if at >= payload["requestDeadline"]:
             refuse("original decision window has closed")
-        check_authority(payload["authorityEvidence"], pins["authorityKey"], request.principal_id, payload["decisionAt"])
-        verify_grant(payload["grant"], request, GrantPolicy(**payload["grantPolicy"]), now=reference_time(payload["decisionAt"]))
+        if payload["authorityEvidence"] is None:
+            refuse("authority source unreachable")
+        check_authority(payload["authorityEvidence"], pins["authorityKey"], request.principal_id, at, payload["authorityLatest"])
+        verify_grant(payload["grant"], request, GrantPolicy(**payload["grantPolicy"]), now=reference_time(at))
     except VerificationError as error:
         return "not-admitted", str(error)
     return "valid-for-approved-request-at-reference-time", None
@@ -224,25 +235,32 @@ def _contract(payload: dict[str, Any], pins: dict[str, str]) -> None:
     The id is checked before any other field, so a trace written against a
     different or unnamed contract is never interpreted under this one.
     ``evidenceAgeSeconds`` must equal decision time minus the observation
-    time inside the signed authority evidence, and the deployed freshness
+    time inside the signed authority evidence, or be null when the authority
+    source was unreachable and supplied none, and the deployed freshness
     limit the producer applied must equal the limit this consumer selected.
     """
     if "contractId" not in payload:
         refuse("trace contract id is missing")
     if payload["contractId"] != CONTRACT_ID:
         refuse("trace contract id differs")
-    observed = checked_record(payload.get("authorityEvidence"), pins["authorityKey"], AUTHORITY_DOMAIN)
     age = payload.get("evidenceAgeSeconds")
-    if type(age) is not int or type(observed.get("observedAt")) is not int or type(payload.get("decisionAt")) is not int \
-            or age != payload["decisionAt"] - observed["observedAt"]:
-        refuse("evidence age differs from decision time")
+    if payload.get("authorityEvidence") is None:
+        # An unreachable source supplied no evidence; an age would describe nothing.
+        if age is not None:
+            refuse("evidence age differs from decision time")
+    else:
+        observed = checked_record(payload["authorityEvidence"], pins["authorityKey"], AUTHORITY_DOMAIN)
+        if type(age) is not int or type(observed.get("observedAt")) is not int or type(payload.get("decisionAt")) is not int \
+                or age != payload["decisionAt"] - observed["observedAt"]:
+            refuse("evidence age differs from decision time")
     if payload.get("freshnessLimitSeconds") != MAX_AGE_SECONDS or type(payload.get("freshnessLimitSeconds")) is not int:
         refuse("freshness limit differs from consumer selection")
 
 
 def _record_schema(payload: dict[str, Any]) -> None:
     """Check the finite profile's exact fields before interpreting its claims."""
-    fields = {"contractId", "evidenceAgeSeconds", "freshnessLimitSeconds", "delegationRoot", "delegationHops", "profile", "caseId", "request", "grantPolicy", "grant", "authorityEvidence", "decisionAt",
+    fields = {"contractId", "evidenceAgeSeconds", "freshnessLimitSeconds", "delegationRoot", "delegationHops", "profile", "caseId", "request", "grantPolicy", "grant", "authorityEvidence",
+              "authorityLatest", "vetoEvidence", "decisionAt",
               "requestDeadline", "humanReachable", "priorFallback", "attempts", "faultInjection",
               "dispatchContentSha256", "taskTerminal", "readback", "coverage", "custody", "witnessScope", "residualRisks"}
     if set(payload) != fields:
@@ -331,7 +349,8 @@ def read_case(path: Path, pins: dict[str, str]) -> dict[str, Any]:
             "freshnessLimitSeconds": payload["freshnessLimitSeconds"], "contractId": payload["contractId"],
             "taskTerminal": payload["taskTerminal"], "nativeCompletionProof": proof, "proofReason": proof_reason,
             "publicationReady": publication, "attemptCount": len(payload["attempts"]),
-            "dispatchDecisions": [a["decision"] for a in payload["attempts"]], "witnessScope": "PEER",
+            "dispatchDecisions": [a["decision"] for a in payload["attempts"]],
+            "dispatchReasons": [a["reason"] for a in payload["attempts"]], "witnessScope": "PEER",
             "custody": "author-operated-local", "coverage": payload["coverage"],
             "residualRisks": payload["residualRisks"]}
 
