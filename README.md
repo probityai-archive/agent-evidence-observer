@@ -11,15 +11,11 @@ Install the root package: `pip install agent-evidence-observer==0.0.2`.
 
 ## Quick start
 
-These commands install a pinned source snapshot. Python 3.12 or later and
-[`uv`](https://docs.astral.sh/uv/) are needed:
+Run the demo from the released package. You need Python 3.12 or later and [`uv`](https://docs.astral.sh/uv/); there is nothing to clone.
 
 ```sh
-git clone https://github.com/probityai/agent-evidence-observer && cd agent-evidence-observer
-git checkout f68c8538639aea1515ea357a85a20739004e66fd
-uv venv .venv --python python3.12 && uv pip install --python .venv/bin/python .
-.venv/bin/agent-evidence-observer demo ./sample-run
-.venv/bin/agent-evidence-observer verify ./sample-run
+uvx agent-evidence-observer==0.0.2 demo ./sample-run
+uvx agent-evidence-observer==0.0.2 verify ./sample-run
 ```
 
 The two commands print:
@@ -32,6 +28,7 @@ The two commands print:
 `sample-run/` now holds the signed packet, the history, the public keys and the file tree. The demo
 writes a file, retries it, and the retry returns the first effect. `noDetectedGap` means the broker's
 file-tree snapshots found no change it did not make. It does not mean every agent effect was seen.
+To run from a pinned source checkout instead, see [Run the source quick start](https://github.com/probityai/agent-evidence-observer/blob/main/docs/INSTALLATION.md#run-the-source-quick-start).
 
 ## Status
 

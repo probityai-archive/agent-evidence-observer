@@ -152,3 +152,27 @@ Witnessed run selection establishes consistency of one supplied anchored history
 It does not establish unique selection across other histories, real-time precedence,
 execution truth or independent custody. First-party fixture execution, an offline replay
 and a maintained outside gate are separate results.
+
+## Run the source quick start
+
+These commands install a pinned source snapshot. Python 3.12 or later and
+[`uv`](https://docs.astral.sh/uv/) are needed:
+
+```sh
+git clone https://github.com/probityai/agent-evidence-observer && cd agent-evidence-observer
+git checkout f68c8538639aea1515ea357a85a20739004e66fd
+uv venv .venv --python python3.12 && uv pip install --python .venv/bin/python .
+.venv/bin/agent-evidence-observer demo ./sample-run
+.venv/bin/agent-evidence-observer verify ./sample-run
+```
+
+The two commands print:
+
+```text
+{"noDetectedGap": "true", "retryReplayed": "true", "status": "verified", "witnessScope": "PEER"}
+{"noDetectedGap": "true", "status": "verified", "witnessScope": "PEER"}
+```
+
+`sample-run/` now holds the signed packet, the history, the public keys and the file tree. The demo
+writes a file, retries it, and the retry returns the first effect. `noDetectedGap` means the broker's
+file-tree snapshots found no change it did not make. It does not mean every agent effect was seen.
