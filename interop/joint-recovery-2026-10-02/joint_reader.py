@@ -49,7 +49,7 @@ def selections(root: Path, pins: dict[str, Any]) -> dict[str, Any]:
     same(plan["hostPolicy"], HOST_POLICY, "host-policy")
     same([case["id"] for case in plan["cases"]], list(CASES), "planned-population")
     require(isinstance(plan["sourceRevision"], str) and len(plan["sourceRevision"]) == 40, "source-revision")
-    same([plan["environment"]["packages"][name] for name in ("langgraph", "langgraph-checkpoint-sqlite")], ["1.2.4", "3.1.1"], "framework-selection")
+    same([plan["environment"]["packages"][name] for name in ("langgraph", "langgraph-checkpoint-sqlite")], ["1.0.10", "3.1.1"], "framework-selection")
     require(datetime.fromisoformat(pins["evaluationTime"]) >= datetime.fromisoformat(plan["selectedTime"]), "evaluation-time")
     manifest(root, plan)
     return plan

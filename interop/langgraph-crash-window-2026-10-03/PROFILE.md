@@ -6,7 +6,7 @@ but keeps the target in the parent process. Joint v1 restarts both processes
 after the first worker has persisted an interrupt checkpoint. Their original
 case populations, retained results, readers and selections remain unchanged.
 
-Here the first real LangGraph 1.2.4 / SqliteSaver 3.1.1 worker durably captures
+Here the first real LangGraph 1.0.10 / SqliteSaver 3.1.1 worker durably captures
 the committed HTTP response and pending native task, then calls `os._exit(74)`
 inside the dispatch node before returning or creating a completion checkpoint.
 The parent stops and reaps the protected target, retains a consistent native

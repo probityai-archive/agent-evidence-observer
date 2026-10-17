@@ -79,7 +79,7 @@ def execute(root, private, case, store):
 def run(root, revision):
     """Select the complete population and exact source/dependency bytes first."""
     from crash_reader import verify_saved
-    require(importlib.metadata.version("langgraph") == "1.2.4" and importlib.metadata.version("langgraph-checkpoint-sqlite") == "3.1.1", "crash-window-framework-version")
+    require(importlib.metadata.version("langgraph") == "1.0.10" and importlib.metadata.version("langgraph-checkpoint-sqlite") == "3.1.1", "crash-window-framework-version")
     root = root.resolve()
     root.mkdir(parents=True, exist_ok=False)
     private = root.parent / (root.name + "-host-private")
