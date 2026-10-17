@@ -67,6 +67,23 @@ def test_scanned_entries_match_a_created_or_renamed_parent_only():
         "other/mod.py", "pkg/live.py"]
 
 
+def test_a_created_directory_does_not_cover_what_is_found_inside_it():
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0),
+                    event("create", 1.0, path="/workspace/a"),
+                    event("create", 1.0, path="/workspace/b"))
+    report = inotify.Report(changes=[change("create", "a", 1.0),
+                                     change("create", "a/b", 1.0, scanned=True)])
+    assert [item.path for item in record_oe.join(found, report, WS)] == ["a/b"]
+
+
+def test_unresolved_descriptor_names_a_gap():
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0))
+    found.unresolved.append({"syscall": "mkdirat", "pid": 10, "time": T0 + 2})
+    records = built(found)
+    assert records["observation"]["coverage"] == "incomplete"
+    assert records["sensors"]["s2_strace"]["unresolved"][0]["syscall"] == "mkdirat"
+
+
 def test_inotify_loss_makes_coverage_unknown():
     found = effects(event("exec", 0.1, argv=["agent"], exit=0))
     assert built(found, inotify.Report(overflow=True))["observation"]["coverage"] == "unknown"

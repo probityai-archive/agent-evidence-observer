@@ -61,7 +61,14 @@ class Context:
 
 
 def _covers(change: inotify.Change, s2_paths: set[str], s2_parents: set[str]) -> bool:
-    """Whether an S2 mutation accounts for one S1 change."""
+    """Whether an S2 mutation accounts for one S1 change.
+
+    A change needs an S2 mutation on its own path. The one exception is an
+    entry S1 found by scanning a directory that S2 saw renamed or linked into
+    place: moving a tree moves its entries without a call per entry. A
+    directory S2 saw created does not cover what S1 later finds inside it,
+    because each of those entries was made by a call of its own.
+    """
     if change.path in s2_paths:
         return True
     if not change.scanned:
@@ -82,7 +89,7 @@ def join(effects: strace.Effects, report: inotify.Report, workspace: str) -> lis
             if relative is None:
                 continue
             s2_paths.add(relative)
-            if event.kind in ("create", "rename", "link") and path == (event.target or event.path):
+            if event.kind in ("rename", "link") and path == event.target:
                 s2_parents.add(relative)
     return [change for change in report.changes if not _covers(change, s2_paths, s2_parents)]
 
@@ -166,6 +173,9 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
         gaps.append((min(math.floor(effects.last_time or start), end - 1), end))
     for escape in effects.escapes:
         gaps.append((min(math.floor(escape["time"]), end - 1), end))
+    for unknown in effects.unresolved:
+        second = max(math.floor(unknown["time"]), start)
+        gaps.append((min(second, end - 1), min(second + 1, end)))
     if trace.unparsed:
         gaps.append((start, end))
 
@@ -203,7 +213,10 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
                        "watch_list": report.watches,
                        "mask": inotify.mask_names(inotify.MASK)},
         "s2_strace": {"tracer": tracer, "calls": len(trace.calls),
-                      "unparsed_lines": len(trace.unparsed), "escapes": [
+                      "unparsed_lines": len(trace.unparsed),
+                      "unresolved": [{**item, "time": instant(item["time"])}
+                                     for item in effects.unresolved],
+                      "escapes": [
                           {**escape, "time": instant(escape["time"])}
                           for escape in effects.escapes],
                       "origin_rule": strace.ORIGIN_RULE},
