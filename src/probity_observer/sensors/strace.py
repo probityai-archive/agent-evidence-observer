@@ -43,7 +43,7 @@ PROCESS = ("fork", "vfork", "clone", "clone3", "chdir", "fchdir")
 ESCAPE = ("io_uring_setup", "ptrace", "process_vm_writev")
 TRACED = EXEC + OPEN + CREATE + RENAME + LINK + UNLINK + TRUNCATE + CHMOD + MMAP + CONNECT + PROCESS + ESCAPE
 TRACE_EXPRESSION = "trace=" + ",".join(TRACED)
-FLAGS = ("-f", "-q", "-y", "-ttt", "-xx", "-z", "-s", "65535", "-e", "signal=none",
+FLAGS = ("-o", "/dev/stderr", "-f", "-q", "-y", "-ttt", "-xx", "-z", "-s", "65535", "-e", "signal=none",
          "-e", TRACE_EXPRESSION)
 MUTATION_TYPES = ("write", "create", "rename", "link", "unlink", "truncate", "chmod")
 VISIBLE_EVENT_TYPES = ("exec",) + MUTATION_TYPES + ("read", "connect")
@@ -71,6 +71,10 @@ def strace_argv(binary: str = "strace") -> list[str]:
 
 class TraceError(ValueError):
     """The trace text does not have the shape this tracer configuration prints."""
+
+
+class Unresolved(Exception):
+    """A descriptor the tracer printed without its path; the effect's path is unknown."""
 
 
 def decode_hex(text: str) -> str:
@@ -231,6 +235,7 @@ class Effects:
     events: list[Event] = field(default_factory=list)
     external: list[dict] = field(default_factory=list)
     escapes: list[dict] = field(default_factory=list)
+    unresolved: list[dict] = field(default_factory=list)
     parents: dict[int, int] = field(default_factory=dict)
     root_pid: int | None = None
     root_exited: bool = False
@@ -247,9 +252,18 @@ class _Resolver:
     def of(self, pid: int) -> str:
         return self.cwd.get(pid, self.start)
 
-    def path(self, pid: int, value: str, base: str | None = None) -> str:
+    def path(self, pid: int, value: str | None, dirfd: str | None = None) -> str:
+        """Resolve against ``dirfd``'s printed path, or the process's cwd for ``AT_FDCWD``."""
+        if value is None:
+            raise TraceError("path argument is not a string")
         if not value.startswith("/"):
-            value = posixpath.join(base if base is not None else self.of(pid), value)
+            if dirfd is None or dirfd == "AT_FDCWD":
+                base = self.of(pid)
+            else:
+                base = fd_path(dirfd)
+                if base is None:
+                    raise Unresolved(dirfd)
+            value = posixpath.join(base, value)
         return posixpath.normpath(value)
 
 
@@ -262,12 +276,63 @@ def _ret_int(result: str) -> int | None:
         return None
 
 
-def _base(args: list[str], index: int) -> str | None:
-    return fd_path(args[index]) if len(args) > index else None
+def _fd(arg: str) -> str:
+    """The path of a descriptor argument, or :class:`Unresolved`."""
+    path = fd_path(arg)
+    if path is None:
+        raise Unresolved(arg)
+    return path
+
+
+def _path_effect(name: str, args: list[str], result: str, pid: int,
+                 resolve: _Resolver) -> tuple[str, dict] | None:
+    """The kind and path fields of one file-system call, or ``None`` if it changed nothing."""
+    if name in OPEN:
+        opened = fd_path(result)
+        if opened is None:
+            if name in ("open", "creat"):
+                opened = resolve.path(pid, string_arg(args[0]))
+            else:
+                opened = resolve.path(pid, string_arg(args[1]), args[0])
+        flags = " ".join(args[1:]) if name in ("open", "creat") else " ".join(args[2:])
+        if name == "creat" or any(flag in flags for flag in WRITE_FLAGS):
+            return "write", {"path": opened}
+        return None if "O_DIRECTORY" in flags else ("read", {"path": opened})
+    if name in ("mkdir", "mknod", "unlink", "rmdir", "truncate"):
+        kind = {"truncate": "truncate", "mkdir": "create", "mknod": "create"}.get(name, "unlink")
+        return kind, {"path": resolve.path(pid, string_arg(args[0]))}
+    if name in ("mkdirat", "mknodat", "unlinkat"):
+        kind = "unlink" if name == "unlinkat" else "create"
+        return kind, {"path": resolve.path(pid, string_arg(args[1]), args[0])}
+    if name == "symlink":
+        return "create", {"path": resolve.path(pid, string_arg(args[1]))}
+    if name == "symlinkat":
+        return "create", {"path": resolve.path(pid, string_arg(args[2]), args[1])}
+    if name in ("rename", "link"):
+        return name, {"path": resolve.path(pid, string_arg(args[0])),
+                      "target": resolve.path(pid, string_arg(args[1]))}
+    if name in RENAME or name in LINK:
+        kind = "rename" if name in RENAME else "link"
+        return kind, {"path": resolve.path(pid, string_arg(args[1]), args[0]),
+                      "target": resolve.path(pid, string_arg(args[3]), args[2])}
+    if name == "ftruncate":
+        return "truncate", {"path": _fd(args[0])}
+    if name in CHMOD:
+        return "chmod", {"path": _metadata_path(name, args, pid, resolve)}
+    if name in MMAP:
+        if len(args) >= 5 and "PROT_WRITE" in args[2] and "MAP_SHARED" in args[3]:
+            return "write", {"path": _fd(args[4])}
+        return None
+    raise TraceError(f"no effect rule for {name}")
 
 
 def effects(trace: Trace, workdir: str) -> Effects:
-    """Turn parsed calls into events, in the order the calls completed."""
+    """Turn parsed calls into events, in the order the calls completed.
+
+    A relative path whose directory descriptor was printed without its path
+    cannot be placed; such a call goes to ``unresolved`` with its time, and the
+    record names a coverage gap there rather than guessing a directory.
+    """
     found = Effects(root_pid=trace.root_pid, last_time=trace.last_time)
     resolve = _Resolver(workdir)
     threads: dict[int, int] = {}
@@ -275,106 +340,48 @@ def effects(trace: Trace, workdir: str) -> Effects:
     def process(pid: int) -> int:
         return threads.get(pid, pid)
 
-    def add(kind: str, call: Call, **fields) -> None:
-        found.events.append(Event(kind, process(call.pid), call.time, **fields))
-
     for call in trace.calls:
-        name, args, pid = call.name, call.args, call.pid
+        name, args, here = call.name, call.args, process(call.pid)
         if name in ("fork", "vfork", "clone", "clone3"):
             child = _ret_int(call.result)
             if child and child > 0:
                 if "CLONE_THREAD" in ",".join(args):
-                    threads[child] = process(pid)
+                    threads[child] = here
                 else:
-                    found.parents[child] = process(pid)
-                    resolve.cwd[child] = resolve.of(process(pid))
+                    found.parents[child] = here
+                    resolve.cwd[child] = resolve.of(here)
             continue
-        if name == "chdir":
-            resolve.cwd[process(pid)] = resolve.path(process(pid), string_arg(args[0]) or "")
-            continue
-        if name == "fchdir":
-            resolve.cwd[process(pid)] = fd_path(args[0]) or resolve.of(process(pid))
-            continue
-        here = process(pid)
-        if name in EXEC:
-            argv = argv_arg(args[1] if name == "execve" else args[2])
-            add("exec", call, argv=argv)
-            continue
-        if name in OPEN:
-            opened = fd_path(call.result)
-            if opened is None:
-                raw = string_arg(args[0] if name in ("open", "creat") else args[1])
-                opened = resolve.path(here, raw or "", _base(args, 0) if name != "open" else None)
-            flags = " ".join(args[1:]) if name in ("open", "creat") else " ".join(args[2:])
-            writes = name == "creat" or any(flag in flags for flag in WRITE_FLAGS)
-            if writes:
-                add("write", call, path=opened)
-            elif "O_DIRECTORY" not in flags:
-                add("read", call, path=opened)
-            continue
-        if name in CREATE:
-            if name in ("mkdir", "mknod"):
-                created = resolve.path(here, string_arg(args[0]) or "")
-            elif name in ("mkdirat", "mknodat"):
-                created = resolve.path(here, string_arg(args[1]) or "", _base(args, 0))
-            elif name == "symlink":
-                created = resolve.path(here, string_arg(args[1]) or "")
-            else:
-                created = resolve.path(here, string_arg(args[2]) or "", _base(args, 1))
-            add("create", call, path=created)
-            continue
-        if name in RENAME or name in LINK:
-            if name in ("rename", "link"):
-                old = resolve.path(here, string_arg(args[0]) or "")
-                new = resolve.path(here, string_arg(args[1]) or "")
-            else:
-                old = resolve.path(here, string_arg(args[1]) or "", _base(args, 0))
-                new = resolve.path(here, string_arg(args[3]) or "", _base(args, 2))
-            add("rename" if name in RENAME else "link", call, path=old, target=new)
-            continue
-        if name in UNLINK:
-            if name == "unlinkat":
-                gone = resolve.path(here, string_arg(args[1]) or "", _base(args, 0))
-            else:
-                gone = resolve.path(here, string_arg(args[0]) or "")
-            add("unlink", call, path=gone)
-            continue
-        if name in TRUNCATE:
-            cut = fd_path(args[0]) if name == "ftruncate" else resolve.path(
-                here, string_arg(args[0]) or "")
-            if cut:
-                add("truncate", call, path=cut)
-            continue
-        if name in CHMOD:
-            changed = _metadata_path(name, args, here, resolve)
-            if changed:
-                add("chmod", call, path=changed)
-            continue
-        if name in MMAP:
-            if (len(args) >= 5 and "PROT_WRITE" in args[2] and "MAP_SHARED" in args[3]
-                    and (mapped := fd_path(args[4]))):
-                add("write", call, path=mapped)
-            continue
-        if name in CONNECT:
-            add("connect", call, address=args[1] if len(args) > 1 else "")
-            continue
-        if name in ESCAPE:
-            found.escapes.append({"syscall": name, "pid": here, "time": call.time})
+        try:
+            if name == "chdir":
+                resolve.cwd[here] = resolve.path(here, string_arg(args[0]))
+            elif name == "fchdir":
+                resolve.cwd[here] = _fd(args[0])
+            elif name in EXEC:
+                argv = argv_arg(args[1] if name == "execve" else args[2])
+                found.events.append(Event("exec", here, call.time, argv=argv))
+            elif name in CONNECT:
+                found.events.append(Event("connect", here, call.time,
+                                          address=args[1] if len(args) > 1 else ""))
+            elif name in ESCAPE:
+                found.escapes.append({"syscall": name, "pid": here, "time": call.time})
+            elif effect := _path_effect(name, args, call.result, here, resolve):
+                kind, fields = effect
+                found.events.append(Event(kind, here, call.time, **fields))
+        except Unresolved:
+            found.unresolved.append({"syscall": name, "pid": here, "time": call.time})
     _exits(found, trace, threads)
     return found
 
 
-def _metadata_path(name: str, args: list[str], pid: int, resolve: _Resolver) -> str | None:
+def _metadata_path(name: str, args: list[str], pid: int, resolve: _Resolver) -> str:
     if name in ("fchmod", "fchown", "fsetxattr", "fremovexattr"):
-        return fd_path(args[0])
+        return _fd(args[0])
     if name in ("fchmodat", "fchmodat2", "fchownat", "utimensat", "futimesat"):
         raw = string_arg(args[1])
-        base = _base(args, 0)
         if raw is None:
-            return base
-        return resolve.path(pid, raw, base)
-    raw = string_arg(args[0])
-    return resolve.path(pid, raw) if raw is not None else None
+            return _fd(args[0])
+        return resolve.path(pid, raw, args[0])
+    return resolve.path(pid, string_arg(args[0]))
 
 
 def _exits(found: Effects, trace: Trace, threads: dict[int, int]) -> None:

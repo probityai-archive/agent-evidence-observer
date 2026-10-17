@@ -161,6 +161,17 @@ def test_relative_paths_follow_chdir_and_dirfd():
     ]
 
 
+def test_descriptor_without_a_path_is_unresolved_not_guessed():
+    found = build([
+        execve(10, 1.0, "agent"),
+        line(10, 1.1, f"mkdirat(3, {hx('b')}, 0777) = 0"),
+        line(10, 1.2, f"mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_SHARED, 4, 0) = 0x7f"),
+        line(10, 1.3, f"mkdirat(3, {hx('/workspace/abs')}, 0777) = 0"),
+    ])
+    assert [item["syscall"] for item in found.unresolved] == ["mkdirat", "mmap"]
+    assert [event.path for event in kinds(found, "create")] == ["/workspace/abs"]
+
+
 def test_shared_writable_mmap_is_a_write_and_private_is_not():
     path = fd("/workspace/data.bin")
     found = build([
