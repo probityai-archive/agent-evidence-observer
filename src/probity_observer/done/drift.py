@@ -7,7 +7,9 @@ Three latches, all exact and all non-decaying once fired:
 - **command**: within one attempt, the agent runs the same ``(argv, exit)`` ``K`` times in a
   row with no edit between (the agent is retrying a failing command);
 - **contradicted**: the count of ``contradicted`` verdicts only grows, so a later
-  ``supported`` never resets it.
+  ``supported`` never resets it;
+- **unestablished**: consecutive ``not_established`` verdicts are counted, so an agent that
+  keeps the record incomplete cannot run to the budget unescalated.
 
 The thresholds are part of the public policy table (:mod:`.policy`), whose digest every
 receipt carries, so a ``loop_detected`` reason is recomputable from the run records.
@@ -51,6 +53,7 @@ class Latch:
     command_repeats: int = 3
     trees: list[str] = field(default_factory=list)
     contradicted: int = 0
+    unestablished_run: int = 0
     fired: str | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
 
@@ -62,6 +65,7 @@ class Latch:
         self.trees.append(tree_sha256)
         if decision == "contradicted":
             self.contradicted += 1
+        self.unestablished_run = self.unestablished_run + 1 if decision == "not_established" else 0
         if self.fired is None:
             tail = self.trees[-self.tree_repeats:]
             if len(tail) == self.tree_repeats and len(set(tail)) == 1:
@@ -74,4 +78,5 @@ class Latch:
 
     def state(self) -> dict[str, Any]:
         return {"thresholds": self.thresholds(), "trees": list(self.trees),
-                "contradicted": self.contradicted, "fired": self.fired, "evidence": self.evidence}
+                "contradicted": self.contradicted, "unestablished_run": self.unestablished_run,
+                "fired": self.fired, "evidence": self.evidence}

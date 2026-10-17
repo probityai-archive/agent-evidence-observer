@@ -8,6 +8,7 @@ One task, one worker. After each attempt the done verdict and the latch decide o
 | a drift latch has fired | ``escalate`` | ``loop_detected`` |
 | ``contradicted`` verdicts reach ``escalate_after_contradicted`` | ``escalate`` | the verdict's reason |
 | the agent flagged the task for a human | ``escalate`` | ``agent_escalated`` |
+| ``not_established`` verdicts in a row reach ``escalate_after_unestablished`` | ``escalate`` | ``record_unestablished_repeatedly`` |
 | the attempt budget is spent | ``stop`` | ``budget_exhausted`` |
 | the verdict is ``contradicted`` | ``replan`` | the verdict's reason |
 | otherwise (``not_established``) | ``continue`` | the verdict's reason |
@@ -31,18 +32,22 @@ from .formats import encode, sha256
 ACTIONS = ("continue", "replan", "escalate", "stop")
 
 
-def table(attempts: int = 3, escalate_after: int = 2, latch: Latch | None = None) -> dict[str, Any]:
+def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablished: int = 2,
+          latch: Latch | None = None) -> dict[str, Any]:
     latch = latch or Latch()
     return {
         "schema_version": "probity-done-policy/v1",
         "budget": {"attempts": attempts},
         "escalate_after_contradicted": escalate_after,
+        "escalate_after_unestablished": escalate_after_unestablished,
         "latch": latch.thresholds(),
         "rules": [
             {"when": "verdict_supported", "action": "stop", "reason": "done_checks_supported"},
             {"when": "latch_fired", "action": "escalate", "reason": "loop_detected"},
             {"when": "contradicted_at_limit", "action": "escalate", "reason": "verdict"},
             {"when": "agent_flagged", "action": "escalate", "reason": "agent_escalated"},
+            {"when": "unestablished_at_limit", "action": "escalate",
+             "reason": "record_unestablished_repeatedly"},
             {"when": "budget_spent", "action": "stop", "reason": "budget_exhausted"},
             {"when": "verdict_contradicted", "action": "replan", "reason": "verdict"},
             {"when": "otherwise", "action": "continue", "reason": "verdict"},
@@ -75,6 +80,9 @@ def decide(policy: dict[str, Any], verdict: dict[str, Any], attempt: int, latch:
         return Decision("escalate", reason)
     if flagged:
         return Decision("escalate", "agent_escalated")
+    if (decision == "not_established"
+            and latch.unestablished_run >= policy["escalate_after_unestablished"]):
+        return Decision("escalate", "record_unestablished_repeatedly")
     if attempt >= policy["budget"]["attempts"]:
         return Decision("stop", "budget_exhausted")
     if decision == "contradicted":
