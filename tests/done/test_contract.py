@@ -102,3 +102,59 @@ def test_heldout_split_refuses_too_few_inputs():
         heldout.split_lcb("t", "x = 1\n", "x = 1\n", "f")
     with pytest.raises(heldout.HeldoutError):
         heldout.heldout_file("not an identifier", ())
+
+
+class Scripted:
+    """A runner that answers from a table: (state name, argv) -> list of exits in turn."""
+
+    name = "scripted"
+
+    def __init__(self, table):
+        self.table = {key: list(value) for key, value in table.items()}
+
+    def run(self, state, argv, heldout, timeout):
+        return self.table[(state.name, tuple(argv))].pop(0)
+
+
+def test_stability_runs_three_times_per_state_and_drops_flaky_or_unexpected(tmp_path, swe_repo):
+    repo, record = swe_repo
+    task = contract.swe_task(record, repo, tmp_path / "work")
+    fail, passing, held = (command.argv for command in task.commands)
+    runner = Scripted({("reference", fail): [0, 0, 0], ("start", fail): [1, 1, 1],
+                       ("reference", passing): [0, 1, 0],
+                       ("reference", held): [0, 0, 0], ("start", held): [0, 0, 0]})
+    result = contract.stabilize(task, runner)
+    assert [command.id for command in result.commands] == ["fail-to-pass"]
+    assert result.dropped == [{"id": "pass-to-pass", "reason": "flaky_on_reference"},
+                              {"id": "heldout-fail-to-pass", "reason": "prepatch_passed"}]
+    assert {(row["id"], row["state"]) for row in result.runs} >= {
+        ("fail-to-pass", "reference"), ("fail-to-pass", "prepatch")}
+    assert all(len(row["exits"]) == 3 for row in result.runs)
+
+
+def test_stability_narrows_a_grouped_command_to_its_stable_ids(tmp_path, swe_repo):
+    repo, record = swe_repo
+    record = {**record, "FAIL_TO_PASS": '["tests/test_shapes.py::test_area", "tests/x.py::test_flaky"]',
+              "PASS_TO_PASS": "[]"}
+    task = contract.swe_task(record, repo, tmp_path / "work")
+    group, held = task.commands
+    prefix = group.argv[:group.ids_from]
+    good, flaky = prefix + ("tests/test_shapes.py::test_area",), prefix + ("tests/x.py::test_flaky",)
+    runner = Scripted({("reference", group.argv): [0, 1, 0],
+                       ("reference", good): [0, 0, 0], ("start", good): [1, 1, 1],
+                       ("reference", flaky): [1, 0, 0],
+                       ("reference", held.argv): [0, 0, 0], ("start", held.argv): [1, 1, 1]})
+    result = contract.stabilize(task, runner)
+    assert result.commands[0].argv == good and result.commands[1].id == "heldout-fail-to-pass"
+    assert result.dropped == [{"id": "fail-to-pass", "test": "tests/x.py::test_flaky",
+                               "reason": "flaky_on_reference"}]
+    report = contract.stability_report(result, runner, 3, True)["stability"]
+    assert report["reference"] == "available" and report["runner"] == "scripted"
+
+
+def test_stability_on_a_real_lcb_task_without_a_reference(tmp_path, python_bin):
+    from probity_observer.done.runner import SubprocessRunner
+    task = contract.lcb_task(LCB_RECORD, tmp_path / "work")
+    result = contract.stabilize(task, SubprocessRunner(python_bin), timeout=60)
+    assert [command.id for command in result.commands] == ["visible", "heldout"]
+    assert {row["state"] for row in result.runs} == {"prepatch"}

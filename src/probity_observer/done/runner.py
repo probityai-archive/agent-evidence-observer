@@ -39,6 +39,8 @@ class Command:
     id: str
     argv: tuple[str, ...]
     heldout: bool = False
+    prepatch: str = "fail"
+    ids_from: int | None = None
 
     def record(self) -> dict:
         return {"id": self.id, "argv": list(self.argv)}
