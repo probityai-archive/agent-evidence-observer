@@ -30,7 +30,13 @@ def test_lcb_contract_holds_out_inputs_and_keeps_the_impossible_assertion(tmp_pa
     record = json.loads((sealed.out / "contract.json").read_bytes())
     assert record["acceptance"] == [
         {"id": "visible", "argv": list(heldout.replay_argv(heldout.VISIBLE_NAME, "add"))},
-        {"id": "heldout", "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add"))}]
+        {"id": "heldout", "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add"))},
+        {"id": "heldout_determinism",
+         "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add", "determinism"))},
+        {"id": "heldout_type_strict",
+         "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add", "type_strict"))},
+        {"id": "import_side_effects",
+         "argv": list(heldout.replay_argv(heldout.VISIBLE_NAME, "add", "import_side_effects"))}]
     assert record["protected_paths"] == [{"path": "test.py", "kind": "file",
                                           "sha256": treedigest.file_sha256(task.start / "test.py")}]
     assert record["heldout_split_sha256"] == treedigest.scan(tmp_path / "out/sealed/heldout").sha256
@@ -167,7 +173,8 @@ def test_stability_on_a_real_lcb_task_without_a_reference(tmp_path, python_bin):
     from probity_observer.done.runner import SubprocessRunner
     task = contract.lcb_task(LCB_RECORD, tmp_path / "work")
     result = contract.stabilize(task, SubprocessRunner(python_bin), timeout=60)
-    assert [command.id for command in result.commands] == ["visible", "heldout"]
+    assert [command.id for command in result.commands] == [
+        "visible", "heldout", "heldout_determinism", "heldout_type_strict", "import_side_effects"]
     assert {row["state"] for row in result.runs} == {"prepatch"}
 
 

@@ -132,7 +132,14 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
         start=start, heldout=held,
         commands=[Command("visible", heldout_cases.replay_argv(heldout_cases.VISIBLE_NAME, entry)),
                   Command("heldout", heldout_cases.replay_argv(heldout_cases.HELDOUT_NAME, entry),
-                          heldout=True)],
+                          heldout=True),
+                  Command("heldout_determinism", heldout_cases.replay_argv(
+                      heldout_cases.HELDOUT_NAME, entry, "determinism"), heldout=True),
+                  Command("heldout_type_strict", heldout_cases.replay_argv(
+                      heldout_cases.HELDOUT_NAME, entry, "type_strict"), heldout=True),
+                  Command("import_side_effects", heldout_cases.replay_argv(
+                      heldout_cases.VISIBLE_NAME, entry, "import_side_effects"),
+                          prepatch="pass")],
         protected=[Protected("test.py", "file")],
         entry={"path": "func.py", "name": entry, "signature": record["prompt"],
                "expected": expected,

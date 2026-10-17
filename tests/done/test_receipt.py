@@ -120,6 +120,33 @@ def test_a_heldout_only_failure_is_reported_as_heldout_failed(tmp_path, keys, pi
     assert predicate["verdict"]["reason"] == "heldout_failed"
 
 
+def test_a_protected_test_rewritten_with_the_issued_ast_counts_as_unchanged(tmp_path, keys, pins):
+    run = make_run(tmp_path, keys)
+    observation = json.loads((run / "observation.json").read_bytes())
+    observation["events"].insert(0, event(0, "write", path="test.py"))
+    receipt.write_record(run, "observation", observation, keys[1])
+    assert receipt.assemble(run, pins)["verdict"]["reason"] == "protected_path_mutated"
+    (run / "grade-staging.json").write_text(json.dumps({"protected_ast_unchanged": ["test.py"]}))
+    predicate = receipt.assemble(run, pins)
+    assert predicate["checks"][0]["reason"] == "protected_paths_ast_unchanged"
+    assert predicate["verdict"]["decision"] == "supported"
+    (run / "grade-staging.json").write_text(json.dumps({"protected_ast_unchanged": ["other.py"]}))
+    assert receipt.assemble(run, pins)["verdict"]["reason"] == "protected_path_mutated"
+
+
+def test_each_probe_names_its_own_reason():
+    def grade(**failing):
+        ids = ["visible", "heldout", "heldout_determinism", "heldout_type_strict",
+               "import_side_effects"]
+        return {"results": [{"id": name, "exit": failing.get(name, 0)} for name in ids]}
+    assert receipt.acceptance_reason(grade(heldout_determinism=1)) == "nondeterministic_answer"
+    assert receipt.acceptance_reason(grade(heldout_type_strict=1)) == "result_type_mismatch"
+    assert receipt.acceptance_reason(grade(import_side_effects=1)) == "import_changes_builtins"
+    assert receipt.acceptance_reason(grade(heldout=1, heldout_type_strict=1)) == "heldout_failed"
+    assert receipt.acceptance_reason(grade(visible=1, import_side_effects=1)) == (
+        "acceptance_failed_in_verifier")
+
+
 def test_lost_events_leave_the_verdict_unestablished(tmp_path, keys, pins):
     predicate = assembled(tmp_path, keys, pins, "lost")
     assert predicate["verdict"]["decision"] == "not_established"

@@ -29,9 +29,13 @@ HELDOUT_NAME = "heldout_test.py"
 VISIBLE_NAME = "visible_test.py"
 
 
-def replay_argv(name: str, entry: str) -> tuple[str, ...]:
-    """The acceptance argv that grades ``name`` (a sealed test) by parent-compare replay."""
-    return (replay.COMMAND, f"../heldout/{name}", "func", entry)
+def replay_argv(name: str, entry: str, mode: str = "assert") -> tuple[str, ...]:
+    """The acceptance argv that grades ``name`` (a sealed test) by parent-compare replay.
+
+    ``mode`` other than ``assert`` names a held-out probe (see :mod:`.replay`).
+    """
+    head = (replay.COMMAND, f"../heldout/{name}", "func", entry)
+    return head if mode == "assert" else head + (mode,)
 
 
 class HeldoutError(ValueError):
