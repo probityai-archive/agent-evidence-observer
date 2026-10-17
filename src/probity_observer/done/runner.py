@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Protocol, Sequence
 
 from ..sensors import treedigest
+from . import pytest_plugins
 from . import replay as replay_harness
 
 TIMEOUT_EXIT = 124
@@ -48,21 +49,27 @@ class Command:
     ids_from: int | None = None
 
     def record(self) -> dict:
-        return {"id": self.id, "argv": list(self.argv)}
+        """The contract entry; a command the sealed pytest plugins run also seals its test
+        ids, which the grade's ``collected`` count must match."""
+        entry: dict = {"id": self.id, "argv": list(self.argv)}
+        if self.ids_from is not None and pytest_plugins.is_sealed_pytest(self.argv):
+            entry["ids"] = list(self.argv[self.ids_from:])
+        return entry
 
 
 class Runner(Protocol):
     """Run ``argv`` on a copy of ``state`` (and ``heldout``) and return its exit status.
 
     When ``writes`` is a list, the runner appends every workspace path the run created,
-    changed or removed (regular files, compared by digest).
+    changed or removed (regular files, compared by digest). ``stdin`` is written to the run's
+    standard input and closed (a sealed plugin's report key travels this way).
     """
 
     name: str
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
-            output: list[str] | None = None) -> int: ...
+            output: list[str] | None = None, stdin: bytes | None = None) -> int: ...
 
 
 def changed_paths(before: Path, after: Path) -> list[str]:
@@ -157,7 +164,7 @@ class SubprocessRunner:
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
-            output: list[str] | None = None) -> int:
+            output: list[str] | None = None, stdin: bytes | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-done-") as scratch:
             workspace = stage(Path(state), heldout, Path(scratch))
             if is_replay(argv):
@@ -165,7 +172,8 @@ class SubprocessRunner:
                                   self.order_seed, self.replays)
             try:
                 done = subprocess.run(list(argv), cwd=workspace, env=self.env,
-                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                      input=stdin if stdin is not None else b"",
+                                      stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL, timeout=timeout,
                                       check=False, start_new_session=True)
                 code = done.returncode

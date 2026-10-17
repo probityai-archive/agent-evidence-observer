@@ -28,6 +28,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -38,7 +39,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..sensors import treedigest
-from . import mutants
+from . import mutants, pytest_plugins
 from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
 from .formats import DoneError, encode, public_key, sha256, sign_record
 from .runner import (SCRUBBED_ENV, TIMEOUT_EXIT, changed_paths, chmod_tree, is_replay,
@@ -76,7 +77,7 @@ class DockerRunner:
                 "--ulimit", "core=0", "--user", f"{self.worker_uid}:{self.worker_uid}"]
 
     def command(self, name: str, scratch: Path, argv: Sequence[str], heldout: bool) -> list[str]:
-        command = [self.docker, "run", "--rm", "--name", name, *self.flags(),
+        command = [self.docker, "run", "-i", "--rm", "--name", name, *self.flags(),
                    "--volume", f"{scratch / 'workspace'}:/workspace"]
         if heldout:
             command += ["--volume", f"{scratch / 'heldout'}:/heldout:ro"]
@@ -94,7 +95,7 @@ class DockerRunner:
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
-            output: list[str] | None = None) -> int:
+            output: list[str] | None = None, stdin: bytes | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-grade-") as scratch:
             root = Path(scratch)
             stage(Path(state), heldout, root)
@@ -107,10 +108,10 @@ class DockerRunner:
             os.chmod(root, 0o755)
             name = f"probity-grade-{uuid.uuid4().hex[:12]}"
             process = subprocess.Popen(self.command(name, root, argv, heldout is not None),
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE)
             try:
-                printed, error = process.communicate(timeout=timeout)
+                printed, error = process.communicate(stdin or b"", timeout=timeout)
                 if output is not None:
                     output.append(printed.decode("utf-8", "replace"))
             except subprocess.TimeoutExpired:
@@ -336,6 +337,35 @@ def hunks_exercised(report: list[dict[str, Any]]) -> float:
     return 1.0 if not counted else sum(1 for item in counted if item["killed"]) / len(counted)
 
 
+def _plugin_run(runner, root: Path, item: dict[str, Any], heldout: Path | None,
+                timeout: float) -> tuple[int, dict[str, Any] | None]:
+    """Run a command the sealed pytest plugins load; return its exit and verified report.
+
+    A fresh key goes to the run on standard input; only a report line whose HMAC verifies
+    under it is kept. The report is evidence from the worker, never the verdict's basis.
+    """
+    key = os.urandom(32).hex().encode()
+    printed: list[str] = []
+    code = runner.run(root, item["argv"], heldout, timeout, output=printed, stdin=key + b"\n")
+    return code, pytest_plugins.report(printed, key)
+
+
+# Attribute and call names through which code reads the frames of its callers.
+FRAME_NAMES = re.compile(r"\b(f_back|f_locals|f_globals|f_code|tb_frame|gi_frame|cr_frame|"
+                         r"_getframe|currentframe|getouterframes|inspect\.stack|co_consts)\b")
+
+
+def frame_attributes(root: Path, start: Path, contract: dict[str, Any]) -> list[dict[str, Any]]:
+    """Lines the agent added or changed that read caller frames (measured, not a verdict)."""
+    found = []
+    for name, (first, last) in patch_hunks(start, root, _protected(contract)):
+        lines = (root / name).read_text("utf-8", "replace").splitlines()
+        for number in range(first, last + 1):
+            for match in FRAME_NAMES.finditer(lines[number - 1]):
+                found.append({"path": name, "line": number, "name": match.group(1)})
+    return found
+
+
 @dataclass(frozen=True)
 class Graded:
     grade: dict[str, Any]
@@ -460,9 +490,20 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
         # configuration and the sealed visible test, never a held-out file.
         dirs = {item["id"]: heldout if item["id"].startswith("heldout") else visible
                 for item in contract["acceptance"]}
+        reports: dict[str, Any] = {}
         for item in contract["acceptance"]:
-            exit_code = runner.run(staged.root, item["argv"], dirs[item["id"]], timeout)
-            results.append({"id": item["id"], "argv": item["argv"], "exit": exit_code})
+            if any(pytest_plugins.BOOT in arg for arg in item["argv"]):
+                exit_code, reports[item["id"]] = _plugin_run(runner, staged.root, item,
+                                                             dirs[item["id"]], timeout)
+            else:
+                exit_code = runner.run(staged.root, item["argv"], dirs[item["id"]], timeout)
+            result = {"id": item["id"], "argv": item["argv"], "exit": exit_code}
+            if "ids" in item:
+                found = reports.get(item["id"])
+                # No verified report means nothing was shown collected.
+                result["collected"] = pytest_plugins.collected(
+                    list((found or {}).get("items", {})), item["ids"])
+            results.append(result)
         replays = list(runner.replays)
         hunks = (post_patch(runner, staged.root, start, contract, dirs, timeout)
                  if all(item["exit"] == 0 for item in results) else [])
@@ -471,11 +512,14 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
         isolation = _isolation(sha256(contract_bytes), trusted, runner, contract["acceptance"],
                                (1, 2), result_dir,
                                format(0o755, "04o") if has_heldout else None)
+        if reports:
+            isolation["evidence_from_worker"].append("pytest_worker_report")
         staging = {"rejected": staged.rejected, "removed_caches": staged.removed_caches,
                    "removed_config": staged.removed_config,
                    "rejected_native": staged.rejected_native, "replays": replays,
                    "post_patch": hunks, "hunks_exercised": hunks_exercised(hunks),
-                   "replay_order_seed": runner.order_seed}
+                   "replay_order_seed": runner.order_seed, "worker_reports": reports,
+                   "frame_attributes": frame_attributes(staged.root, start, contract)}
     by_argv = {tuple(item["argv"]): item for item in replays}
     for item in results:
         replayed = by_argv.get(tuple(item["argv"]))
