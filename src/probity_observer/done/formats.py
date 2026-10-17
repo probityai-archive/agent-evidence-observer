@@ -32,6 +32,7 @@ PAYLOAD_TYPES = {
     "probity-acceptance-grade/v1": "application/vnd.probity.acceptance-grade.v1+json",
     "probity-tool-claims/v1": "application/vnd.probity.tool-claims.v1+json",
     "probity-done-receipt/v1": "application/vnd.probity.done-receipt.v1+json",
+    "probity-done-loop/v1": "application/vnd.probity.done-loop.v1+json",
 }
 
 
