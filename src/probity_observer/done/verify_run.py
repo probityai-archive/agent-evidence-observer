@@ -37,13 +37,14 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..sensors import treedigest
-from .contract import Protected, copy_protected, protected_digest
+from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
 from .formats import DoneError, encode, sha256, sign_record
 from .runner import SCRUBBED_ENV, TIMEOUT_EXIT, chmod_tree, stage
 
 GRADE_SCHEMA = "probity-acceptance-grade/v1"
 WORKER_UID = 65534
 CACHE_NAMES = ("__pycache__", ".pytest_cache")
+GRADER_FILES = frozenset({"conftest.py", *ACCEPTANCE_CONFIG})
 
 
 class GradeError(DoneError):
@@ -116,6 +117,7 @@ class Staged:
     root: Path
     rejected: list[str] = field(default_factory=list)
     removed_caches: list[str] = field(default_factory=list)
+    removed_config: list[str] = field(default_factory=list)
 
 
 def _copy_file(source: Path, target: Path) -> None:
@@ -136,8 +138,14 @@ def _inside(root: Path, link: Path) -> bool:
     return resolved == str(root) or resolved.startswith(str(root) + os.sep)
 
 
-def stage_tree(final: Path, destination: Path) -> Staged:
-    """Copy ``final`` into a new ``destination`` without following any link out of it."""
+def stage_tree(final: Path, destination: Path, start: Path) -> Staged:
+    """Copy ``final`` into a new ``destination`` without following any link.
+
+    A symbolic link is kept only when the sealed start tree ``start`` has the same link at
+    the same path; any other link, and every special file, is rejected and listed. A tree
+    record hashes regular files only, so a link the agent made (``conftest.py -> /tmp/x``)
+    would otherwise reach the grader unseen.
+    """
     destination.mkdir()
     staged = Staged(destination)
     for directory, dirnames, filenames in os.walk(final, followlinks=False):
@@ -147,7 +155,9 @@ def stage_tree(final: Path, destination: Path) -> Staged:
             source, target = base / name, destination / relative / name
             mode = os.lstat(source).st_mode
             if stat.S_ISLNK(mode):
-                if _inside(final, source):
+                sealed = start / relative / name
+                if (_inside(final, source) and sealed.is_symlink()
+                        and os.readlink(sealed) == os.readlink(source)):
                     os.symlink(os.readlink(source), target)
                 else:
                     staged.rejected.append((relative / name).as_posix())
@@ -162,22 +172,39 @@ def stage_tree(final: Path, destination: Path) -> Staged:
     return staged
 
 
-def reset(staged: Staged, protected: list[Protected], sealed: Path) -> None:
-    """Restore every protected path from ``sealed`` and remove every cache directory."""
+def _remove(target: Path) -> None:
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+    elif target.is_dir():
+        shutil.rmtree(target)
+
+
+def reset(staged: Staged, protected: list[Protected], sealed: Path, start: Path) -> None:
+    """Restore every protected path from ``sealed`` and remove what grading must not load.
+
+    Removed: every cache directory, and every ``conftest.py`` or acceptance-configuration
+    file that the start tree did not have at that path. A protected path below a symbolic
+    link is refused, because the restore would write through the link.
+    """
     for entry in protected:
-        target = staged.root / entry.path
-        if target.is_symlink() or target.is_file():
-            target.unlink()
-        elif target.is_dir():
-            shutil.rmtree(target)
+        parts = Path(entry.path).parts
+        for index in range(1, len(parts)):
+            if (staged.root / Path(*parts[:index])).is_symlink():
+                raise GradeError(f"a protected path lies below a symbolic link: {entry.path}")
+        _remove(staged.root / entry.path)
         copy_protected(sealed, entry, staged.root)
-    for directory, dirnames, _ in os.walk(staged.root):
+    for directory, dirnames, filenames in os.walk(staged.root):
+        base = Path(directory)
         for name in list(dirnames):
             if name in CACHE_NAMES:
-                path = Path(directory) / name
-                staged.removed_caches.append(path.relative_to(staged.root).as_posix())
-                shutil.rmtree(path)
+                staged.removed_caches.append((base / name).relative_to(staged.root).as_posix())
+                shutil.rmtree(base / name)
                 dirnames.remove(name)
+        for name in filenames:
+            relative = (base / name).relative_to(staged.root)
+            if name in GRADER_FILES and not (start / relative).is_file():
+                staged.removed_config.append(relative.as_posix())
+                (base / name).unlink()
 
 
 def _protected(contract: dict[str, Any]) -> list[Protected]:
@@ -240,9 +267,14 @@ def _isolation(contract_sha256: str, trusted: tuple[str, str], runner: DockerRun
     return report
 
 
-def grade(contract_bytes: bytes, sealed: Path, final: Path, tree_record: dict[str, Any],
+def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[str, Any],
           context: GradeContext, runner: DockerRunner, key, timeout: float = 900.0) -> Graded:
-    """Grade the agent's final tree ``final`` against the sealed contract."""
+    """Grade the agent's final tree ``final`` against the contract bundle ``bundle``.
+
+    ``bundle`` is the directory :func:`.contract.seal` wrote: its ``workspace`` is the
+    sealed start tree and ``sealed`` holds the protected copies and held-out files.
+    """
+    sealed, start = bundle / "sealed", bundle / "workspace"
     contract = json.loads(contract_bytes)
     scanned = treedigest.scan(final)
     if scanned.sha256 != tree_record["tree_sha256"] or scanned.files != tree_record["files"]:
@@ -252,8 +284,8 @@ def grade(contract_bytes: bytes, sealed: Path, final: Path, tree_record: dict[st
     with tempfile.TemporaryDirectory(prefix="probity-verifier-") as work:
         result_dir = Path(work)
         os.chmod(result_dir, 0o700)
-        staged = stage_tree(final, result_dir / "tree")
-        reset(staged, _protected(contract), sealed / "protected")
+        staged = stage_tree(final, result_dir / "tree", start)
+        reset(staged, _protected(contract), sealed / "protected", start)
         trusted = _trusted(contract, staged)
         if trusted[0] != trusted[1]:
             raise GradeError("protected paths do not match the contract after the reset")
@@ -267,7 +299,8 @@ def grade(contract_bytes: bytes, sealed: Path, final: Path, tree_record: dict[st
         isolation = _isolation(sha256(contract_bytes), trusted, runner, contract["acceptance"],
                                (1, 2), result_dir,
                                format(0o755, "04o") if has_heldout else None)
-        staging = {"rejected": staged.rejected, "removed_caches": staged.removed_caches}
+        staging = {"rejected": staged.rejected, "removed_caches": staged.removed_caches,
+                   "removed_config": staged.removed_config}
     record = {"schema_version": GRADE_SCHEMA, "claim_id": context.claim_id,
               "invocation_id": context.invocation_id, "producer": context.producer,
               "vantage": "independent", "witness_scope": context.witness_scope,
