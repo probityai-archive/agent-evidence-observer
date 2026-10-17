@@ -576,10 +576,72 @@ def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"]]:
     return task.start, []
 
 
+def is_test_path(name: str) -> bool:
+    """A test file or test configuration by its path (never a mutation target)."""
+    base = name.rsplit("/", 1)[-1]
+    return (base.startswith("test_") or base.endswith("_test.py") or base == "conftest.py"
+            or "/tests/" in "/" + name or base in ("pytest.ini", "tox.ini", "setup.cfg"))
+
+
+VACUOUS_MUTANTS = 8
+
+
+def vacuous_passes(task: Task, runner: Runner, commands: list[Command], timeout: float,
+                   limit: int = VACUOUS_MUTANTS) -> tuple[list[Command], list[dict[str, Any]],
+                                                          list[dict[str, Any]]]:
+    """Drop each zero-shot ``prepatch: pass`` command that kills no mutant of the code it reads.
+
+    The command runs once traced on the reference (or start) state and prints the working-tree
+    Python files it opened; operator mutants of the non-test ones (at most ``limit``, spread
+    across files) must make it fail at least once. A command that reads no source, or passes
+    on every mutant, cannot tell a broken change from a working one
+    (``pass_command_kills_no_mutants``). Returns the kept commands, the dropped entries and
+    the trace record per command.
+    """
+    if task.source != "repo":
+        return commands, [], []
+    state = task.reference or task.start
+    kept, dropped, traces = [], [], []
+    for command in commands:
+        if command.prepatch != "pass" or command.heldout:
+            kept.append(command)
+            continue
+        traced = pytest_plugins.traced_argv(command.argv)
+        printed: list[str] = []
+        read = None
+        if traced is not None:
+            runner.run(state, traced, None, timeout, output=printed)
+            read = pytest_plugins.reads(printed)
+        if read is None:
+            dropped.append({"id": command.id, "reason": "pass_command_untraced"})
+            continue
+        sources = [name for name in read if not is_test_path(name)]
+        groups = []
+        for name in sources:
+            try:
+                groups.append(mutants.operator_mutants(name, (state / name).read_text()))
+            except (SyntaxError, OSError, UnicodeDecodeError):
+                continue
+        chosen = mutants.stratified(groups, limit, f"{task.task_id}:{command.id}")
+        result = mutants.measure(state, chosen, [command], runner, None, timeout)
+        traces.append({"id": command.id, "read": read, "sources": sources,
+                       "mutants": len(chosen), "killed": sum(result.killed)})
+        if not any(result.killed):
+            dropped.append({"id": command.id, "reason": "pass_command_kills_no_mutants",
+                            "sources": sources, "mutants": len(chosen)})
+            continue
+        kept.append(command)
+    return kept, dropped, traces
+
+
 def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
                  mutant_limit: int = 40, timeout: float = 900.0) -> Sealed:
-    """Stabilize the commands, measure mutant kills, and seal the contract."""
+    """Stabilize the commands, drop vacuous zero-shot passes, measure mutant kills, and seal."""
     stable = stabilize(task, runner, runs, timeout)
+    kept, vacuous, traces = vacuous_passes(task, runner, stable.commands, timeout)
+    stable = Stability(kept, stable.runs, stable.dropped + vacuous,
+                       {key: value for key, value in stable.run_writes.items()
+                        if key in {command.id for command in kept}})
     if not [command for command in stable.commands
             if not command.heldout and command.prepatch == "fail"]:
         raise DoneError(f"{task.task_id}: no stable visible command fails on the start state, "
@@ -588,5 +650,7 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
     adequacy = mutants.measure(base, chosen, stable.commands, runner, task.heldout, timeout)
     report = {**stability_report(stable, runner, runs, task.reference is not None),
               "adequacy": adequacy.report()}
+    if traces:
+        report["pass_command_traces"] = traces
     return seal(task, out, key, adequacy.field(), stable.commands,
                 mutants.mutant_set_sha256(chosen) if chosen else None, report)

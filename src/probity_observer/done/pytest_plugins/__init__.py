@@ -6,6 +6,9 @@ reaches as ``../heldout/config/probity-plugins``. :func:`pytest_argv` turns a
 ``python -P -m pytest`` prefix into one that puts that directory first on the import path and
 loads the plugins with ``-p``; the argv is part of the contract, so the plugins and their
 options are sealed with it.
+
+:func:`traced_argv` wraps any test-runner argv so that the run prints the working-tree Python
+files it opened (the stability trace the zero-shot vacuous-pass gate reads).
 """
 
 from __future__ import annotations
@@ -21,10 +24,31 @@ DIRECTORY = "probity-plugins"
 SEALED = f"../heldout/config/{DIRECTORY}"
 PLUGINS = ("probity_repeat.py", "probity_isolated_call.py")
 MARKER = "PROBITY-WORKER-REPORT"
+READS_MARKER = "PROBITY-READS"
 REPEATS = 2
 
 BOOT = ("import sys; sys.path.insert(0, sys.argv.pop(1)); import pytest; "
         "raise SystemExit(pytest.main(sys.argv[1:]))")
+
+TRACE = r"""
+import atexit, os, runpy, sys
+root = os.path.realpath(os.getcwd())
+seen = set()
+def hook(event, args):
+    if event == "open" and args and isinstance(args[0], (str, bytes)):
+        path = os.path.realpath(os.fsdecode(args[0]))
+        if path.endswith(".py") and path.startswith(root + os.sep):
+            seen.add(os.path.relpath(path, root))
+sys.addaudithook(hook)
+atexit.register(lambda: os.write(1, ("\nPROBITY-READS " + "\x00".join(sorted(seen)) + "\n").encode()))
+module = sys.argv.pop(1)
+if module == "--path":
+    sys.path.insert(0, sys.argv.pop(1))
+    module = sys.argv.pop(1)
+sys.argv[0] = module
+runpy.run_module(module, run_name="__main__", alter_sys=True)
+"""
+
 
 def install(config_dir: Path) -> None:
     """Copy the plugins into ``<config_dir>/probity-plugins``."""
@@ -64,6 +88,39 @@ def pytest_argv(prefix: Sequence[str], protected: Sequence[str] = (),
 
 def is_sealed_pytest(argv: Sequence[str]) -> bool:
     return BOOT in argv and "probity_repeat" in argv
+
+
+def traced_argv(argv: Sequence[str]) -> tuple[str, ...] | None:
+    """The argv that runs ``argv`` (a test runner) and prints the Python files it opened.
+
+    ``pytest ...``, ``python -m pytest|unittest ...`` and the sealed pytest form are
+    supported; anything else is ``None``.
+    """
+    argv = list(argv)
+    if not argv:
+        return None
+    if is_sealed_pytest(argv):
+        index = argv.index(BOOT)
+        return (argv[0], "-P", "-c", TRACE, "--path", argv[index + 1], "pytest",
+                *argv[index + 2:])
+    if Path(argv[0]).name == "pytest":
+        return ("python", "-P", "-c", TRACE, "pytest", *argv[1:])
+    if Path(argv[0]).name in ("python", "python3") and "-m" in argv:
+        index = argv.index("-m")
+        if index + 1 < len(argv) and argv[index + 1] in ("pytest", "unittest"):
+            return (argv[0], "-P", "-c", TRACE, argv[index + 1], *argv[index + 2:])
+    return None
+
+
+def reads(printed: Sequence[str]) -> list[str] | None:
+    """The working-tree Python files a traced run opened, or ``None`` when it printed none."""
+    found = None
+    for text in printed:
+        for line in text.splitlines():
+            if line.startswith(READS_MARKER):
+                body = line[len(READS_MARKER):].strip()
+                found = sorted(item for item in body.split("\x00") if item)
+    return found
 
 
 def report(printed: Sequence[str], key: bytes) -> dict[str, Any] | None:
