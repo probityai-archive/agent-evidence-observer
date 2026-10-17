@@ -46,12 +46,12 @@ The image must provide `strace` 6.6 or later (for `fchmodat2`), `setpriv` and
 | file | content |
 | --- | --- |
 | `start.tar` | the workspace before the run, sorted, owner and time fixed; `snapshot.reset` restores it after checking its digest |
-| `launch.json` | `probity-launch/v1`: backend, image and image id, runtime and tracer versions, the full container argv, `trace_expression`, `tracer_flags`, `tracer_uid_separated`, agent argv, uid, environment, network, start tarball digest, observer source digest |
+| `launch.json` | `probity-launch/v1`: backend, image and image id, runtime and tracer versions, the full container argv, `trace_expression`, `tracer_flags`, `tracer_uid_separated`, `uid_map` (apptainer), agent argv, uid, environment, network, start tarball digest, observer source digest |
 | `transcript.txt` | the agent's stdout and stderr |
 | `trace.txt` | the raw tracer output |
-| `observation.json` | `probity-observation/v2` |
+| `observation.json` | `probity-observation/v3`: `probity-observation/v2` plus `workspace_root` and the exec fields below |
 | `capability.json` | `probity-capabilities/v1`: the event types the sensors can see |
-| `tree.json` | `probity-tree/v1`: the final regular files and their digests |
+| `tree.json` | `probity-tree/v2`: every non-directory entry of the final tree, below |
 | `receipt.json` | `probity-launch-receipt/v1`, below |
 
 The three verify records follow `docs/done-receipt.md` in probity-verify and
@@ -62,38 +62,87 @@ say `vantage: independent`, `witness_scope: PEER`. The receipt says
 
 `launch_sha256` (SHA-256 of `launch.json`), `trace_expression`, `watch_list`
 (each watched directory and when its watch was added), `start_tarball_sha256`,
-`tree_sha256`, `coverage`, `container_exit`, `agent_exit`, `timed_out`, the
-digests of the transcript, trace and three records, `doesNotAssert`, and
+`tree_sha256` (the digest of the final tree, the same value as in `tree.json`),
+`coverage`, `container_exit`, `agent_exit`, `timed_out`, `transcript_sha256`,
+`trace_sha256`, the SHA-256 of each record's bytes as `observation_record_sha256`,
+`capability_record_sha256` and `tree_record_sha256`, `doesNotAssert`, and
 `sensors`:
 
 - `s1_inotify`: change count, `overflow`, `watch_failures`, the watch mask;
 - `s2_strace`: `tracer` (`complete` or `lost`), call count, `unparsed_lines`,
   `unresolved` calls, `escapes` (`io_uring_setup`, `ptrace`,
-  `process_vm_writev`), and the origin rule;
-- `s3_tree`: digest, file count, symbolic links (listed, never followed) and
+  `process_vm_writev`, and a delivered signal to a process outside the traced
+  tree), `signals` (every `kill`, `tkill`, `tgkill`, `pidfd_send_signal`,
+  `rt_sigqueueinfo` and `rt_tgsigqueueinfo`: sender, target, signal, `status`
+  `ok`, `failed` or `interrupted`, and `outside_tree`), `interrupted` calls,
+  and the origin rule;
+- `s3_tree`: the tree digest and the counts of files, symbolic links and
   special files;
-- `join.unattributed`: changes inotify saw that the trace did not;
-- `external_effects`: mutations outside the workspace (for example a `.pth`
-  file in the user site directory) and network connects. Paths under `/dev`,
-  `/proc` and `/sys` are left out.
+- `join.unattributed`: changes inotify saw that the trace did not.
+
+Mutations outside the workspace and connect addresses are in the observation
+itself, not the receipt, so a reader of the observation alone can recompute a
+verdict that depends on them.
+
+## Tree record
+
+`probity-tree/v2` lists every entry that is not a directory: `files` (path to
+SHA-256), `executable` (the files with any execute bit, sorted), `symlinks`
+(path to the raw link target; never followed) and `special` (path to `fifo`,
+`socket`, `char` or `block`). `tree_sha256` is SHA-256 over one line per entry,
+sorted by the UTF-8 bytes of the path: `<sha256>  <path>` for a regular file
+(what `sha256sum` prints), `x:<sha256>  <path>` for an executable one,
+`l:<sha256 of the target bytes>  <path>` for a symbolic link and
+`s:<kind>  <path>` for a special file. A link added, removed or retargeted
+anywhere in the workspace changes the digest, so a grader that copies the
+workspace receives exactly the bound tree.
+
+`scripts/check-launch-verify.py` re-expresses the tree record as
+`probity-tree/v1` for the probity-verify commit it pins, which reads only
+regular files.
 
 ## Events
 
 The trace expression is
-`trace=execve,execveat,open,openat,openat2,creat,mkdir,mkdirat,mknod,mknodat,symlink,symlinkat,rename,renameat,renameat2,link,linkat,unlink,unlinkat,rmdir,truncate,ftruncate,chmod,fchmod,fchmodat,fchmodat2,chown,fchown,lchown,fchownat,utime,utimes,utimensat,futimesat,setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr,mmap,connect,fork,vfork,clone,clone3,chdir,fchdir,io_uring_setup,ptrace,process_vm_writev`,
-with `-f -q -y -ttt -xx -z`. Only successful calls are recorded.
+`trace=execve,execveat,open,openat,openat2,creat,mkdir,mkdirat,mknod,mknodat,symlink,symlinkat,rename,renameat,renameat2,link,linkat,unlink,unlinkat,rmdir,truncate,ftruncate,chmod,fchmod,fchmodat,fchmodat2,chown,fchown,lchown,fchownat,utime,utimes,utimensat,futimesat,setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr,mmap,connect,fork,vfork,clone,clone3,chdir,fchdir,kill,tkill,tgkill,pidfd_send_signal,rt_sigqueueinfo,rt_tgsigqueueinfo,io_uring_setup,ptrace,process_vm_writev`,
+with `-f -q -y -v -ttt -xx`. `-v` prints each exec's environment in full.
+Failed calls are printed and dropped by the parser, because they changed
+nothing; a connect that returns `EINPROGRESS` is kept. The tracer does not
+filter with `-z`: that holds each line until the call returns, so a `kill`
+that kills the tracer never reaches the trace (measured with strace 6.8: the
+`-z` trace ends at the agent's last exec, the unfiltered one ends with
+`kill(<tracer pid>, SIGKILL`). The parser records a call cut off by the
+tracer's death, or an `<unfinished ...>` call never resumed, as interrupted.
 
 | event | from |
 | --- | --- |
-| `exec` with `argv`, and `exit` when the process ended | `execve`, `execveat`; the exit status (128 plus the signal number for a signal) goes to the last exec of the process |
+| `exec` with `argv`, `exe`, `cwd`, `env`, and `exit` when the process ended | `execve`, `execveat`; `exe` is the path the kernel executed, resolved against the process's working directory or the `execveat` descriptor (never `argv[0]`); `cwd` is the process's working directory; `env` holds the members of the environment that change which code runs (`PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSAFEPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `PYTHONNOUSERSITE`, `PYTHONPYCACHEPREFIX`, `PYTHONWARNINGS`, `PYTEST_ADDOPTS`, `PYTEST_PLUGINS`, `NODE_OPTIONS`, `NODE_PATH`), only those present; the exit status (128 plus the signal number for a signal) goes to the last exec of the process |
 | `write` | an open with `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC` or `O_APPEND`, `creat`, and a shared writable `mmap` |
 | `create`, `rename`, `link`, `unlink`, `truncate` | the matching calls; `rename` and `link` carry `target` |
 | `chmod` | mode, owner, timestamp and extended-attribute changes |
 | `read` | a read-only open inside the workspace |
-| `connect` | `connect`, with no path; the address is in the receipt |
+| `connect` | `connect`, with no path and with `address`, the socket address as the tracer printed it |
+
+Every mutation outside the workspace is an entry of the observation's
+`external_mutations`: `id`, `step` (from the same sequence as `events`, so a
+reader can order it against each exec), `time`, `type` (the mutation type),
+`paths` (absolute container paths of the sides outside the workspace),
+`origin` when a command caused it, and `location`. `location` is `grader_path`
+for a Python startup hook (`sitecustomize.py`, `usercustomize.py`, any `.pth`
+file), a reward file (`reward.json`, `reward.txt`), or anything under a
+`site-packages`, `dist-packages` or `verifier` directory, and
+`outside_workspace` otherwise. Paths under `/dev`, `/proc` and `/sys` are left
+out.
+
+`exe` and `cwd` are container paths. The observation's `workspace_root` names
+the container path of the workspace, so a reader can tell a runner on the
+image (`/usr/local/bin/pytest`) from one the agent placed in the workspace
+(`/workspace/.bin/pytest`) whose argv is the same.
 
 A rename or link from outside the workspace into it is recorded as a `create`
-of the target; one from inside to outside, as an `unlink`.
+of the target; a rename from inside to outside, as an `unlink`; a hard link
+from an inside file to an outside name, as a `link` on the inside path with no
+`target`. No mutation that touches the workspace is left out.
 
 ### Origin
 
@@ -106,15 +155,25 @@ documents; a persistent tool shell's commands are each their own.
 
 ## Coverage
 
-| condition | coverage |
-| --- | --- |
-| inotify queue overflow, or a watch that could not be added | `unknown` |
-| tracer lost (no exit record for the root process) | `incomplete`, gap to the end |
-| `io_uring_setup`, `ptrace` or `process_vm_writev` | `incomplete`, gap to the end |
-| a change inotify saw with no matching traced call | `incomplete`, one-second gap; the change is recorded with no `origin` |
-| a call whose directory descriptor printed without a path | `incomplete`, one-second gap |
-| a trace line the parser does not recognise | `incomplete`, whole run |
-| none of these | `complete` |
+Every gap carries `gap_cause`: `agent` (the agent caused the loss, or alone
+had the means), `host` (the launcher's side), `sensor` (a limit of the tracer)
+or `unknown` (a change no traced call explains). Overlapping gaps of one cause
+are merged; gaps of different causes stay apart.
+
+| condition | coverage | `gap_cause` |
+| --- | --- | --- |
+| a watch that could not be added | `unknown` | (no gaps) |
+| inotify queue overflow | `incomplete`, from the last read that emptied the queue to the read that reported the overflow | `agent` when the trace shows a workspace mutation in that window, else `unknown` |
+| tracer lost (no exit record for the root process) | `incomplete`, gap to the end | `host` when the launcher timed the run out; else `agent` when the trace ends with a signal the agent sent outside its tree, or when the agent shares the tracer's uid (`tracer_uid_separated: false`); else `host` |
+| `io_uring_setup`, `ptrace`, `process_vm_writev`, or a delivered signal outside the traced tree | `incomplete`, gap to the end | `agent` |
+| a change inotify saw with no matching traced call | `incomplete`, one-second gap; the change is recorded with no `origin` | `unknown` |
+| a call whose directory descriptor printed without a path | `incomplete`, one-second gap | `sensor` |
+| a trace line the parser does not recognise | `incomplete`, whole run | `agent` when the agent shares the tracer's uid (it can write into the trace), else `sensor` |
+| none of these | `complete` | |
+
+A failed attempt to signal outside the tree (for example `kill(1, SIGKILL)`
+refused with `EPERM` under docker) changes nothing and opens no gap; it is
+listed in `signals`.
 
 ## Limits
 
@@ -123,9 +182,19 @@ documents; a persistent tool shell's commands are each their own.
   `CAP_DAC_READ_SEARCH`, `CAP_SETUID` and `CAP_SETGID`, and drops the agent to
   the workspace owner's uid (65534 when the workspace is owned by root). The
   agent cannot signal the tracer or open its descriptors.
-- Apptainer: tracer and agent share a uid (`tracer_uid_separated: false`).
-  A killed tracer is reported as lost events; a forged trace line is not
-  detected.
+- Apptainer: the launcher reads `/proc/self/uid_map` inside
+  `apptainer exec --fakeroot` (recorded in `launch.json` as `uid_map`). When
+  the user has a subordinate uid range, the namespace maps more than uid 0;
+  the run then uses `--fakeroot`, the tracer is root in the namespace, the
+  agent is dropped to uid 65534 by `setpriv`, the workspace is handed to that
+  uid before the run and back after it, and `tracer_uid_separated` is `true`.
+  Otherwise tracer and agent share a uid (`tracer_uid_separated: false`). On a
+  HiPerGator compute node (apptainer 1.4.2, measured 2026-10-17) there is no
+  subuid entry; apptainer falls back to the `fakeroot` command in a namespace
+  that maps uid 0 only, `setpriv` to 65534 reports success, and the agent
+  still killed its tracer. There a killed tracer is reported as a gap to the
+  end with `gap_cause: agent`, and the trace ends with the agent's `kill`; a
+  forged trace line that parses is not detected.
 - bubblewrap is not used: it fails to set up a user namespace on hosts with
   `kernel.apparmor_restrict_unprivileged_userns=1`, including the default
   Ubuntu 24.04 desktop. The older `boundary-probe` command still uses it and

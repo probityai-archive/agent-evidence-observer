@@ -8,12 +8,23 @@ unlink, truncate, chmod, mmap and connect families, never a subset: an
 binary such as busybox writes. The expression is recorded verbatim in the
 receipt.
 
-Strings are printed in hex (``-xx``) and descriptors with their paths
-(``-y``), so the parser never guesses at quoting. Only successful calls are
-printed (``-z``); a failed write changed nothing.
+Every call is printed, failed ones included, and the parser drops a call
+that failed (it changed nothing). The tracer does not filter with ``-z``:
+that defers each line until the call returns, so a ``kill`` that kills the
+tracer itself never reaches the trace. Unfiltered, the tracer writes the call
+as it enters, and the trace ends with that call cut off; the parser records
+it as ``interrupted``. Signals (``kill``, ``tkill``, ``tgkill``,
+``pidfd_send_signal`` and the ``rt_*sigqueueinfo`` pair) are recorded with
+their target, and a delivered signal to a process outside the traced tree is
+an escape.
 
-The parser turns the trace into ordered events: ``exec`` with argv and the
-process's exit status, mutation events (``write``, ``create``, ``rename``,
+Strings are printed in hex (``-xx``) and descriptors with their paths
+(``-y``), so the parser never guesses at quoting. Structures are printed in
+full (``-v``), so each exec's environment is read, and the members that change
+which code runs (:data:`LOADER_ENV`) go into the exec event with the path the
+kernel executed and the process's working directory. The parser turns the trace into ordered events: ``exec`` with argv and the
+process's exit status, the executed path, the working directory and the
+loader environment, mutation events (``write``, ``create``, ``rename``,
 ``link``, ``unlink``, ``truncate``, ``chmod``) on paths, ``read`` and
 ``connect``. Each event inside a command's process tree carries ``origin``,
 the event id of the exec at the root of that tree; see :func:`assign_origins`.
@@ -40,11 +51,18 @@ CHMOD = ("chmod", "fchmod", "fchmodat", "fchmodat2", "chown", "fchown", "lchown"
 MMAP = ("mmap",)
 CONNECT = ("connect",)
 PROCESS = ("fork", "vfork", "clone", "clone3", "chdir", "fchdir")
+SIGNAL = ("kill", "tkill", "tgkill", "pidfd_send_signal", "rt_sigqueueinfo", "rt_tgsigqueueinfo")
 ESCAPE = ("io_uring_setup", "ptrace", "process_vm_writev")
-TRACED = EXEC + OPEN + CREATE + RENAME + LINK + UNLINK + TRUNCATE + CHMOD + MMAP + CONNECT + PROCESS + ESCAPE
+TRACED = (EXEC + OPEN + CREATE + RENAME + LINK + UNLINK + TRUNCATE + CHMOD + MMAP + CONNECT
+          + PROCESS + SIGNAL + ESCAPE)
 TRACE_EXPRESSION = "trace=" + ",".join(TRACED)
-FLAGS = ("-o", "/dev/stderr", "-f", "-q", "-y", "-ttt", "-xx", "-z", "-s", "65535", "-e", "signal=none",
-         "-e", TRACE_EXPRESSION)
+FLAGS = ("-o", "/dev/stderr", "-f", "-q", "-y", "-v", "-ttt", "-xx", "-s", "65535", "-e",
+         "signal=none", "-e", TRACE_EXPRESSION)
+IN_PROGRESS = ("EINPROGRESS",)
+LOADER_ENV = ("PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "PYTHONHOME",
+              "PYTHONSAFEPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONNOUSERSITE",
+              "PYTHONPYCACHEPREFIX", "PYTHONWARNINGS", "PYTEST_ADDOPTS", "PYTEST_PLUGINS",
+              "NODE_OPTIONS", "NODE_PATH")
 MUTATION_TYPES = ("write", "create", "rename", "link", "unlink", "truncate", "chmod")
 VISIBLE_EVENT_TYPES = ("exec",) + MUTATION_TYPES + ("read", "connect")
 WRITE_FLAGS = ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND")
@@ -140,6 +158,7 @@ class Call:
 @dataclass
 class Trace:
     calls: list[Call] = field(default_factory=list)
+    interrupted: list[Call] = field(default_factory=list)
     exits: dict[int, tuple[float, int]] = field(default_factory=dict)
     root_pid: int | None = None
     last_time: float | None = None
@@ -170,11 +189,29 @@ def _split_result(text: str) -> tuple[str, str]:
     raise TraceError("unterminated syscall arguments")
 
 
+def _cut_off(trace: Trace, number: int, pid: int, when: float, body: str) -> bool:
+    """Record the call the tracer was writing when it died, if ``body`` is one."""
+    call = _CALL.match(body)
+    if not call:
+        return False
+    trace.interrupted.append(Call(number, pid, when, call.group(1), split_args(call.group(2)),
+                                  ""))
+    return True
+
+
 def parse(text: str) -> Trace:
-    """Parse ``strace -f -ttt -xx -y`` output into completed calls and exits."""
+    """Parse ``strace -f -ttt -xx -y`` output into calls and exits.
+
+    A call the tracer started and never finished, because it stopped first, is
+    in ``interrupted``: an ``<unfinished ...>`` call never resumed, or the
+    trace's last line when the text does not end in a newline. A cut-off line
+    anywhere else is a :class:`TraceError`.
+    """
     trace = Trace()
     pending: dict[int, tuple[float, str, str]] = {}
-    for number, line in enumerate(text.splitlines()):
+    lines = text.splitlines()
+    last = len(lines) - 1 if text and not text.endswith("\n") else -1
+    for number, line in enumerate(lines):
         match = _LINE.match(line)
         if not match:
             if line.strip():
@@ -207,8 +244,15 @@ def parse(text: str) -> Trace:
         if not call:
             trace.unparsed.append(line)
             continue
-        args, result = _split_result(call.group(2))
+        try:
+            args, result = _split_result(call.group(2))
+        except TraceError:
+            if number == last and _cut_off(trace, number, pid, when, body):
+                continue
+            raise
         trace.calls.append(Call(number, pid, when, call.group(1), split_args(args), result))
+    for pid, (when, name, head) in pending.items():
+        trace.interrupted.append(Call(len(lines), pid, when, name, split_args(head), ""))
     return trace
 
 
@@ -222,6 +266,9 @@ class Event:
     path: str | None = None
     target: str | None = None
     argv: list[str] | None = None
+    exe: str | None = None
+    cwd: str | None = None
+    env: dict[str, str] | None = None
     exit: int | None = None
     address: str | None = None
     id: str = ""
@@ -235,6 +282,7 @@ class Effects:
     events: list[Event] = field(default_factory=list)
     external: list[dict] = field(default_factory=list)
     escapes: list[dict] = field(default_factory=list)
+    signals: list[dict] = field(default_factory=list)
     unresolved: list[dict] = field(default_factory=list)
     parents: dict[int, int] = field(default_factory=dict)
     root_pid: int | None = None
@@ -326,6 +374,34 @@ def _path_effect(name: str, args: list[str], result: str, pid: int,
     raise TraceError(f"no effect rule for {name}")
 
 
+def loader_env(envp: list[str]) -> dict[str, str]:
+    """The members of an exec's environment that change which code is loaded."""
+    found = {}
+    for item in envp:
+        key, sep, value = item.partition("=")
+        if sep and key in LOADER_ENV:
+            found[key] = value
+    return found
+
+
+def _exec_event(name: str, args: list[str], pid: int, when: float,
+                resolve: _Resolver) -> Event:
+    """An exec with the path the kernel ran, the working directory and the loader keys.
+
+    ``-v`` prints the environment in full; an abbreviated one is a trace the
+    configuration did not produce, so it is a :class:`TraceError`.
+    """
+    if name == "execve":
+        exe = resolve.path(pid, string_arg(args[0]))
+        argv, envp = argv_arg(args[1]), argv_arg(args[2])
+    else:
+        raw = string_arg(args[1])
+        exe = _fd(args[0]) if raw == "" else resolve.path(pid, raw, args[0])
+        argv, envp = argv_arg(args[2]), argv_arg(args[3])
+    return Event("exec", pid, when, argv=argv, exe=exe, cwd=resolve.of(pid),
+                 env=loader_env(envp))
+
+
 def effects(trace: Trace, workdir: str) -> Effects:
     """Turn parsed calls into events, in the order the calls completed.
 
@@ -342,6 +418,11 @@ def effects(trace: Trace, workdir: str) -> Effects:
 
     for call in trace.calls:
         name, args, here = call.name, call.args, process(call.pid)
+        if name in SIGNAL:
+            found.signals.append(_signal(call, here, "failed" if _failed(call) else "ok"))
+            continue
+        if _failed(call) and not (name in CONNECT and _in_progress(call.result)):
+            continue
         if name in ("fork", "vfork", "clone", "clone3"):
             child = _ret_int(call.result)
             if child and child > 0:
@@ -357,8 +438,7 @@ def effects(trace: Trace, workdir: str) -> Effects:
             elif name == "fchdir":
                 resolve.cwd[here] = _fd(args[0])
             elif name in EXEC:
-                argv = argv_arg(args[1] if name == "execve" else args[2])
-                found.events.append(Event("exec", here, call.time, argv=argv))
+                found.events.append(_exec_event(name, args, here, call.time, resolve))
             elif name in CONNECT:
                 found.events.append(Event("connect", here, call.time,
                                           address=args[1] if len(args) > 1 else ""))
@@ -369,8 +449,58 @@ def effects(trace: Trace, workdir: str) -> Effects:
                 found.events.append(Event(kind, here, call.time, **fields))
         except Unresolved:
             found.unresolved.append({"syscall": name, "pid": here, "time": call.time})
+    for call in trace.interrupted:
+        if call.name in SIGNAL:
+            found.signals.append(_signal(call, process(call.pid), "interrupted"))
     _exits(found, trace, threads)
+    _place_signals(found, trace, threads)
     return found
+
+
+def _failed(call: Call) -> bool:
+    """A call that returned an error, or no result, changed nothing it names."""
+    return call.result.startswith(("-", "?"))
+
+
+def _in_progress(result: str) -> bool:
+    return any(f" {code} " in f" {result} " for code in IN_PROGRESS)
+
+
+def _signal(call: Call, pid: int, status: str) -> dict:
+    """One signal call: who sent which signal to which process, and how it ended."""
+    args = call.args
+    if call.name in ("tgkill", "rt_tgsigqueueinfo"):
+        target, number = args[1] if len(args) > 1 else "", args[2] if len(args) > 2 else ""
+    elif call.name == "pidfd_send_signal":
+        target, number = "", args[1] if len(args) > 1 else ""
+    else:
+        target, number = args[0] if args else "", args[1] if len(args) > 1 else ""
+    record: dict = {"syscall": call.name, "pid": pid, "time": call.time}
+    value = _ret_int(target) if target else None
+    if value is not None:
+        record["target"] = value
+    record["signal"] = number
+    record["status"] = status
+    return record
+
+
+def _place_signals(found: Effects, trace: Trace, threads: dict[int, int]) -> None:
+    """Mark each signal sent outside the traced tree; a delivered one is an escape.
+
+    The traced tree is every process the trace shows. A target of 0 or less
+    names a process group or every process, which can include the tracer, so
+    it counts as outside. A ``pidfd`` target is outside unless proven
+    otherwise, because the descriptor's process is not printed.
+    """
+    traced = {threads.get(call.pid, call.pid) for call in trace.calls + trace.interrupted}
+    traced |= set(found.parents) | set(trace.exits)
+    for record in found.signals:
+        target = record.get("target")
+        record["outside_tree"] = target is None or target <= 0 or target not in traced
+        if record["status"] == "ok" and record["outside_tree"] and target is not None \
+                and target > 0:
+            found.escapes.append({"syscall": record["syscall"], "pid": record["pid"],
+                                  "time": record["time"], "target": target})
 
 
 def _metadata_path(name: str, args: list[str], pid: int, resolve: _Resolver) -> str:

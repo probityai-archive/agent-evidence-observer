@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..sensors import strace
 
@@ -39,6 +40,23 @@ class Identity:
     image_id: str
     strace_version: str
     runtime_version: str
+
+
+def uid_separated(identity: Identity) -> bool:
+    """The tracer runs as container root and the agent under ``setpriv``'s uid."""
+    return True
+
+
+def agent_uid(identity: Identity, workspace: Path, owner_uid: int) -> int:
+    return owner_uid
+
+
+def prepare(identity: Identity, workspace: Path) -> None:
+    """Nothing to hand over: the agent runs as the workspace owner."""
+
+
+def restore(identity: Identity, workspace: Path) -> None:
+    """Nothing to hand back."""
 
 
 def _run(argv: list[str]) -> str:
