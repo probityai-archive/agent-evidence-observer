@@ -55,7 +55,7 @@ Exit codes for every command: 0 verified or done, 1 refused, 2 usage,
 writes `equivocation-<digest>.json` beside its state file), 4 the witness did not
 answer. Exit 4 decides nothing; it is never a clean result.
 
-`audit URL --witness-key K --origin O --state S [CHECKPOINT ...]` checks
+`audit URL --witness-key K --origin O --state S [--checkpoint FILE ...]` checks
 checkpoints received from other readers and the witness's latest one against the
 retained view. `check-equivocation EVIDENCE --witness-key K` checks a fork record.
 

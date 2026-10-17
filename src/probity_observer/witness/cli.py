@@ -154,7 +154,8 @@ def _parser() -> argparse.ArgumentParser:
             command.add_argument("--seed", type=Path, required=True, help="the producer's seed file")
             command.add_argument("--claim-id", required=True)
         else:
-            command.add_argument("checkpoint", type=Path, nargs="*", help="checkpoint envelopes received elsewhere")
+            command.add_argument("--checkpoint", type=Path, action="append", default=[],
+                                 help="a checkpoint envelope received elsewhere (repeatable)")
 
     verify = commands.add_parser("verify", help="verify a witnessed record offline and print its witness scope")
     verify.add_argument("bundle", type=Path)

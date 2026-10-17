@@ -203,7 +203,7 @@ def test_cli_reports_equivocation_with_exit_three(make_log, host, witness_key, t
     fork_file = tmp_path / "fork.json"
     fork_file.write_bytes(forked.checkpoint())
     code = cli.main(["audit", url, "--witness-key", witness_key, "--origin", ORIGIN,
-                     "--state", str(honest_state), str(fork_file)])
+                     "--state", str(honest_state), "--checkpoint", str(fork_file)])
     assert code == cli.EQUIVOCATION
     assert Path(next(tmp_path.glob("equivocation-*.json"))).exists()
 
