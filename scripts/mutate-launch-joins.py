@@ -16,6 +16,7 @@ from pathlib import Path
 
 RECORD = Path("src/probity_observer/record_oe.py")
 STRACE = Path("src/probity_observer/sensors/strace.py")
+TREE = Path("src/probity_observer/sensors/treedigest.py")
 MUTANTS = [
     ("an S1 change is always covered", RECORD,
      '    if change.path in s2_paths:\n        return True\n',
@@ -59,6 +60,18 @@ MUTANTS = [
     ("the exit status is dropped", STRACE,
      '            last_exec[owner].exit = status\n',
      '            pass\n'),
+    ("a symbolic link leaves the tree digest unchanged", TREE,
+     '    for name, target in fields["symlinks"].items():\n',
+     '    for name, target in {}.items():\n'),
+    ("a special file leaves the tree digest unchanged", TREE,
+     '    for name, kind in fields["special"].items():\n',
+     '    for name, kind in {}.items():\n'),
+    ("an execute bit leaves the tree digest unchanged", TREE,
+     '("x:" if name in executable else "")',
+     '("" if name in executable else "")'),
+    ("a symbolic link to a directory is not listed", TREE,
+     '            if entry.is_symlink():\n                tree.symlinks',
+     '            if False:\n                tree.symlinks'),
 ]
 TESTS = ["-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", "tests/launch",
          "--deselect", "tests/launch/test_docker_launch.py"]

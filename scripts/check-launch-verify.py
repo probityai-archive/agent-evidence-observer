@@ -118,6 +118,27 @@ def launch(name: str, root: Path, output: Path, backend: str, image: str) -> Pat
     return run_dir
 
 
+def for_verifier(role: str, data: bytes) -> bytes:
+    """The record in the version the pinned probity-verify reads.
+
+    The launcher writes ``probity-tree/v2``, which adds symbolic links,
+    special files and execute bits to the digest. probity-verify at the commit
+    the workflow pins reads ``probity-tree/v1`` (regular files only), so the
+    tree record is re-expressed in v1 by dropping the added members and
+    recomputing the digest over the files. The verdicts checked here depend
+    only on members both versions share. Delete this function when
+    probity-verify reads the new version and the workflow pins that commit.
+    """
+    value = json.loads(data)
+    if role == "tree" and value["schema_version"] == "probity-tree/v2":
+        for member in ("executable", "symlinks", "special"):
+            del value[member]
+        value["schema_version"] = "probity-tree/v1"
+        value["tree_sha256"] = treedigest.tree_digest(value["files"])
+        return encoded(value)
+    return data
+
+
 def verdicts(name: str, run_dir: Path, sealed: dict) -> dict:
     observation = json.loads((run_dir / "observation.json").read_text())
     raw = {
@@ -126,8 +147,8 @@ def verdicts(name: str, run_dir: Path, sealed: dict) -> dict:
                            "invocation_id": "call-1", "producer": "transcript-parser",
                            "claims": [{"id": "c1", "argv": UNITTEST, "exit": 0}]}),
         "capability": (run_dir / "capability.json").read_bytes(),
-        "observation": (run_dir / "observation.json").read_bytes(),
-        "tree": (run_dir / "tree.json").read_bytes(),
+        "observation": for_verifier("observation", (run_dir / "observation.json").read_bytes()),
+        "tree": for_verifier("tree", (run_dir / "tree.json").read_bytes()),
     }
     found = {}
     for claim_type, roles in CHECKS.items():

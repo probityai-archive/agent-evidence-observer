@@ -6,6 +6,7 @@ import pytest
 
 from probity_observer import record_oe
 from probity_observer.sensors import inotify, strace
+from probity_observer.sensors import treedigest
 from probity_observer.sensors.treedigest import Tree
 
 WS = "/workspace"
@@ -189,3 +190,17 @@ def test_join_credits_only_paths_that_reach_the_observation():
     named = {item.get("path") for item in recorded} | {item.get("target") for item in recorded}
     assert credited[0] <= named
     assert credited == ({"a.txt", "pkg"}, {"pkg"})
+
+
+def test_tree_record_binds_links_special_files_and_modes():
+    tree = Tree(files={"a.txt": "0" * 64, "run.sh": "1" * 64}, executable=["run.sh"],
+                symlinks={"conftest.py": "/tmp/evil"}, special={"pipe": "fifo"})
+    record = built(effects(event("exec", 0.1, argv=["agent"], exit=0)), tree=tree)["tree"]
+    assert record["schema_version"] == "probity-tree/v2"
+    assert set(record) == {"schema_version", "claim_id", "invocation_id", "producer",
+                           "vantage", "witness_scope", "tree_sha256", "files", "executable",
+                           "symlinks", "special"}
+    assert record["tree_sha256"] == treedigest.record_digest(record)
+    assert record["symlinks"] == {"conftest.py": "/tmp/evil"}
+    without_link = dict(record, symlinks={})
+    assert treedigest.record_digest(without_link) != record["tree_sha256"]

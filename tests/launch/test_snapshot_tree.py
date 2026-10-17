@@ -59,3 +59,49 @@ def test_reset_refuses_a_changed_tarball(tmp_path):
     with pytest.raises(snapshot.SnapshotError):
         snapshot.reset(workspace, tmp_path / "a.tar", digest)
     assert (workspace / "src" / "app.py").exists()
+
+
+def test_a_symlink_changes_the_tree_digest(tmp_path):
+    make(tmp_path)
+    before = treedigest.scan(tmp_path)
+    os.symlink("/tmp/evil_conftest.py", tmp_path / "conftest.py")
+    after = treedigest.scan(tmp_path)
+    assert after.files == before.files
+    assert after.sha256 != before.sha256
+    os.remove(tmp_path / "conftest.py")
+    os.symlink("/tmp/other.py", tmp_path / "conftest.py")
+    assert treedigest.scan(tmp_path).sha256 not in (before.sha256, after.sha256)
+
+
+def test_special_files_and_modes_change_the_tree_digest(tmp_path):
+    make(tmp_path)
+    before = treedigest.scan(tmp_path).sha256
+    os.mkfifo(tmp_path / "pipe")
+    fifo = treedigest.scan(tmp_path)
+    assert fifo.special == {"pipe": "fifo"} and fifo.sha256 != before
+    os.remove(tmp_path / "pipe")
+    os.chmod(tmp_path / "src" / "app.py", 0o755)
+    executable = treedigest.scan(tmp_path)
+    assert executable.executable == ["src/app.py"] and executable.sha256 != before
+
+
+def test_tree_lines_are_typed_and_sorted_by_path(tmp_path):
+    make(tmp_path)
+    os.symlink("src/app.py", tmp_path / "link")
+    os.chmod(tmp_path / "tests" / "test_app.py", 0o700)
+    tree = treedigest.scan(tmp_path)
+    target = hashlib.sha256(b"src/app.py").hexdigest()
+    lines = (f"l:{target}  link\n"
+             f"{tree.files['src/app.py']}  src/app.py\n"
+             f"x:{tree.files['tests/test_app.py']}  tests/test_app.py\n")
+    assert tree.sha256 == hashlib.sha256(lines.encode()).hexdigest()
+    assert tree.sha256 == treedigest.record_digest(tree.record_fields())
+
+
+def test_a_symlink_to_a_directory_is_listed_and_bound(tmp_path):
+    make(tmp_path)
+    before = treedigest.scan(tmp_path).sha256
+    os.symlink("../src", tmp_path / "tests" / "fixtures")
+    tree = treedigest.scan(tmp_path)
+    assert tree.symlinks == {"tests/fixtures": "../src"}
+    assert tree.sha256 != before

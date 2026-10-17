@@ -51,7 +51,7 @@ The image must provide `strace` 6.6 or later (for `fchmodat2`), `setpriv` and
 | `trace.txt` | the raw tracer output |
 | `observation.json` | `probity-observation/v2` |
 | `capability.json` | `probity-capabilities/v1`: the event types the sensors can see |
-| `tree.json` | `probity-tree/v1`: the final regular files and their digests |
+| `tree.json` | `probity-tree/v2`: every non-directory entry of the final tree, below |
 | `receipt.json` | `probity-launch-receipt/v1`, below |
 
 The three verify records follow `docs/done-receipt.md` in probity-verify and
@@ -72,12 +72,29 @@ say `vantage: independent`, `witness_scope: PEER`. The receipt says
 - `s2_strace`: `tracer` (`complete` or `lost`), call count, `unparsed_lines`,
   `unresolved` calls, `escapes` (`io_uring_setup`, `ptrace`,
   `process_vm_writev`), and the origin rule;
-- `s3_tree`: digest, file count, symbolic links (listed, never followed) and
+- `s3_tree`: the tree digest and the counts of files, symbolic links and
   special files;
 - `join.unattributed`: changes inotify saw that the trace did not;
 - `external_effects`: mutations outside the workspace (for example a `.pth`
   file in the user site directory) and network connects. Paths under `/dev`,
   `/proc` and `/sys` are left out.
+
+## Tree record
+
+`probity-tree/v2` lists every entry that is not a directory: `files` (path to
+SHA-256), `executable` (the files with any execute bit, sorted), `symlinks`
+(path to the raw link target; never followed) and `special` (path to `fifo`,
+`socket`, `char` or `block`). `tree_sha256` is SHA-256 over one line per entry,
+sorted by the UTF-8 bytes of the path: `<sha256>  <path>` for a regular file
+(what `sha256sum` prints), `x:<sha256>  <path>` for an executable one,
+`l:<sha256 of the target bytes>  <path>` for a symbolic link and
+`s:<kind>  <path>` for a special file. A link added, removed or retargeted
+anywhere in the workspace changes the digest, so a grader that copies the
+workspace receives exactly the bound tree.
+
+`scripts/check-launch-verify.py` re-expresses the tree record as
+`probity-tree/v1` for the probity-verify commit it pins, which reads only
+regular files.
 
 ## Events
 

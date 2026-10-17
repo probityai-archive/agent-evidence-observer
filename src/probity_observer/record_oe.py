@@ -10,7 +10,9 @@ counting as an edit, and the observation names a coverage gap around it. S3
 
 The output formats are the ones ``probity-verify`` defines in
 ``docs/done-receipt.md``: ``probity-observation/v2``,
-``probity-capabilities/v1`` and ``probity-tree/v1``. Those records are strict
+``probity-capabilities/v1`` and ``probity-tree/v2`` (every non-directory
+entry, symbolic links and special files included; see
+:mod:`.sensors.treedigest`). Those records are strict
 and carry no launch detail, so the launch digest, the exact trace expression,
 the inotify watch list, effects outside the workspace and the join's findings
 go into the receipt beside them (``probity-launch-receipt/v1``). The receipt's
@@ -31,6 +33,7 @@ from .sensors import inotify, strace
 from .sensors.treedigest import Tree
 
 RECEIPT_SCHEMA = "probity-launch-receipt/v1"
+TREE_SCHEMA = "probity-tree/v2"
 WITNESS_SCOPE = "PEER"
 VANTAGE = "independent"
 DEVICE_TREES = ("/dev/", "/proc/", "/sys/")
@@ -224,8 +227,8 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
         observation["coverage"] = "complete"
     capability = {"schema_version": "probity-capabilities/v1", **base,
                   "visible_event_types": sorted(strace.VISIBLE_EVENT_TYPES)}
-    tree_record = {"schema_version": "probity-tree/v1", **observed,
-                   "tree_sha256": tree.sha256, "files": tree.files}
+    tree_record = {"schema_version": TREE_SCHEMA, **observed,
+                   "tree_sha256": tree.sha256, **tree.record_fields()}
     sensors = {
         "s1_inotify": {"changes": len(report.changes), "overflow": report.overflow,
                        "watch_failures": report.watch_failures,
@@ -240,7 +243,7 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
                           for escape in effects.escapes],
                       "origin_rule": strace.ORIGIN_RULE},
         "s3_tree": {"tree_sha256": tree.sha256, "files": len(tree.files),
-                    "symlinks": tree.symlinks, "special": tree.special},
+                    "symlinks": len(tree.symlinks), "special": len(tree.special)},
         "join": {"unattributed": [{"type": change.kind, "path": change.path,
                                    "time": instant(change.time),
                                    "scanned": change.scanned} for change in unattributed]},
