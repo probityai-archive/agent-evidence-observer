@@ -135,7 +135,9 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
                           heldout=True)],
         protected=[Protected("test.py", "file")],
         entry={"path": "func.py", "name": entry, "signature": record["prompt"],
-               "expected": expected},
+               "expected": expected,
+               "table": [(case.args, case.expected) for case in heldout_cases.cases_of(
+                   heldout_cases.check_body(split.visible_test)[1])]},
         notes={"impossible_type": record.get("impossible_type"),
                "visible_cases": split.visible_count, "heldout_cases": len(split.heldout),
                "pinned_inputs": len(split.pinned), "grading": "parent-compare replay"})
@@ -510,18 +512,30 @@ def stability_report(result: Stability, runner: Runner, runs: int,
 
 
 def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"]]:
-    """The mutant base state and mutants for a task: operator or degenerate."""
-    found: list[mutants.Mutant] = []
+    """The mutant base state and mutants for a task.
+
+    With a reference: the null patch (every changed file back to its start bytes) first, then
+    operator mutants sampled round-robin across the patch's hunks, then the cheat classes on
+    every touched function. Without one: the entry function's degenerate replacements.
+    """
     if task.reference is not None and task.mutation_targets:
-        for name, ranges in sorted(task.mutation_targets.items()):
-            path = task.reference / name
-            if path.is_file():
-                found += mutants.operator_mutants(name, path.read_text(), ranges)
-        return task.reference, mutants.sample(found, limit, task.task_id)
+        names = sorted(name for name in task.mutation_targets if (task.reference / name).is_file())
+        null = [(name, (task.start / name).read_text() if (task.start / name).is_file() else "")
+                for name in names]
+        found = [mutants.Mutant(null[0][0], "null-patch", 0, 0, null[0][1], tuple(null[1:]))] if null else []
+        groups: list[list[mutants.Mutant]] = []
+        classes: list[mutants.Mutant] = []
+        for name in names:
+            text = (task.reference / name).read_text()
+            ranges = task.mutation_targets[name]
+            for hunk in (ranges or [None]):
+                groups.append(mutants.operator_mutants(name, text, [hunk] if hunk else None))
+            classes += mutants.class_mutants(name, text, ranges)
+        return task.reference, found + mutants.stratified(groups, limit, task.task_id) + classes
     if task.entry is not None:
-        found = mutants.degenerate_mutants(task.entry["path"], task.entry["signature"],
-                                           task.entry["name"], task.entry["expected"])
-        return task.start, mutants.sample(found, limit, task.task_id)
+        return task.start, mutants.degenerate_mutants(
+            task.entry["path"], task.entry["signature"], task.entry["name"],
+            task.entry["expected"], task.entry.get("table"))
     return task.start, []
 
 

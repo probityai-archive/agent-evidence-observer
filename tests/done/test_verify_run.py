@@ -173,3 +173,21 @@ def test_staging_rejects_a_native_binary_the_start_tree_did_not_have(tmp_path):
     staged = verify_run.stage_tree(final, tmp_path / "staged", start)
     assert sorted(staged.rejected_native) == ["evil.so", "hidden"]
     assert (tmp_path / "staged" / "same.so").exists() and (tmp_path / "staged" / "plain.py").exists()
+
+
+def test_post_patch_mutants_find_a_hunk_the_tests_never_run(tmp_path, harness, python_bin):
+    from probity_observer.done.runner import SubprocessRunner
+    sealed = sealed_task(tmp_path, harness, LCB_ORIGINAL)
+    contract_record = json.loads((sealed.out / "contract.json").read_bytes())
+    start = tmp_path / "start"
+    shutil.copytree(sealed.out / "workspace", start)
+    (start / "func.py").write_text(HONEST)
+    root = tmp_path / "tree"
+    shutil.copytree(start, root)
+    (root / "func.py").write_text(HONEST + "\n\ndef unused(x):\n    return x + 41\n")
+    dirs = {item["id"]: sealed.out / "sealed" / "heldout" for item in contract_record["acceptance"]}
+    report = verify_run.post_patch(SubprocessRunner(python_bin), root, start, contract_record,
+                                   dirs, 60)
+    assert len(report) == 1 and report[0]["mutants"] > 0 and report[0]["killed"] == 0
+    assert verify_run.hunks_exercised(report) < 1.0
+    assert verify_run.hunks_exercised([]) == 1.0
