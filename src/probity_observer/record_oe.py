@@ -11,7 +11,10 @@ counting as an edit, and the observation names a coverage gap around it. S3
 The output formats are the ones ``probity-verify`` defines in
 ``docs/done-receipt.md``, in the versions this module adds to:
 ``probity-observation/v3`` (an exec event carries the executed path ``exe``,
-its working directory ``cwd`` and the loader environment ``env``, all as
+its working directory ``cwd``, the loader environment ``env`` and, when the
+exec gate ran, the ``identity`` of the running executable and its ancestors
+by SHA-256 (see :mod:`.sensors.binary_identity`; an exec whose identity did
+not resolve is a ``sensor`` coverage gap), all as
 container paths under the declared ``workspace_root``; a ``connect`` carries
 its ``address``; and ``external_mutations`` lists every mutation outside the
 workspace, numbered in the same step sequence as ``events``, with its
@@ -135,6 +138,8 @@ def _record_event(event: strace.Event, workspace: str) -> dict | None:
                                   "env": event.env or {}}
         if event.exit is not None:
             fields["exit"] = event.exit
+        if event.identity is not None:
+            fields["identity"] = event.identity
         return fields
     if event.kind == "connect":
         return {"address": event.address}
@@ -252,6 +257,11 @@ def _gaps(context: Context, effects: strace.Effects, trace: strace.Trace,
         gaps.append((min(second, end - 1), min(second + 1, end), "sensor"))
     if trace.unparsed:
         gaps.append((start, end, "sensor" if context.tracer_uid_separated else "agent"))
+    for event in effects.events:
+        if event.kind == "exec" and event.identity is not None \
+                and event.identity.get("status") != "complete":
+            second = max(math.floor(event.time), start)
+            gaps.append((min(second, end - 1), min(second + 1, end), "sensor"))
     return gaps
 
 

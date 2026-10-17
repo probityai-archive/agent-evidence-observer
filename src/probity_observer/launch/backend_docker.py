@@ -12,8 +12,14 @@ trace stream. The tracer writes to the container's stderr, which only the
 launcher reads; the agent's output arrives on the container's stdout.
 
 The image must provide ``strace`` (6.6 or later, for ``fchmodat2``),
-``setpriv`` and ``/bin/sh``; :func:`preflight` checks all three and records the
-tracer's version.
+``setpriv``, ``/bin/sh`` and ``python3``; :func:`preflight` checks them and
+records the tracer's version.
+
+Every exec is gated (:mod:`.identity_gate`): the tracer stops the process at
+the exit of each ``execve`` and the launcher's resolver, run with ``docker exec``
+as container root outside the traced tree, hashes its ``/proc/<pid>/exe`` chain
+and continues it. ``CAP_KILL`` lets that root resolver continue a process that
+already runs under the agent's uid; the agent itself holds no capability.
 """
 
 from __future__ import annotations
@@ -22,11 +28,12 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..sensors import strace
+from ..sensors import binary_identity, strace
 
 NAME = "docker"
 WORKSPACE = "/workspace"
-CAPABILITIES = ("SYS_PTRACE", "DAC_READ_SEARCH", "SETUID", "SETGID")
+CAPABILITIES = ("SYS_PTRACE", "DAC_READ_SEARCH", "SETUID", "SETGID", "KILL")
+IDENTITY_GATE = True
 WRAPPER = 'exec setpriv --reuid="$0" --regid="$0" --clear-groups -- "$@" 2>&1'
 
 
@@ -71,10 +78,10 @@ def preflight(image: str, docker: str = "docker") -> Identity:
     image_id = _run([docker, "image", "inspect", "--format", "{{.Id}}", image])
     runtime = _run([docker, "version", "--format", "{{.Server.Version}}"])
     probe = _run([docker, "run", "--rm", "--network", "none", "--entrypoint", "/bin/sh", image_id,
-                  "-c", "strace -V | head -n 1; command -v setpriv"])
+                  "-c", "strace -V | head -n 1; command -v setpriv; command -v python3"])
     lines = probe.splitlines()
-    if len(lines) != 2 or not lines[0].startswith("strace -- version"):
-        raise BackendError("image lacks strace or setpriv")
+    if len(lines) != 3 or not lines[0].startswith("strace -- version"):
+        raise BackendError("image lacks strace, setpriv or python3 (the exec identity resolver)")
     return Identity(image, image_id, lines[0], runtime)
 
 
@@ -90,9 +97,17 @@ def command(identity: Identity, *, name: str, workspace: str, agent_argv: list[s
              "--env", "HOME=/tmp"]
     for key in sorted(env):
         argv += ["--env", f"{key}={env[key]}"]
-    argv += ["--entrypoint", "strace", identity.image_id, *strace.FLAGS, "--",
+    argv += ["--entrypoint", "strace", identity.image_id, *tracer_flags(), "--",
              "/bin/sh", "-c", WRAPPER, str(uid), *agent_argv]
     return argv
+
+
+def tracer_flags() -> tuple[str, ...]:
+    """The tracer's flags with the exec gate: stop at every exec, and print that stop."""
+    flags = list(strace.FLAGS)
+    at = flags.index("signal=none")
+    del flags[at - 1:at + 1]
+    return (*flags, *binary_identity.TRACER_FLAGS)
 
 
 def kill(name: str, docker: str = "docker") -> None:

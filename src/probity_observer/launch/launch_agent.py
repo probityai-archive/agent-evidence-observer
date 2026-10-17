@@ -34,7 +34,7 @@ from typing import Any
 
 from .. import record_oe
 from ..sensors import inotify, strace, treedigest
-from . import backend_apptainer, backend_docker, snapshot
+from . import backend_apptainer, backend_docker, identity_gate, network_effects, snapshot
 
 BACKENDS = {"docker": backend_docker, "apptainer": backend_apptainer}
 UNPRIVILEGED_UID = 65534
@@ -55,6 +55,7 @@ class LaunchSpec:
     env: dict[str, str] = field(default_factory=dict)
     network: bool = False
     timeout_seconds: float = 3600.0
+    network_policy: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -165,7 +166,7 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
         "strace_version": identity.strace_version,
         "container_argv": argv,
         "trace_expression": strace.TRACE_EXPRESSION,
-        "tracer_flags": list(strace.FLAGS),
+        "tracer_flags": list(getattr(backend, "tracer_flags", lambda: strace.FLAGS)()),
         "tracer_uid_separated": backend.uid_separated(identity),
         "uid_map": getattr(identity, "uid_map", None),
         "agent_argv": list(spec.agent_argv),
@@ -176,7 +177,11 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
         "start_tarball_sha256": start_sha256,
         "observer_source_sha256": observer_source_sha256(),
         "timeout_seconds": spec.timeout_seconds,
+        "identity_gate": getattr(backend, "IDENTITY_GATE", False),
     }
+    declared = network_effects.declare(spec.network_policy, run_dir)
+    if declared is not None:
+        launch_record["network_policy"] = declared
     launch_bytes = record_oe.encoded(launch_record)
     (run_dir / "launch.json").write_bytes(launch_bytes)
     launch_sha256 = record_oe.sha256(launch_bytes)
@@ -190,6 +195,11 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
             open(run_dir / "trace.txt", "wb") as trace_file:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=transcript,
                                    stderr=trace_file)
+        gate = None
+        if launch_record["identity_gate"]:
+            gate = identity_gate.Gate(run_dir / "trace.txt",
+                                      identity_gate.resolver_argv("docker", name))
+            gate.start()
         try:
             exit_code = process.wait(timeout=spec.timeout_seconds)
         except subprocess.TimeoutExpired:
@@ -199,6 +209,8 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
             else:
                 backend_apptainer.kill(process)
             exit_code = process.wait()
+        if gate is not None:
+            gate.stop()
     ended = time.time()
     report = watcher.stop()
     backend.restore(identity, workspace)
@@ -207,6 +219,8 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
     trace = strace.parse(trace_text)
     found = strace.effects(trace, backend.WORKSPACE)
     strace.assign_origins(found)
+    if gate is not None:
+        identity_gate.assign(found.events, gate.results())
     tree = treedigest.scan(workspace)
     context = record_oe.Context(spec.claim_id, spec.invocation_id, spec.producer,
                                 backend.WORKSPACE, started, ended, timed_out=timed_out,
@@ -220,6 +234,10 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
                              launch_sha256=launch_sha256, start_sha256=start_sha256, tree=tree,
                              exit_code=exit_code, agent_exit=root_exec.exit if root_exec else None,
                              timed_out=timed_out)
+    if gate is not None:
+        receipt["sensors"]["s4_identity"] = gate.summary()
+    if declared is not None:
+        receipt["network_effects"] = network_effects.judge(run_dir, found)
     (run_dir / "receipt.json").write_bytes(record_oe.encoded(receipt))
     return LaunchResult(run_dir, launch_sha256, receipt["agent_exit"],
                         receipt["coverage"], receipt)

@@ -334,3 +334,73 @@ def test_a_shadowed_runner_is_told_apart_by_its_executed_path(image, workspace, 
     assert fake["env"]["PATH"].startswith("./.bin:") and fake["env"]["PYTHONPATH"] == "."
     [shell] = [item for item in events(records, "exec") if item["argv"][0] == "sh"]
     assert shell["exe"].endswith("/sh") and "PYTHONPATH" not in shell["env"]
+
+
+IDENTITY_POLICY = b"""version: 1
+network_policies:
+  testnet:
+    name: testnet
+    endpoints:
+      - allowed_ips: ["192.0.2.0/24"]
+        port: 443
+    binaries:
+      - path: /usr/local/bin/python3.12
+  named:
+    name: named
+    endpoints:
+      - host: pypi.org
+        port: 8443
+    binaries:
+      - path: /usr/local/bin/python3.12
+"""
+
+
+def test_every_exec_carries_the_hash_of_the_program_that_ran(image, workspace, tmp_path):
+    agent = py("import shutil, subprocess\n"
+               "shutil.copy('/bin/true', 'pytest')\n"
+               "subprocess.run(['chmod', '+x', 'pytest'])\n"
+               "subprocess.run(['./pytest', '-q'])\n"
+               "subprocess.run(['sh', '-c', 'true'])\n")
+    result, records = run(image, workspace, tmp_path, agent, "identity")
+    assert records["launch"]["identity_gate"] is True
+    assert records["observation"]["coverage"] == "complete", records["receipt"]["sensors"]
+    gated = records["receipt"]["sensors"]["s4_identity"]
+    assert gated["failed"] == 0 and gated["complete"] >= 5, gated
+    for event in events(records, "exec"):
+        assert event["identity"]["status"] == "complete", event
+        chain = event["identity"]["chain"]
+        assert chain[-1]["pid"] == 1 and chain[-1]["path"] == "/usr/bin/strace"
+        assert all(len(link["sha256"]) == 64 for link in chain)
+    [fake] = execs(records, ["./pytest", "-q"])
+    true_sha = [link["sha256"] for event in execs(records, ["sh", "-c", "true"])
+                for link in event["identity"]["chain"][:1]]
+    sh_chain = fake["identity"]["chain"]
+    assert sh_chain[0]["path"] == "/workspace/pytest"
+    probe = subprocess.run(["docker", "run", "--rm", "--entrypoint", "sha256sum", image,
+                            "/bin/true"], capture_output=True, text=True, check=True)
+    assert sh_chain[0]["sha256"] == probe.stdout.split()[0]
+    assert sh_chain[0]["sha256"] not in true_sha
+    assert [link["path"] for link in sh_chain[1:2]] == ["/usr/local/bin/python3.12"]
+
+
+def test_traced_connects_are_judged_against_the_declared_policy(image, workspace, tmp_path):
+    source = tmp_path / "policy.yaml"
+    source.write_bytes(IDENTITY_POLICY)
+    agent = py("import socket\n"
+               "for address in (('192.0.2.10', 443), ('198.51.100.7', 80), ('192.0.2.11', 8443)):\n"
+               "    s = socket.socket(); s.setblocking(False)\n"
+               "    try:\n        s.connect(address)\n    except OSError:\n        pass\n"
+               "    s.close()\n")
+    result, records = run(image, workspace, tmp_path, agent, "netpolicy", network=True,
+                          network_policy=source)
+    launch = records["launch"]
+    assert launch["network_policy"]["rules"] == ["named", "testnet"]
+    assert (result.run_dir / "network-policy.yaml").read_bytes() == IDENTITY_POLICY
+    judged = {(item["ip"], item["port"]): item for item in records["receipt"]["network_effects"]}
+    assert judged[("192.0.2.10", 443)]["decision"] == "allowed"
+    assert judged[("192.0.2.10", 443)]["rules"] == ["testnet"]
+    assert judged[("192.0.2.10", 443)]["binary_source"] == "identity"
+    assert judged[("198.51.100.7", 80)]["decision"] == "denied"
+    assert judged[("192.0.2.11", 8443)]["decision"] == "unknown"
+    assert judged[("192.0.2.11", 8443)]["reason"] == "host_not_observed"
+    assert judged[("192.0.2.11", 8443)]["rules"] == ["named"]

@@ -98,7 +98,7 @@ def verifier_view(records: dict[str, bytes]) -> dict[str, bytes]:
 
     The tree loses ``executable``, ``symlinks`` and ``special`` and its digest becomes the
     regular-files digest; the observation loses ``workspace_root``, ``external_mutations``,
-    each exec's ``exe``, ``cwd`` and ``env``, each connect's ``address`` and each gap's
+    each exec's ``exe``, ``cwd``, ``env`` and ``identity``, each connect's ``address`` and each gap's
     ``gap_cause``; the grade's ``tree_sha256`` follows the tree when it named the v2 digest.
     """
     view = dict(records)
@@ -119,7 +119,7 @@ def verifier_view(records: dict[str, bytes]) -> dict[str, bytes]:
         observation.pop("workspace_root", None)
         observation.pop("external_mutations", None)
         for item in observation.get("events", []):
-            for member in ("exe", "cwd", "env", "address"):
+            for member in ("exe", "cwd", "env", "address", "identity"):
                 item.pop(member, None)
         for gap in observation.get("gaps", []):
             gap.pop("gap_cause", None)

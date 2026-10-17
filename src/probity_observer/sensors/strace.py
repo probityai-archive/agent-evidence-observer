@@ -78,6 +78,7 @@ _EXITED = re.compile(r"^\+\+\+ exited with (-?\d+) \+\+\+$")
 _KILLED = re.compile(r"^\+\+\+ killed by (SIG[A-Z0-9]+)(?: \(core dumped\))? \+\+\+$")
 _RESUMED = re.compile(r"^<\.\.\. ([a-z0-9_]+) resumed>(.*)$")
 _CALL = re.compile(r"^([a-z0-9_]+)\((.*)$")
+_STOP_SIGNAL = re.compile(r"^--- (?:SIGSTOP \{.*\}|stopped by SIGSTOP) ---$")
 _HEX = re.compile(r'"((?:\\x[0-9a-f]{2})*)"')
 _FD_PATH = re.compile(r'^(?:-?\d+|AT_FDCWD)<((?:\\x[0-9a-f]{2})*)>')
 
@@ -163,6 +164,7 @@ class Trace:
     root_pid: int | None = None
     last_time: float | None = None
     unparsed: list[str] = field(default_factory=list)
+    stops: int = 0
 
 
 def _split_result(text: str) -> tuple[str, str]:
@@ -224,6 +226,9 @@ def parse(text: str) -> Trace:
         if exited := _EXITED.match(body):
             trace.exits[pid] = (when, int(exited.group(1)))
             continue
+        if _STOP_SIGNAL.match(body):
+            trace.stops += 1
+            continue
         if killed := _KILLED.match(body):
             trace.exits[pid] = (when, 128 + int(signal.Signals[killed.group(1)]))
             continue
@@ -273,6 +278,7 @@ class Event:
     address: str | None = None
     id: str = ""
     origin: str | None = None
+    identity: dict | None = None
 
 
 @dataclass
