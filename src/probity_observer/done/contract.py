@@ -32,7 +32,7 @@ from ..sensors import treedigest
 from . import heldout as heldout_cases
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
-from .runner import Command
+from .runner import Command, Runner
 
 SCHEMA = "probity-done-contract/v1"
 EXCLUDE = ("__pycache__", ".pytest_cache")
@@ -188,9 +188,10 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
     reference_touched = set(touched_files(record["patch"]))
     tests = touched_files(record["test_patch"])
     prefix = tuple(test_cmd)
-    commands = [Command("fail-to-pass", prefix + tuple(fail))]
+    commands = [Command("fail-to-pass", prefix + tuple(fail), ids_from=len(prefix))]
     if passing:
-        commands.append(Command("pass-to-pass", prefix + tuple(passing)))
+        commands.append(Command("pass-to-pass", prefix + tuple(passing), prepatch="pass",
+                                ids_from=len(prefix)))
     overlay = "cp -R ../heldout/. . && exec " + shlex.join(prefix + tuple(fail))
     commands.append(Command("heldout-fail-to-pass", ("sh", "-c", overlay), heldout=True))
     targets = {name: lines for name, lines in touched_lines(record["patch"]).items()
@@ -297,3 +298,85 @@ def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
                 "notes": task.notes, **(report or {})}
     (out / "compile.json").write_bytes(encode(compiled))
     return Sealed(out, digest, record)
+
+
+@dataclass(frozen=True)
+class Stability:
+    """The commands that ran the same way three times on each state, and why others left."""
+
+    commands: list[Command]
+    runs: list[dict[str, Any]]
+    dropped: list[dict[str, Any]]
+
+
+def _exits(runner: Runner, state: Path, command: Command, heldout: Path | None,
+           runs: int, timeout: float) -> list[int]:
+    return [runner.run(state, command.argv, heldout, timeout) for _ in range(runs)]
+
+
+def _judge(task: Task, runner: Runner, command: Command, runs: int,
+           timeout: float, log: list[dict[str, Any]]) -> str | None:
+    """``None`` when the command is stable and as expected, else the reason it is dropped."""
+    states = [("prepatch", task.start, command.prepatch)]
+    if task.reference is not None:
+        states.insert(0, ("reference", task.reference, "pass"))
+    for label, state, expect in states:
+        exits = _exits(runner, state, command, task.heldout, runs, timeout)
+        log.append({"id": command.id, "state": label, "exits": exits})
+        if len(set(exits)) != 1:
+            return f"flaky_on_{label}"
+        if (exits[0] == 0) != (expect == "pass"):
+            return f"{label}_{'failed' if expect == 'pass' else 'passed'}"
+    return None
+
+
+def _per_id(task: Task, runner: Runner, command: Command, runs: int, timeout: float,
+            log: list[dict[str, Any]], dropped: list[dict[str, Any]]) -> Command | None:
+    """Keep the test ids of a grouped command that are each stable and as expected."""
+    if command.ids_from is None:
+        raise DoneError(f"{command.id}: not a grouped command of test ids")
+    prefix, ids = command.argv[:command.ids_from], command.argv[command.ids_from:]
+    kept = []
+    for test_id in ids:
+        single = Command(f"{command.id}:{test_id}", prefix + (test_id,), command.heldout,
+                         command.prepatch)
+        reason = _judge(task, runner, single, runs, timeout, log)
+        if reason is None:
+            kept.append(test_id)
+        else:
+            dropped.append({"id": command.id, "test": test_id, "reason": reason})
+    if not kept:
+        return None
+    return Command(command.id, prefix + tuple(kept), command.heldout, command.prepatch,
+                   command.ids_from)
+
+
+def stabilize(task: Task, runner: Runner, runs: int = 3, timeout: float = 900.0) -> Stability:
+    """Run each command ``runs`` times on the reference and pre-patch states.
+
+    A command must give one exit status every time on each state: pass on the reference,
+    and fail (or, for pass-to-pass, pass) on the pre-patch state. A grouped command of test
+    ids that is not is split into one run per id, and only the ids that are keep it.
+    """
+    log: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    kept: list[Command] = []
+    for command in task.commands:
+        reason = _judge(task, runner, command, runs, timeout, log)
+        if reason is None:
+            kept.append(command)
+            continue
+        if command.ids_from is not None and len(command.argv) - command.ids_from > 1:
+            narrowed = _per_id(task, runner, command, runs, timeout, log, dropped)
+            if narrowed is not None:
+                kept.append(narrowed)
+            continue
+        dropped.append({"id": command.id, "reason": reason})
+    return Stability(kept, log, dropped)
+
+
+def stability_report(result: Stability, runner: Runner, runs: int,
+                     reference: bool) -> dict[str, Any]:
+    return {"stability": {"runner": runner.name, "runs_per_state": runs,
+                          "reference": "available" if reference else "unavailable",
+                          "runs": result.runs, "dropped": result.dropped}}
