@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from probity_observer import record_oe
 from probity_observer.sensors import inotify, strace
 from probity_observer.sensors.treedigest import Tree
@@ -149,3 +151,41 @@ def test_records_carry_the_verify_field_names():
     assert "witnessScope" not in json.dumps(records["observation"])
     assert set(records["capability"]["visible_event_types"]) >= {
         "exec", "write", "create", "rename", "link", "unlink", "truncate", "chmod"}
+
+
+def test_a_link_from_inside_to_outside_is_recorded_on_the_inside_path():
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0),
+                    event("link", 1.0, path="/workspace/tests/test_app.py", target="/tmp/alias"))
+    report = inotify.Report(changes=[change("chmod", "tests/test_app.py", 1.0)])
+    records = built(found, report)
+    links = [item for item in records["observation"]["events"] if item["type"] == "link"]
+    assert links == [{"id": "e2", "step": 2, "time": links[0]["time"], "type": "link",
+                      "path": "tests/test_app.py"}]
+    assert record_oe.join(found, report, WS) == []
+    assert records["observation"]["coverage"] == "complete"
+
+
+@pytest.mark.parametrize("kind", ["rename", "link"])
+@pytest.mark.parametrize("inside", ["path", "target", "both"])
+def test_every_mutation_touching_the_workspace_reaches_the_observation(kind, inside):
+    paths = {"path": "/tmp/out-a", "target": "/tmp/out-b"}
+    if inside in ("path", "both"):
+        paths["path"] = "/workspace/in-a"
+    if inside in ("target", "both"):
+        paths["target"] = "/workspace/in-b"
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0), event(kind, 1.0, **paths))
+    recorded = [item for item in built(found)["observation"]["events"] if item["type"] != "exec"]
+    named = {item.get("path") for item in recorded} | {item.get("target") for item in recorded}
+    expected = {strace.within(value, WS) for value in paths.values()} - {None}
+    assert expected <= named
+
+
+def test_join_credits_only_paths_that_reach_the_observation():
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0),
+                    event("link", 1.0, path="/workspace/a.txt", target="/tmp/alias"),
+                    event("rename", 1.1, path="/tmp/stage", target="/workspace/pkg"))
+    credited = record_oe.credited_paths(found, WS)
+    recorded = built(found)["observation"]["events"]
+    named = {item.get("path") for item in recorded} | {item.get("target") for item in recorded}
+    assert credited[0] <= named
+    assert credited == ({"a.txt", "pkg"}, {"pkg"})

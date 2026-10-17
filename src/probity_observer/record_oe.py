@@ -77,25 +77,44 @@ def _covers(change: inotify.Change, s2_paths: set[str], s2_parents: set[str]) ->
     return any("/".join(parts[:index]) in s2_parents for index in range(1, len(parts)))
 
 
-def join(effects: strace.Effects, report: inotify.Report, workspace: str) -> list[inotify.Change]:
-    """S1 changes inside the workspace that no S2 mutation accounts for."""
-    s2_paths: set[str] = set()
-    s2_parents: set[str] = set()
+def credited_paths(effects: strace.Effects, workspace: str) -> tuple[set[str], set[str]]:
+    """The workspace paths S2 mutations account for, read from the recorded events.
+
+    Credit comes only from the record form of each event, so a mutation the
+    observation does not carry can never silence an S1 change. The second set
+    holds the inside destination of each rename or link: entries S1 finds by
+    scanning under it were moved there with the tree.
+    """
+    paths: set[str] = set()
+    parents: set[str] = set()
     for event in effects.events:
         if event.kind not in strace.MUTATION_TYPES:
             continue
-        for path in (event.path, event.target):
-            relative = strace.within(path, workspace) if path else None
-            if relative is None:
-                continue
-            s2_paths.add(relative)
-            if event.kind in ("rename", "link") and path == event.target:
-                s2_parents.add(relative)
+        fields = _record_event(event, workspace)
+        if fields is None:
+            continue
+        paths.update(value for value in (fields.get("path"), fields.get("target")) if value)
+        if event.kind in ("rename", "link") and (fields.get("target")
+                                                 or fields.get("kind") == "create"):
+            parents.add(fields.get("target") or fields["path"])
+    return paths, parents
+
+
+def join(effects: strace.Effects, report: inotify.Report, workspace: str) -> list[inotify.Change]:
+    """S1 changes inside the workspace that no recorded S2 mutation accounts for."""
+    s2_paths, s2_parents = credited_paths(effects, workspace)
     return [change for change in report.changes if not _covers(change, s2_paths, s2_parents)]
 
 
 def _record_event(event: strace.Event, workspace: str) -> dict | None:
-    """The observation-record form of one S2 event, or ``None`` if outside the workspace."""
+    """The observation-record form of one S2 event, or ``None`` if outside the workspace.
+
+    A rename or link with one side inside the workspace is recorded on that
+    side: moving an entry in is a ``create``, moving one out an ``unlink``, and
+    a hard link from an inside file to an outside name a ``link`` on the inside
+    path (the file can now be changed through a name the workspace does not
+    hold). No mutation that touches the workspace is dropped.
+    """
     if event.kind == "exec":
         fields: dict[str, Any] = {"argv": event.argv}
         if event.exit is not None:
@@ -109,7 +128,7 @@ def _record_event(event: strace.Event, workspace: str) -> dict | None:
         if path and target:
             return {"path": path, "target": target}
         if path:
-            return {"path": path, "kind": "unlink"} if event.kind == "rename" else None
+            return {"path": path, "kind": "unlink" if event.kind == "rename" else "link"}
         if target:
             return {"path": target, "kind": "create"}
         return None

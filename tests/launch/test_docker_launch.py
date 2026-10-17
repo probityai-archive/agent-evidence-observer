@@ -5,6 +5,7 @@ an ordinary Python or shell program; nothing in it knows about the observer.
 """
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -269,3 +270,38 @@ def test_cli_launches_and_prints_the_summary(image, workspace, tmp_path, capsys)
     summary = json.loads(capsys.readouterr().out)
     assert code == 0 and summary["agentExit"] == 0 and summary["coverage"] == "complete"
     assert (workspace / "mark.txt").read_text() == "1\n"
+
+
+def test_link_out_of_a_workspace_inside_a_wider_bind_is_recorded(image, workspace, tmp_path):
+    """A bind that holds the workspace's parent lets link(2) cross the workspace edge."""
+    from probity_observer import record_oe
+    from probity_observer.sensors import inotify, strace
+
+    outer = workspace.parent
+    inner = "/outer/" + workspace.name
+    agent = ("import os\n"
+             "os.link('tests/test_app.py', '../alias.py')\n"
+             "open('../alias.py', 'a').write('# changed through the outside name\\n')\n")
+    argv = ["docker", "run", "--rm", "--network", "none", "--cap-drop", "ALL"]
+    for capability in backend_docker.CAPABILITIES:
+        argv += ["--cap-add", capability]
+    argv += ["--security-opt", "no-new-privileges", "--user", "0:0",
+             "--volume", f"{outer}:/outer", "--workdir", inner, "--entrypoint", "strace", image,
+             *strace.FLAGS, "--", "/bin/sh", "-c", backend_docker.WRAPPER,
+             str(os.stat(workspace).st_uid), "python3", "-c", agent]
+    os.chmod(outer, 0o777)
+    watcher = inotify.Watcher(workspace)
+    watcher.start()
+    started = time.time()
+    done = subprocess.run(argv, capture_output=True, text=True, check=False)
+    report = watcher.stop()
+    assert done.returncode == 0, done.stdout
+    assert (outer / "alias.py").stat().st_ino == (workspace / "tests" / "test_app.py").stat().st_ino
+    found = strace.read(done.stderr, inner)
+    context = record_oe.Context("link", "link-1", "host-observer", inner, started, time.time())
+    built = record_oe.build(context, found, strace.parse(done.stderr), report,
+                            treedigest.scan(workspace))
+    observation = built["observation"]
+    assert [item for item in observation["events"]
+            if item["type"] == "link" and item["path"] == "tests/test_app.py"]
+    assert record_oe.join(found, report, inner) == [], report.changes
