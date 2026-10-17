@@ -11,6 +11,7 @@ from .broker import Broker
 from .crypto import SigningKey, canonical, strict_loads
 from .history import Witness
 from .isolation import run_boundary_probe, verify_boundary_bundle
+from .launch.launch_agent import BACKENDS, LaunchSpec, launch
 from .verify import verify_packet
 from .workload import run_workload, verify_workload_bundle
 
@@ -65,7 +66,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     checked.add_argument("--witness-key", required=True)
     verify = subcommands.add_parser("verify", help="check a retained sample offline")
     verify.add_argument("directory", type=Path)
+    agent = subcommands.add_parser(
+        "launch-agent", help="run an unmodified agent in a container with three outside sensors")
+    agent.add_argument("output", type=Path, help="empty directory for the run's records")
+    agent.add_argument("--backend", choices=sorted(BACKENDS), required=True)
+    agent.add_argument("--image", required=True, help="docker image, or apptainer .sif file")
+    agent.add_argument("--workspace", type=Path, required=True)
+    agent.add_argument("--claim-id", required=True)
+    agent.add_argument("--invocation-id", required=True)
+    agent.add_argument("--producer", default="host-observer")
+    agent.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
+    agent.add_argument("--network", action="store_true", help="allow network (connects are recorded)")
+    agent.add_argument("--timeout", type=float, default=3600.0)
+    agent.add_argument("agent_argv", nargs="+", help="the agent's command, after --")
     arguments = parser.parse_args(argv)
+    if arguments.command == "launch-agent":
+        env = dict(item.split("=", 1) for item in arguments.env)
+        spec = LaunchSpec(backend=arguments.backend, image=arguments.image,
+                          agent_argv=tuple(arguments.agent_argv), workspace=arguments.workspace,
+                          claim_id=arguments.claim_id, invocation_id=arguments.invocation_id,
+                          producer=arguments.producer, env=env, network=arguments.network,
+                          timeout_seconds=arguments.timeout)
+        outcome = launch(spec, arguments.output)
+        print(json.dumps({"agentExit": outcome.agent_exit, "coverage": outcome.coverage,
+                          "launchSha256": outcome.launch_sha256,
+                          "witnessScope": outcome.receipt["witnessScope"]}, sort_keys=True))
+        return 0
     if arguments.command == "demo":
         result = run_demo(arguments.output)
     elif arguments.command == "boundary-probe":
