@@ -49,6 +49,7 @@ do not establish freshness.
 
 This is still a local PEER prototype. If the witness operator restores an old
 log and withholds the published head, it can sign a different branch. A key
-controlled by the observed agent can also fabricate the entire log. The next
-gate is a separately operated witness service with durable state and a
-published head that independent consumers actually retain.
+controlled by the observed agent can also fabricate the entire log. The
+separately operated witness in [`WITNESS-SERVER.md`](WITNESS-SERVER.md) adds
+checkpoints and consistency proofs that let readers catch such a branch; it
+still depends on independent consumers actually retaining checkpoints.

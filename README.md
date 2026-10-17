@@ -38,7 +38,9 @@ observer saw. Linux runs can launch a fixed probe, or a Python script given to `
 bubblewrap with only the broker's socket exposed. `launch-agent` runs an unmodified agent in docker or
 apptainer and records, from outside it, every program it ran and every file it changed. It does not use
 bubblewrap, which cannot start on hosts with `apparmor_restrict_unprivileged_userns=1` such as Ubuntu 24.04.
-A separately operated witness is the next step.
+`agent-evidence-witness` runs a separately operated witness: a record it co-signs verifies as `EXTERNAL`
+when the reader pins a different operator for the witness key. It needs the `witness` extra, which is not yet
+in a released wheel.
 
 ## Documentation
 
@@ -55,6 +57,7 @@ then open its technical reference for commands and exact evidence.
 | [Isolated producer](https://github.com/probityai/agent-evidence-observer/blob/main/docs/ISOLATED-PRODUCER.md) | the acceptance criteria for running an unmodified agent behind the broker |
 | [Brokered workload](https://github.com/probityai/agent-evidence-observer/blob/main/docs/WORKLOAD.md) | run a Python script behind the write broker with `run-workload`, then check it offline with `verify-workload` |
 | [Witness ledger](https://github.com/probityai/agent-evidence-observer/blob/main/docs/WITNESS-LEDGER.md) | signed begin and terminal receipts, and how a reader checks them |
+| [Separately operated witness](https://github.com/probityai/agent-evidence-observer/blob/main/docs/WITNESS-SERVER.md) | run a witness on another host, co-sign records 2-of-2, and catch a witness that forks its log |
 | [Installation and profile selection](https://github.com/probityai/agent-evidence-observer/blob/main/docs/INSTALLATION.md) | choose the root wheel, a separate profile wheel or a selected source reader; runtime requirements and installed examples |
 | [Release the root package](https://github.com/probityai/agent-evidence-observer/blob/main/docs/RELEASING.md) | qualify a wheel and source distribution, then publish with a bound source tag |
 | [Atomic native reader](https://github.com/probityai/agent-evidence-observer/blob/main/docs/ATOMIC-NATIVE-READER.md) | install an offline reader for selected native delegation runs and their refusal controls |
