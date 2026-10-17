@@ -2,7 +2,7 @@
 
 - Install with `uv venv .venv --python python3.12 && uv pip install --python .venv/bin/python -e '.[test,witness]'`
   and run `.venv/bin/pytest -q` after any change under `src/` or `tests/`. The `witness` extra builds
-  `probityai` from a pinned commit and needs a Rust toolchain. After a change under
+  `jcs-admit` from a pinned commit and needs a Rust toolchain. After a change under
   `src/probity_observer/witness/`, also run `python scripts/mutate-witness-proofs.py`.
 - A change under `interop/<profile>/` runs that profile's own tests from its directory; its workflow
   in `.github/workflows/` shows the exact commands.

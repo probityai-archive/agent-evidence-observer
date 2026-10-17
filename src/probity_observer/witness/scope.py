@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from probityai import dsse
+from jcs_admit import dsse
 
 from .checkpoint import (
     RECORD_FORMAT,

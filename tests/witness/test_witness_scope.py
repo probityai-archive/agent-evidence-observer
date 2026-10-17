@@ -7,7 +7,7 @@ import json
 
 import pytest
 from conftest import WITNESS_SEED, statement
-from probityai import dsse
+from jcs_admit import dsse
 
 from probity_observer.witness.checkpoint import (
     CHECKPOINT_TYPE,

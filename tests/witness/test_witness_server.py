@@ -9,7 +9,7 @@ import stat
 
 import pytest
 from conftest import WITNESS_SEED, statement
-from probityai import dsse
+from jcs_admit import dsse
 
 from probity_observer.witness import proofs
 from probity_observer.witness.checkpoint import (
