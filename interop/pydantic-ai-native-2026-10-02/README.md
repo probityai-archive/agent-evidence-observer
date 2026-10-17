@@ -1,6 +1,6 @@
 # Pydantic AI native tool → authorized HTTP effect → installed consumer
 
-This is an additive Probity-operated execution reference. It runs actual `pydantic-ai-slim==1.68.0` agents,
+This is an additive Probity-operated execution reference. It runs actual `pydantic-ai-slim==1.107.6` agents,
 typed tools, native retries and native message serialization against Observer's
 existing protected HTTP ticket service. `FunctionModel` supplies scripted local
 responses: there is no provider call, model inference, task-quality score,
@@ -106,7 +106,7 @@ semantic checks after hashes; a real fixed policy rejects earlier at its pin.
 Official API references:
 - https://pydantic.dev/docs/ai/api/models/function/
 - https://pydantic.dev/docs/ai/core-concepts/retries/
-- https://github.com/pydantic/pydantic-ai/tree/v1.68.0
+- https://github.com/pydantic/pydantic-ai/tree/v1.107.6
 
 
 ## Upgrade and recovery decisions

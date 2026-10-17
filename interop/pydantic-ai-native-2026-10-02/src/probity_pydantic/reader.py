@@ -260,14 +260,14 @@ def _invalid_constant(value: str) -> None:
 
 
 def valid_run_id(value: Any) -> bool:
-    """Accept only the native canonical UUID4 string, never a coerced boolean."""
+    """Accept only a canonical UUID4 or UUID7 string, the native run identity forms."""
     if type(value) is not str:
         return False
     try:
         parsed = UUID(value)
     except ValueError:
         return False
-    return str(parsed) == value and parsed.version == 4
+    return str(parsed) == value and parsed.version in {4, 7}
 
 
 def check_part_time(part: dict[str, Any], start: datetime, reference: datetime) -> None:
