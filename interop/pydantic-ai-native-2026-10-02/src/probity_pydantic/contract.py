@@ -12,7 +12,7 @@ from probity_observer.crypto import VerificationError, canonical, strict_loads
 LOGGER = logging.getLogger(__name__)
 LEGACY_PROFILE = "probity-pydantic-ai-ticket-v0"
 PROFILE = "probity-pydantic-ai-ticket-v1"
-VERSION = "1.107.6"
+VERSION = "1.107.7"
 PROMPT = "Execute the selected ticket update."
 CONTENT = "DONE"
 RETRY = "selected transient pre-dispatch retry"
