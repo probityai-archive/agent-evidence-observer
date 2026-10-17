@@ -18,7 +18,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Protocol
 
-from .contract import EXCLUDE, Protected, Task
+from .contract import EXCLUDE, Protected, Task, is_test_path
 from .formats import DoneError, sha256
 from .runner import Command
 
@@ -66,19 +66,13 @@ def _files(repo: Path) -> list[Path]:
     return found
 
 
-def _is_test(name: str) -> bool:
-    base = name.rsplit("/", 1)[-1]
-    return (base.startswith("test_") or base.endswith("_test.py") or base == "conftest.py"
-            or "/tests/" in "/" + name or base in ("pytest.ini", "tox.ini", "setup.cfg"))
-
-
 def render(repo: Path, task: str) -> str:
     """The prompt for ``task`` on ``repo``: the template filled with a listing and test heads."""
     files = _files(repo)
     listing = "\n".join(f"{path.relative_to(repo).as_posix()} {path.stat().st_size}"
                         for path in files[:LISTING_LIMIT])
     heads = []
-    for path in [item for item in files if _is_test(item.relative_to(repo).as_posix())][:TEST_FILE_LIMIT]:
+    for path in [item for item in files if is_test_path(item.relative_to(repo).as_posix())][:TEST_FILE_LIMIT]:
         lines = path.read_text("utf-8", "replace").splitlines()[:TEST_HEAD_LINES]
         heads.append(f"--- {path.relative_to(repo).as_posix()}\n" + "\n".join(lines))
     return template().format(task=task, listing=listing or "(empty)",
@@ -154,7 +148,7 @@ def changed_sources(start: Path, reference: Path) -> dict[str, list[tuple[int, i
     targets: dict[str, list[tuple[int, int]] | None] = {}
     for path in _files(reference):
         name = path.relative_to(reference).as_posix()
-        if name.endswith(".py") and not _is_test(name):
+        if name.endswith(".py") and not is_test_path(name):
             before = start / name
             if not before.is_file() or before.read_bytes() != path.read_bytes():
                 targets[name] = None

@@ -1,11 +1,12 @@
-"""The sealed pytest plugins: repeated runs, isolated calls and the signed worker report."""
+"""The sealed pytest plugins: repeated runs, isolated calls, the signed worker report, and the
+zero-shot vacuous-pass gate."""
 
 import json
 from pathlib import Path
 
-from probity_observer.done import verify_run
+from probity_observer.done import contract, verify_run
 from probity_observer.done import pytest_plugins as sealed
-from probity_observer.done.runner import SubprocessRunner
+from probity_observer.done.runner import Command, SubprocessRunner
 
 # ``pytester`` runs the plugins in this process too, so their own lines are measured.
 pytest_plugins = ["pytester"]
@@ -140,6 +141,50 @@ def test_a_patch_that_reads_caller_frames_is_listed(tmp_path):
     assert {item["name"] for item in found} >= {"_getframe", "f_code"}
 
 
+def test_a_traced_run_lists_the_working_tree_files_it_opened(tmp_path, python_bin):
+    state, _ = tree(tmp_path, HONEST)
+    printed: list[str] = []
+    argv = sealed.traced_argv(PREFIX + ("tests/test_shapes.py",))
+    assert SubprocessRunner(python_bin).run(state, argv, None, 120, output=printed) == 0
+    assert {"pkg/shapes.py", "tests/test_shapes.py"} <= set(sealed.reads(printed))
+    assert sealed.traced_argv(["make", "test"]) is None
+    assert sealed.reads(["no marker"]) is None
+
+
+def repo_task(tmp_path, test: str) -> contract.Task:
+    state, _ = tree(tmp_path, HONEST, test)
+    return contract.Task(task_id="repo-1", source="repo", description="d", start=state,
+                         commands=[], protected=[])
+
+
+def test_a_zero_shot_pass_command_that_kills_no_mutant_is_dropped(tmp_path, python_bin):
+    vacuous = "def test_nothing():\n    assert True\n"
+    task = repo_task(tmp_path / "vacuous", vacuous)
+    command = Command("smoke", PREFIX + ("tests/test_shapes.py",), prepatch="pass")
+    kept, dropped, traces = contract.vacuous_passes(task, SubprocessRunner(python_bin),
+                                                    [command], 120)
+    assert kept == [] and dropped == [{"id": "smoke", "reason": "pass_command_kills_no_mutants",
+                                       "sources": [], "mutants": 0}]
+    task = repo_task(tmp_path / "real", TEST)
+    kept, dropped, traces = contract.vacuous_passes(task, SubprocessRunner(python_bin),
+                                                    [command], 120)
+    assert kept == [command] and dropped == []
+    assert traces[0]["sources"] == ["pkg/__init__.py", "pkg/shapes.py"] and traces[0]["killed"] > 0
+
+
+def test_the_vacuous_gate_leaves_dataset_and_failing_commands_alone(tmp_path, python_bin):
+    task = repo_task(tmp_path, TEST)
+    failing = Command("f2p", PREFIX + ("tests/test_shapes.py",))
+    assert contract.vacuous_passes(task, SubprocessRunner(python_bin), [failing], 60)[0] == [failing]
+    task.source = "swe"
+    passing = Command("p2p", PREFIX, prepatch="pass")
+    assert contract.vacuous_passes(task, SubprocessRunner(python_bin), [passing], 60)[0] == [passing]
+    task.source = "repo"
+    odd = Command("odd", ("make", "test"), prepatch="pass")
+    kept, dropped, _ = contract.vacuous_passes(task, SubprocessRunner(python_bin), [odd], 60)
+    assert kept == [] and dropped == [{"id": "odd", "reason": "pass_command_untraced"}]
+
+
 def test_report_lines_are_parsed_and_tampering_is_refused():
     import hashlib
     import hmac
@@ -188,6 +233,7 @@ def test_inline_isolated_call_runs_the_target_with_no_test_frame(pytester, capfd
     assert result.ret == 1
     counts = report["isolated"]["targets"]["pkg.shapes:area"]
     assert counts["isolated"] == 1 and counts["inline"] >= 1
+
 
 
 def repeat_module():
