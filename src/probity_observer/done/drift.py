@@ -23,6 +23,15 @@ from typing import Any
 MUTATIONS = frozenset({"write", "create", "rename", "link", "unlink", "truncate", "chmod"})
 
 
+def command_key(event: dict[str, Any]) -> tuple[Any, ...]:
+    """What makes two runs the same command: the executed path, cwd, argv and exit.
+
+    ``exe`` and ``cwd`` come from ``probity-observation/v3``; the same argv run from another
+    directory, or resolving to another program, is another command.
+    """
+    return (event.get("exe"), event.get("cwd"), tuple(event["argv"]), event.get("exit"))
+
+
 def repeated_command(events: list[dict[str, Any]], repeats: int) -> list[str] | None:
     """The argv of the first command run ``repeats`` times in a row with the same exit.
 
@@ -31,7 +40,7 @@ def repeated_command(events: list[dict[str, Any]], repeats: int) -> list[str] | 
     those commands' trees breaks a run of repeats.
     """
     roots = {event.get("origin") for event in events if event.get("origin")}
-    last: tuple[tuple[str, ...], int | None] | None = None
+    last: tuple[Any, ...] | None = None
     count = 0
     for event in events:
         if event["type"] in MUTATIONS and event.get("origin") is None:
@@ -39,11 +48,11 @@ def repeated_command(events: list[dict[str, Any]], repeats: int) -> list[str] | 
             continue
         if event["type"] != "exec" or (event.get("origin") and event["id"] not in roots):
             continue
-        key = (tuple(event["argv"]), event.get("exit"))
+        key = command_key(event)
         count = count + 1 if key == last else 1
         last = key
         if count >= repeats:
-            return list(key[0])
+            return list(event["argv"])
     return None
 
 

@@ -13,6 +13,12 @@ One task, one worker. After each attempt the done verdict and the latch decide o
 | the verdict is ``contradicted`` | ``replan`` | the verdict's reason |
 | otherwise (``not_established``) | ``continue`` | the verdict's reason |
 
+Before the table, the done verdict turns two record facts into ``contradicted``
+(``VERDICT_RULES``): a mutation the observer locates at a grader path
+(``external_effect_on_grader_path``) and a coverage gap it attributes to the agent
+(``gap_cause: agent``, ``tracer_terminated_prematurely``); either then replans or escalates
+like any other contradiction.
+
 ``replan`` resets the workspace from the sealed start tarball and gives the next attempt the
 reason code as its first input; ``continue`` keeps the tree. The table (with the latch
 thresholds) is RFC 8785 bytes, and its SHA-256 is the ``policy.table_sha256`` every receipt
@@ -31,6 +37,15 @@ from .formats import encode, sha256
 
 ACTIONS = ("continue", "replan", "escalate", "stop")
 
+# Record-derived contradictions the done verdict applies before the table's rules
+# (:func:`.receipt.verdict`); listed here so the table digest binds them.
+VERDICT_RULES = [
+    {"when": "external_mutation_at_grader_path", "verdict": "contradicted",
+     "reason": "external_effect_on_grader_path"},
+    {"when": "gap_cause_agent", "verdict": "contradicted",
+     "reason": "tracer_terminated_prematurely"},
+]
+
 
 def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablished: int = 2,
           latch: Latch | None = None) -> dict[str, Any]:
@@ -41,6 +56,7 @@ def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablish
         "escalate_after_contradicted": escalate_after,
         "escalate_after_unestablished": escalate_after_unestablished,
         "latch": latch.thresholds(),
+        "verdict_rules": VERDICT_RULES,
         "rules": [
             {"when": "verdict_supported", "action": "stop", "reason": "done_checks_supported"},
             {"when": "latch_fired", "action": "escalate", "reason": "loop_detected"},

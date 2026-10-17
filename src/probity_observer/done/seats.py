@@ -157,15 +157,16 @@ class HostWatch:
                   for step, change in enumerate(report.changes, start=1)]
         tree = treedigest.scan(self.workspace)
         records = {
-            "observation": {"schema_version": "probity-observation/v2", **observed,
+            "observation": {"schema_version": "probity-observation/v3", **observed,
                             "scope": {"id": invocation_id, "start": _instant(start),
                                       "end": _instant(end)},
+                            "workspace_root": str(self.workspace.resolve()),
                             "coverage": "unknown" if report.lost else "complete",
-                            "events": events},
+                            "events": events, "external_mutations": []},
             "capability": {"schema_version": "probity-capabilities/v1", **base,
                            "visible_event_types": list(ROUTE_B_TYPES)},
-            "tree": {"schema_version": "probity-tree/v1", **observed,
-                     "tree_sha256": tree.sha256, "files": tree.files},
+            "tree": {"schema_version": "probity-tree/v2", **observed,
+                     "tree_sha256": tree.sha256, **tree.record_fields()},
             "claims": claim_parser.record(
                 claims_from_hook_log(claims_log.read_text() if claims_log.exists() else ""),
                 claim_id, invocation_id, "subagent-hook"),

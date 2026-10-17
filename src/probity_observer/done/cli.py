@@ -118,7 +118,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     carried = json.loads(open_record((run / "done-receipt.dsse.json").read_bytes(),
                                      args.harness_pub, receipt.RECEIPT_SCHEMA))
     recomputed = receipt.assemble(run, pins)
-    for name in ("records", "checks", "verdict", "external_effects"):
+    for name in ("records", "checks", "verdict", "external_mutations"):
         if recomputed[name] != carried[name]:
             print(f"Refused: the receipt's {name} does not recompute from the records")
             return REFUSED

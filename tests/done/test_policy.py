@@ -21,6 +21,8 @@ def test_table_digest_is_stable_and_names_its_thresholds():
     assert policy.table_sha256(first) != policy.table_sha256(policy.table(attempts=5))
     assert first["latch"] == {"tree_repeats": 3, "command_repeats": 3}
     assert {rule["action"] for rule in first["rules"]} == set(policy.ACTIONS)
+    assert {rule["reason"] for rule in first["verdict_rules"]} == {
+        "external_effect_on_grader_path", "tracer_terminated_prematurely"}
 
 
 def test_each_rule_of_the_table():
@@ -67,6 +69,9 @@ def test_command_latch_counts_the_agents_own_repeats_without_an_edit_between():
     child = [exec_event(1, pytest_argv), exec_event(2, ["python"], 0, origin="e1"),
              exec_event(3, ["python"], 0, origin="e1"), exec_event(4, ["python"], 0, origin="e1")]
     assert drift.repeated_command(child, 3) is None
+    elsewhere = [dict(item, cwd="/workspace/sub") if index == 1 else item
+                 for index, item in enumerate(events)]
+    assert drift.repeated_command(elsewhere, 3) is None
     latch = drift.Latch(command_repeats=3)
     assert latch.observe("t", events, "not_established") == "loop_detected"
     assert latch.state()["evidence"]["argv"] == pytest_argv
