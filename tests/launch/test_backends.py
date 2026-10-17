@@ -47,3 +47,49 @@ def test_apptainer_with_network_has_no_network_flag():
                                      workspace="/ws", agent_argv=["a"], env={}, uid=1,
                                      network=True)
     assert "--network" not in argv
+
+
+ROOT_MAPPED = "         0       6981          1\n"
+SUBUID_MAPPED = "         0       1001          1\n         1     165536      65536\n"
+
+
+def apptainer_identity(uid_map):
+    return backend_apptainer.Identity("/x/a.sif", "sha256:" + "a" * 64,
+                                      "strace -- version 6.13", "1", uid_map)
+
+
+def test_a_root_mapped_namespace_does_not_separate_the_tracer():
+    # Measured on a HiPerGator compute node (no /etc/subuid entry): apptainer
+    # falls back to the fakeroot command in a namespace mapping uid 0 only, and
+    # an agent "dropped" to 65534 by setpriv still killed its tracer.
+    assert not apptainer_identity(ROOT_MAPPED).uid_separated
+    assert not apptainer_identity("").uid_separated
+    assert backend_apptainer.uid_separated(apptainer_identity(ROOT_MAPPED)) is False
+
+
+def test_a_subuid_mapped_namespace_separates_the_tracer():
+    assert apptainer_identity(SUBUID_MAPPED).uid_separated
+    assert backend_apptainer.mapped(SUBUID_MAPPED, backend_apptainer.AGENT_UID)
+    assert not backend_apptainer.mapped(SUBUID_MAPPED, 70000)
+    assert not backend_apptainer.mapped(SUBUID_MAPPED, 65537)
+    assert backend_apptainer.mapped(SUBUID_MAPPED, 65536)
+
+
+def test_separated_apptainer_runs_under_fakeroot_and_drops_the_agent():
+    argv = backend_apptainer.command(apptainer_identity(SUBUID_MAPPED), name="n",
+                                     workspace="/ws", agent_argv=["python3", "x.py"], env={},
+                                     uid=backend_apptainer.AGENT_UID, network=False)
+    assert argv[:4] == ["apptainer", "exec", "--fakeroot", "--containall"]
+    tail = argv[argv.index("--") + 1:]
+    assert tail == ["/bin/sh", "-c", backend_apptainer.SEPARATED_WRAPPER, "65534",
+                    "python3", "x.py"]
+
+
+def test_unseparated_apptainer_keeps_one_uid():
+    argv = backend_apptainer.command(apptainer_identity(ROOT_MAPPED), name="n", workspace="/ws",
+                                     agent_argv=["a"], env={}, uid=1, network=False)
+    assert "--fakeroot" not in argv and "setpriv" not in " ".join(argv)
+
+
+def test_docker_always_separates():
+    assert backend_docker.uid_separated(identity(backend_docker, "img")) is True

@@ -18,6 +18,7 @@ RECORD = Path("src/probity_observer/record_oe.py")
 STRACE = Path("src/probity_observer/sensors/strace.py")
 TREE = Path("src/probity_observer/sensors/treedigest.py")
 INOTIFY = Path("src/probity_observer/sensors/inotify.py")
+APPTAINER = Path("src/probity_observer/launch/backend_apptainer.py")
 MUTANTS = [
     ("an S1 change is always covered", RECORD,
      '    if change.path in s2_paths:\n        return True\n',
@@ -105,6 +106,11 @@ MUTANTS = [
     ("a delivered signal outside the tree is not an escape", STRACE,
      '        if record["status"] == "ok" and record["outside_tree"]',
      '        if False and record["status"] == "ok" and record["outside_tree"]'),
+    ("a root-mapped fakeroot namespace counts as uid separation", APPTAINER,
+     '        return mapped(self.uid_map, 0) and mapped(self.uid_map, AGENT_UID)\n',
+     '        return bool(self.uid_map)\n'),
+    ("a uid map line covers one uid past its count", APPTAINER,
+     '        if inside <= uid < inside + count:\n', '        if inside <= uid <= inside + count:\n'),
     ("a symbolic link leaves the tree digest unchanged", TREE,
      '    for name, target in fields["symlinks"].items():\n',
      '    for name, target in {}.items():\n'),

@@ -46,7 +46,7 @@ The image must provide `strace` 6.6 or later (for `fchmodat2`), `setpriv` and
 | file | content |
 | --- | --- |
 | `start.tar` | the workspace before the run, sorted, owner and time fixed; `snapshot.reset` restores it after checking its digest |
-| `launch.json` | `probity-launch/v1`: backend, image and image id, runtime and tracer versions, the full container argv, `trace_expression`, `tracer_flags`, `tracer_uid_separated`, agent argv, uid, environment, network, start tarball digest, observer source digest |
+| `launch.json` | `probity-launch/v1`: backend, image and image id, runtime and tracer versions, the full container argv, `trace_expression`, `tracer_flags`, `tracer_uid_separated`, `uid_map` (apptainer), agent argv, uid, environment, network, start tarball digest, observer source digest |
 | `transcript.txt` | the agent's stdout and stderr |
 | `trace.txt` | the raw tracer output |
 | `observation.json` | `probity-observation/v3`: `probity-observation/v2` plus `workspace_root` and the exec fields below |
@@ -182,9 +182,19 @@ listed in `signals`.
   `CAP_DAC_READ_SEARCH`, `CAP_SETUID` and `CAP_SETGID`, and drops the agent to
   the workspace owner's uid (65534 when the workspace is owned by root). The
   agent cannot signal the tracer or open its descriptors.
-- Apptainer: tracer and agent share a uid (`tracer_uid_separated: false`).
-  A killed tracer is reported as lost events; a forged trace line is not
-  detected.
+- Apptainer: the launcher reads `/proc/self/uid_map` inside
+  `apptainer exec --fakeroot` (recorded in `launch.json` as `uid_map`). When
+  the user has a subordinate uid range, the namespace maps more than uid 0;
+  the run then uses `--fakeroot`, the tracer is root in the namespace, the
+  agent is dropped to uid 65534 by `setpriv`, the workspace is handed to that
+  uid before the run and back after it, and `tracer_uid_separated` is `true`.
+  Otherwise tracer and agent share a uid (`tracer_uid_separated: false`). On a
+  HiPerGator compute node (apptainer 1.4.2, measured 2026-10-17) there is no
+  subuid entry; apptainer falls back to the `fakeroot` command in a namespace
+  that maps uid 0 only, `setpriv` to 65534 reports success, and the agent
+  still killed its tracer. There a killed tracer is reported as a gap to the
+  end with `gap_cause: agent`, and the trace ends with the agent's `kill`; a
+  forged trace line that parses is not detected.
 - bubblewrap is not used: it fails to set up a user namespace on hosts with
   `kernel.apparmor_restrict_unprivileged_userns=1`, including the default
   Ubuntu 24.04 desktop. The older `boundary-probe` command still uses it and

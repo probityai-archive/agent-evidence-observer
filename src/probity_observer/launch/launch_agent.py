@@ -151,7 +151,7 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
     workspace = Path(spec.workspace).resolve()
     start_sha256 = snapshot.seal(workspace, run_dir / "start.tar")
     identity = backend.preflight(spec.image)
-    uid = _agent_uid(workspace)
+    uid = backend.agent_uid(identity, workspace, _agent_uid(workspace))
     name = container_name(spec.invocation_id)
     argv = backend.command(identity, name=name, workspace=str(workspace),
                            agent_argv=list(spec.agent_argv), env=spec.env, uid=uid,
@@ -166,7 +166,8 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
         "container_argv": argv,
         "trace_expression": strace.TRACE_EXPRESSION,
         "tracer_flags": list(strace.FLAGS),
-        "tracer_uid_separated": spec.backend == "docker",
+        "tracer_uid_separated": backend.uid_separated(identity),
+        "uid_map": getattr(identity, "uid_map", None),
         "agent_argv": list(spec.agent_argv),
         "agent_uid": uid,
         "env": dict(sorted(spec.env.items())),
@@ -180,6 +181,7 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
     (run_dir / "launch.json").write_bytes(launch_bytes)
     launch_sha256 = record_oe.sha256(launch_bytes)
 
+    backend.prepare(identity, workspace)
     watcher = inotify.Watcher(workspace)
     watcher.start()
     started = time.time()
@@ -199,6 +201,7 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
             exit_code = process.wait()
     ended = time.time()
     report = watcher.stop()
+    backend.restore(identity, workspace)
 
     trace_text = (run_dir / "trace.txt").read_text("utf-8", "surrogateescape")
     trace = strace.parse(trace_text)
