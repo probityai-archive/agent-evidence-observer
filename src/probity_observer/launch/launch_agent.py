@@ -206,7 +206,8 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
     strace.assign_origins(found)
     tree = treedigest.scan(workspace)
     context = record_oe.Context(spec.claim_id, spec.invocation_id, spec.producer,
-                                backend.WORKSPACE, started, ended)
+                                backend.WORKSPACE, started, ended, timed_out=timed_out,
+                                tracer_uid_separated=launch_record["tracer_uid_separated"])
     built = record_oe.build(context, found, trace, report, tree)
     written = write_records(built, run_dir)
     root_exec = next((event for event in found.events

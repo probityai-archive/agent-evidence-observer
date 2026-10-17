@@ -71,6 +71,8 @@ class Context:
     container_workspace: str
     started: float
     ended: float
+    timed_out: bool = False
+    tracer_uid_separated: bool = True
 
 
 def _covers(change: inotify.Change, s2_paths: set[str], s2_parents: set[str]) -> bool:
@@ -179,14 +181,78 @@ def _external(event: strace.Event, workspace: str) -> dict | None:
             "location": "grader_path" if "grader_path" in places else "outside_workspace"}
 
 
-def _merge(gaps: list[tuple[int, int]]) -> list[dict]:
-    merged: list[list[int]] = []
-    for start, end in sorted(gaps):
-        if merged and start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
-        else:
-            merged.append([start, end])
-    return [{"start": instant(start), "end": instant(end)} for start, end in merged]
+def _merge(gaps: list[tuple[int, int, str]]) -> list[dict]:
+    """Merge overlapping gaps of one cause; gaps of different causes stay apart."""
+    merged: list[list] = []
+    for cause in sorted({gap[2] for gap in gaps}):
+        spans: list[list] = []
+        for begin, finish, _ in sorted(gap for gap in gaps if gap[2] == cause):
+            if spans and begin <= spans[-1][1]:
+                spans[-1][1] = max(spans[-1][1], finish)
+            else:
+                spans.append([begin, finish, cause])
+        merged.extend(spans)
+    merged.sort(key=lambda gap: (gap[0], gap[1], gap[2]))
+    return [{"start": instant(begin), "end": instant(finish), "gap_cause": cause}
+            for begin, finish, cause in merged]
+
+
+def _overflow_cause(window: dict, effects: strace.Effects, workspace: str) -> str:
+    """``agent`` when the trace shows a workspace mutation inside the overflow window."""
+    for event in effects.events:
+        if (window["from"] <= event.time <= window["to"]
+                and event.kind in strace.MUTATION_TYPES
+                and _record_event(event, workspace) is not None):
+            return "agent"
+    return "unknown"
+
+
+def _tracer_cause(context: Context, effects: strace.Effects) -> str:
+    """Who stopped the tracer before the agent's root process exited.
+
+    ``host`` when the launcher timed the run out. Otherwise ``agent`` when the
+    trace ends with a signal the agent was sending outside its tree, or when
+    the agent runs under the tracer's uid and so could signal it; else
+    ``host``, because only the host side can signal a tracer the agent cannot
+    reach.
+    """
+    if context.timed_out:
+        return "host"
+    signalled = any(item["status"] == "interrupted" and item["outside_tree"]
+                    for item in effects.signals)
+    return "agent" if signalled or not context.tracer_uid_separated else "host"
+
+
+def _gaps(context: Context, effects: strace.Effects, trace: strace.Trace,
+          report: inotify.Report, unattributed: list[inotify.Change],
+          start: int, end: int) -> list[tuple[int, int, str]]:
+    """Every coverage gap with its ``gap_cause``: ``agent``, ``host``, ``sensor`` or ``unknown``.
+
+    ``agent`` means the agent caused the loss or alone had the means to;
+    ``host``, that the launcher's side did; ``sensor``, a limit of the
+    tracer; ``unknown``, a change no traced call explains, from the host or
+    through a channel the trace does not name.
+    """
+    workspace = context.container_workspace
+    gaps: list[tuple[int, int, str]] = []
+    for change in unattributed:
+        second = max(math.floor(change.time), start)
+        gaps.append((second, second + 1, "unknown"))
+    for window in report.overflows:
+        begin = min(max(math.floor(window["from"]), start), end - 1)
+        finish = min(max(math.ceil(window["to"]), begin + 1), end)
+        gaps.append((begin, finish, _overflow_cause(window, effects, workspace)))
+    if not effects.root_exited:
+        gaps.append((min(math.floor(effects.last_time or start), end - 1), end,
+                     _tracer_cause(context, effects)))
+    for escape in effects.escapes:
+        gaps.append((min(math.floor(escape["time"]), end - 1), end, "agent"))
+    for unknown in effects.unresolved:
+        second = max(math.floor(unknown["time"]), start)
+        gaps.append((min(second, end - 1), min(second + 1, end), "sensor"))
+    if trace.unparsed:
+        gaps.append((start, end, "sensor" if context.tracer_uid_separated else "agent"))
+    return gaps
 
 
 def build(context: Context, effects: strace.Effects, trace: strace.Trace,
@@ -197,8 +263,6 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
     unattributed = join(effects, report, workspace)
     last = max([context.ended] + [change.time for change in unattributed])
     end = max(math.floor(last) + 1, start + 1)
-    gaps: list[tuple[int, int]] = []
-
     rows: list[tuple[float, dict, strace.Event | None, bool]] = []
     for event in effects.events:
         fields = _record_event(event, workspace)
@@ -212,19 +276,8 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
         while at < len(rows) and rows[at][0] <= change.time:
             at += 1
         rows.insert(at, (change.time, {"type": change.kind, "path": change.path}, None, False))
-        second = max(math.floor(change.time), start)
-        gaps.append((second, second + 1))
-
     tracer = "complete" if effects.root_exited else "lost"
-    if not effects.root_exited:
-        gaps.append((min(math.floor(effects.last_time or start), end - 1), end))
-    for escape in effects.escapes:
-        gaps.append((min(math.floor(escape["time"]), end - 1), end))
-    for unknown in effects.unresolved:
-        second = max(math.floor(unknown["time"]), start)
-        gaps.append((min(second, end - 1), min(second + 1, end)))
-    if trace.unparsed:
-        gaps.append((start, end))
+    gaps = _gaps(context, effects, trace, report, unattributed, start, end)
 
     ids: dict[str, str] = {}
     events: list[dict] = []
@@ -259,6 +312,8 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
                    "tree_sha256": tree.sha256, **tree.record_fields()}
     sensors = {
         "s1_inotify": {"changes": len(report.changes), "overflow": report.overflow,
+                       "overflows": [{"from": instant(item["from"]), "to": instant(item["to"])}
+                                     for item in report.overflows],
                        "watch_failures": report.watch_failures,
                        "watch_list": report.watches,
                        "mask": inotify.mask_names(inotify.MASK)},
@@ -269,6 +324,11 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
                       "escapes": [
                           {**escape, "time": instant(escape["time"])}
                           for escape in effects.escapes],
+                      "signals": [{**item, "time": instant(item["time"])}
+                                  for item in effects.signals],
+                      "interrupted": [{"syscall": call.name, "pid": call.pid,
+                                       "time": instant(call.time)}
+                                      for call in trace.interrupted],
                       "origin_rule": strace.ORIGIN_RULE},
         "s3_tree": {"tree_sha256": tree.sha256, "files": len(tree.files),
                     "symlinks": len(tree.symlinks), "special": len(tree.special)},

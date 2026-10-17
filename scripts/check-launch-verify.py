@@ -125,8 +125,8 @@ def for_verifier(role: str, data: bytes) -> bytes:
     special files and execute bits to the digest, and
     ``probity-observation/v3``, which adds the executed path, working
     directory and loader environment to each exec, the address to each
-    connect, and the workspace root and the mutations outside the workspace
-    to the record. probity-verify at the commit the workflow pins reads
+    connect, the cause to each gap, and the workspace root and the mutations
+    outside the workspace to the record. probity-verify at the commit the workflow pins reads
     ``probity-tree/v1`` and ``probity-observation/v2``, so each record is
     re-expressed in the older version by dropping the added members (and, for
     the tree, recomputing the digest over the regular files). The verdicts checked here depend
@@ -146,6 +146,8 @@ def for_verifier(role: str, data: bytes) -> bytes:
         for item in value.get("events", []):
             for member in ("exe", "cwd", "env", "address"):
                 item.pop(member, None)
+        for gap in value.get("gaps", []):
+            del gap["gap_cause"]
         value["schema_version"] = "probity-observation/v2"
         return encoded(value)
     return data

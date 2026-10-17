@@ -151,6 +151,21 @@ def test_killed_tracer_loses_events_and_says_so(image, workspace, tmp_path):
     assert receipt["agent_exit"] is None
     assert observation["coverage"] == "incomplete"
     assert observation["gaps"][-1]["end"] == observation["scope"]["end"]
+    assert observation["gaps"][-1]["gap_cause"] == "host"
+
+
+def test_an_attempt_to_signal_the_tracer_is_refused_and_recorded(image, workspace, tmp_path):
+    agent = py("import os, signal\n"
+               "try:\n"
+               "    os.kill(1, signal.SIGKILL)\n"
+               "except PermissionError:\n"
+               "    print('refused')\n")
+    result, records = run(image, workspace, tmp_path, agent, "signal")
+    assert "refused" in (result.run_dir / "transcript.txt").read_text()
+    signals = records["receipt"]["sensors"]["s2_strace"]["signals"]
+    assert [(item["target"], item["status"], item["outside_tree"]) for item in signals] == [
+        (1, "failed", True)]
+    assert records["observation"]["coverage"] == "complete"
 
 
 def test_direct_host_write_during_the_run_is_unattributed(image, workspace, tmp_path):

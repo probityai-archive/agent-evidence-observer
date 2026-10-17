@@ -44,7 +44,10 @@ def test_flags_name_every_family_and_print_exits():
                  "ftruncate", "chmod", "fchmodat2", "mmap", "connect", "clone3", "vfork"):
         assert name in expression.removeprefix("trace=").split(",")
     assert "-qq" not in strace.FLAGS and "-q" in strace.FLAGS
-    assert {"-f", "-y", "-xx", "-ttt", "-z", "-v"} <= set(strace.FLAGS)
+    assert {"-f", "-y", "-xx", "-ttt", "-v"} <= set(strace.FLAGS)
+    assert "-z" not in strace.FLAGS
+    for name in ("kill", "tkill", "tgkill", "pidfd_send_signal"):
+        assert name in expression.removeprefix("trace=").split(",")
 
 
 def test_raw_open_syscall_is_a_write():
@@ -266,3 +269,64 @@ def test_execveat_resolves_against_its_directory_descriptor():
 def test_an_abbreviated_environment_is_a_trace_error():
     with pytest.raises(strace.TraceError):
         build([f"10 1.000000 execve({hx('/a')}, [{hx('a')}], 0x7ffd /* 3 vars */) = 0"])
+
+
+def test_failed_calls_change_nothing():
+    found = build([
+        execve(10, 1.0, "agent"),
+        line(10, 1.1, f'openat(AT_FDCWD, {hx("/workspace/x.py")}, O_WRONLY|O_CREAT, 0644) = '
+                      '-1 EACCES (Permission denied)'),
+        line(10, 1.2, f'execve({hx("/usr/local/bin/sh")}, [{hx("sh")}], []) = '
+                      '-1 ENOENT (No such file or directory)'),
+        line(10, 1.3, f'unlinkat(AT_FDCWD, {hx("/workspace/y")}, 0) = -1 ENOENT (No such file)'),
+        line(10, 1.4, "+++ exited with 0 +++"),
+    ])
+    assert [event.kind for event in found.events] == ["exec"]
+
+
+def test_an_in_progress_connect_is_a_connect():
+    found = build([
+        execve(10, 1.0, "agent"),
+        line(10, 1.1, "connect(3<socket:[1]>, {sa_family=AF_INET, sin_port=htons(443)}, 16) = "
+                      "-1 EINPROGRESS (Operation now in progress)"),
+    ])
+    assert [event.kind for event in found.events] == ["exec", "connect"]
+
+
+def test_a_signal_outside_the_traced_tree_is_an_escape_and_one_inside_is_not():
+    found = build([
+        execve(10, 1.0, "agent"),
+        line(10, 1.1, "clone(child_stack=NULL, flags=SIGCHLD) = 11"),
+        line(11, 1.2, "kill(10, SIGTERM) = 0"),
+        line(10, 1.3, "kill(4242, SIGSTOP) = 0"),
+        line(10, 1.4, "kill(1, SIGKILL) = -1 EPERM (Operation not permitted)"),
+        line(10, 1.5, "kill(0, SIGHUP) = 0"),
+        line(10, 1.6, "+++ exited with 0 +++"),
+    ])
+    assert [(item["syscall"], item.get("target")) for item in found.escapes] == [
+        ("kill", 4242)]
+    signals = found.signals
+    assert [(item["target"], item["status"], item["outside_tree"]) for item in signals] == [
+        (10, "ok", False), (4242, "ok", True), (1, "failed", True), (0, "ok", True)]
+
+
+def test_a_signal_cut_off_by_the_tracer_death_is_interrupted():
+    text = "\n".join([execve(10, 1.0, "agent"), "10 1.100000 kill(29, SIGKILL"])
+    found = strace.read(text, WS)
+    assert found.signals == [{"syscall": "kill", "pid": 10, "time": 1.1, "target": 29,
+                              "signal": "SIGKILL", "status": "interrupted",
+                              "outside_tree": True}]
+    assert not found.root_exited
+
+
+def test_an_unfinished_signal_never_resumed_is_interrupted():
+    text = "\n".join([execve(10, 1.0, "agent"),
+                      "10 1.100000 tgkill(29, 29, SIGKILL <unfinished ...>",
+                      "11 1.200000 +++ exited with 0 +++"]) + "\n"
+    found = strace.read(text, WS)
+    assert [item["status"] for item in found.signals] == ["interrupted"]
+
+
+def test_only_the_final_line_may_be_cut_off():
+    with pytest.raises(strace.TraceError):
+        strace.parse("10 1.000000 kill(29, SIGKILL\n10 1.100000 +++ exited with 0 +++\n")

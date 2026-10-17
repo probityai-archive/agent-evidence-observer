@@ -7,10 +7,13 @@ directory is then scanned, because entries made before the watch existed (the
 ``mkdir -p a/b/c && touch a/b/c/f`` race) produce no event of their own; each
 entry the scan finds is recorded as a ``create`` with ``scanned: true``.
 
-``IN_Q_OVERFLOW`` means the kernel dropped events at an unknown point, and a
-watch that cannot be added (the per-user watch limit) leaves part of the tree
-unwatched. Either one marks the reader ``lost``, and the observation built
-from it then has ``coverage: unknown``.
+``IN_Q_OVERFLOW`` means the kernel dropped events while the queue was full.
+The queue was empty when the previous read drained it and has room again
+after the read that returned the overflow, so the loss lies between those two
+reads; the report keeps that window (``overflows``), and the observation names
+it as a gap. A watch that cannot be added (the per-user watch limit) leaves
+part of the tree unwatched for the rest of the run, which marks the reader
+``lost``; the observation built from it then has ``coverage: unknown``.
 
 The watch list is recorded with the time each watch was added, and goes into
 the receipt.
@@ -60,6 +63,7 @@ KINDS = (
     (IN_ATTRIB, "chmod"),
 )
 _HEADER = struct.Struct("iIII")
+READ_SIZE = 65536
 
 
 def mask_names(mask: int) -> list[str]:
@@ -87,11 +91,12 @@ class Report:
     changes: list[Change] = field(default_factory=list)
     watches: list[dict] = field(default_factory=list)
     overflow: bool = False
+    overflows: list[dict] = field(default_factory=list)
     watch_failures: list[dict] = field(default_factory=list)
 
     @property
     def lost(self) -> bool:
-        return self.overflow or bool(self.watch_failures)
+        return bool(self.watch_failures)
 
 
 def _libc():
@@ -130,12 +135,14 @@ class Watcher:
         self._wds: dict[int, str] = {}
         self._stop_read, self._stop_write = os.pipe()
         self._thread: threading.Thread | None = None
+        self._empty_at = time.time()
 
     def start(self) -> None:
         self._fd = self._libc.inotify_init1(IN_NONBLOCK | IN_CLOEXEC)
         if self._fd < 0:
             raise OSError(ctypes.get_errno(), "inotify_init1 failed")
         self._watch_tree("", scan=False)
+        self._empty_at = time.time()
         self._thread = threading.Thread(target=self._loop, name="inotify-reader", daemon=True)
         self._thread.start()
 
@@ -191,7 +198,7 @@ class Watcher:
     def _drain(self) -> None:
         while True:
             try:
-                buffer = os.read(self._fd, 65536)
+                buffer = os.read(self._fd, READ_SIZE)
             except BlockingIOError:
                 return
             if not buffer:
@@ -199,10 +206,19 @@ class Watcher:
             self.handle(buffer, time.time())
 
     def handle(self, buffer: bytes, now: float) -> None:
-        """Record every change in one read of the descriptor."""
+        """Record every change in one read of the descriptor.
+
+        A read shorter than :data:`READ_SIZE` emptied the queue, so it is the
+        latest time the queue is known to have been empty: an overflow found
+        in a later read lost its events after that time and before the read.
+        """
+        empty_since = self._empty_at
+        if len(buffer) < READ_SIZE:
+            self._empty_at = now
         for wd, mask, cookie, path in decode(buffer, self._wds, now):
             if mask & IN_Q_OVERFLOW:
                 self.report.overflow = True
+                self.report.overflows.append({"from": empty_since, "to": now})
                 continue
             if mask & IN_IGNORED:
                 self._wds.pop(wd, None)

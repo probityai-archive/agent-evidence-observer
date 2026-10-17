@@ -28,8 +28,9 @@ def change(kind, path, t, scanned=False):
     return inotify.Change(T0 + t, kind, path, 0, scanned=scanned)
 
 
-def built(found, report=None, trace=None, tree=None):
-    context = record_oe.Context("claim-1", "call-1", "host-observer", WS, T0, T0 + 6)
+def built(found, report=None, trace=None, tree=None, timed_out=False, separated=True):
+    context = record_oe.Context("claim-1", "call-1", "host-observer", WS, T0, T0 + 6,
+                                timed_out=timed_out, tracer_uid_separated=separated)
     return record_oe.build(context, found, trace or strace.Trace(), report or inotify.Report(),
                            tree or Tree(files={"a.txt": "0" * 64}))
 
@@ -87,9 +88,66 @@ def test_unresolved_descriptor_names_a_gap():
     assert records["sensors"]["s2_strace"]["unresolved"][0]["syscall"] == "mkdirat"
 
 
-def test_inotify_loss_makes_coverage_unknown():
+def test_a_failed_watch_makes_coverage_unknown():
     found = effects(event("exec", 0.1, argv=["agent"], exit=0))
-    assert built(found, inotify.Report(overflow=True))["observation"]["coverage"] == "unknown"
+    report = inotify.Report(watch_failures=[{"path": "a", "errno": "ENOSPC", "time": T0 + 1}])
+    assert built(found, report)["observation"]["coverage"] == "unknown"
+
+
+def causes(observation):
+    return [(gap["start"][-9:-1], gap["end"][-9:-1], gap["gap_cause"])
+            for gap in observation["gaps"]]
+
+
+def test_an_overflow_during_an_agent_burst_is_the_agents_gap():
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0),
+                    event("write", 2.5, path="/workspace/a.txt"))
+    report = inotify.Report(changes=[change("write", "a.txt", 2.5)], overflow=True,
+                            overflows=[{"from": T0 + 2, "to": T0 + 3.2}])
+    observation = built(found, report)["observation"]
+    assert observation["coverage"] == "incomplete"
+    assert causes(observation) == [("08:00:02", "08:00:04", "agent")]
+
+
+def test_an_overflow_with_no_agent_mutation_is_not_attributed():
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0))
+    report = inotify.Report(overflow=True, overflows=[{"from": T0 + 2, "to": T0 + 3.2}])
+    assert causes(built(found, report)["observation"]) == [("08:00:02", "08:00:04", "unknown")]
+
+
+@pytest.mark.parametrize("timed_out,separated,cause", [
+    (False, False, "agent"), (True, False, "host"), (False, True, "host"), (True, True, "host")])
+def test_a_lost_tracer_is_attributed_from_the_launch_facts(timed_out, separated, cause):
+    found = effects(event("exec", 0.1, argv=["agent"]), exited=False)
+    observation = built(found, timed_out=timed_out, separated=separated)["observation"]
+    assert observation["gaps"][-1]["gap_cause"] == cause
+
+
+def test_a_signal_the_tracer_died_on_makes_the_lost_tracer_the_agents():
+    found = effects(event("exec", 0.1, argv=["agent"]), exited=False)
+    found.signals.append({"syscall": "kill", "pid": 10, "time": T0 + 1, "target": 29,
+                          "signal": "SIGKILL", "status": "interrupted", "outside_tree": True})
+    observation = built(found, separated=True)["observation"]
+    assert observation["gaps"][-1]["gap_cause"] == "agent"
+
+
+def test_gap_causes_for_escapes_unresolved_calls_and_host_changes():
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0))
+    found.escapes.append({"syscall": "kill", "pid": 10, "time": T0 + 4, "target": 9})
+    found.unresolved.append({"syscall": "mkdirat", "pid": 10, "time": T0 + 1})
+    report = inotify.Report(changes=[change("write", "host.txt", 2.5)])
+    assert causes(built(found, report)["observation"]) == [
+        ("08:00:01", "08:00:02", "sensor"), ("08:00:02", "08:00:03", "unknown"),
+        ("08:00:04", "08:00:07", "agent")]
+
+
+def test_unparsed_lines_are_the_agents_where_it_shares_the_tracers_uid():
+    found = effects(event("exec", 0.1, argv=["agent"], exit=0))
+    trace = strace.Trace(unparsed=["forged"])
+    assert built(found, trace=trace, separated=False)["observation"]["gaps"][0][
+        "gap_cause"] == "agent"
+    assert built(found, trace=trace, separated=True)["observation"]["gaps"][0][
+        "gap_cause"] == "sensor"
 
 
 def test_lost_tracer_names_a_gap_to_the_end():

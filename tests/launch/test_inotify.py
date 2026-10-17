@@ -46,12 +46,14 @@ def test_nested_mkdir_race_is_closed_by_scanning(tmp_path):
     assert {"a", "a/b", "a/b/c", "a/b/c/d"} <= {watch["path"] for watch in report.watches}
 
 
-def test_overflow_marks_the_report_lost(tmp_path):
+def test_overflow_is_bounded_by_the_reads_around_it(tmp_path):
     watcher = inotify.Watcher(tmp_path)
     watcher.start()
-    watcher.handle(struct.pack("iIII", -1, inotify.IN_Q_OVERFLOW, 0, 0), time.time())
+    watcher.handle(b"", 100.0)
+    watcher.handle(struct.pack("iIII", -1, inotify.IN_Q_OVERFLOW, 0, 0), 103.5)
     report = watcher.stop()
-    assert report.overflow and report.lost
+    assert report.overflow and not report.lost
+    assert report.overflows == [{"from": 100.0, "to": 103.5}]
 
 
 def test_failed_watch_marks_the_report_lost(tmp_path):
@@ -65,3 +67,12 @@ def test_decode_reads_names_with_padding():
     name = b"file.txt\0\0\0\0\0\0\0\0"
     buffer = struct.pack("iIII", 1, inotify.IN_CREATE, 0, len(name)) + name
     assert inotify.decode(buffer, {1: "dir"}, 0.0) == [(1, inotify.IN_CREATE, 0, "dir/file.txt")]
+
+
+def test_a_full_read_does_not_move_the_start_of_an_overflow_window(tmp_path):
+    watcher = inotify.Watcher(tmp_path)
+    watcher.start()
+    watcher.handle(b"", 100.0)
+    watcher.handle(b"\0" * inotify.READ_SIZE, 101.0)
+    watcher.handle(struct.pack("iIII", -1, inotify.IN_Q_OVERFLOW, 0, 0), 103.5)
+    assert watcher.stop().overflows == [{"from": 100.0, "to": 103.5}]

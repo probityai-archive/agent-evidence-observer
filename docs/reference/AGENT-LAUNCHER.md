@@ -71,7 +71,11 @@ say `vantage: independent`, `witness_scope: PEER`. The receipt says
 - `s1_inotify`: change count, `overflow`, `watch_failures`, the watch mask;
 - `s2_strace`: `tracer` (`complete` or `lost`), call count, `unparsed_lines`,
   `unresolved` calls, `escapes` (`io_uring_setup`, `ptrace`,
-  `process_vm_writev`), and the origin rule;
+  `process_vm_writev`, and a delivered signal to a process outside the traced
+  tree), `signals` (every `kill`, `tkill`, `tgkill`, `pidfd_send_signal`,
+  `rt_sigqueueinfo` and `rt_tgsigqueueinfo`: sender, target, signal, `status`
+  `ok`, `failed` or `interrupted`, and `outside_tree`), `interrupted` calls,
+  and the origin rule;
 - `s3_tree`: the tree digest and the counts of files, symbolic links and
   special files;
 - `join.unattributed`: changes inotify saw that the trace did not.
@@ -100,9 +104,15 @@ regular files.
 ## Events
 
 The trace expression is
-`trace=execve,execveat,open,openat,openat2,creat,mkdir,mkdirat,mknod,mknodat,symlink,symlinkat,rename,renameat,renameat2,link,linkat,unlink,unlinkat,rmdir,truncate,ftruncate,chmod,fchmod,fchmodat,fchmodat2,chown,fchown,lchown,fchownat,utime,utimes,utimensat,futimesat,setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr,mmap,connect,fork,vfork,clone,clone3,chdir,fchdir,io_uring_setup,ptrace,process_vm_writev`,
-with `-f -q -y -v -ttt -xx -z`. Only successful calls are recorded. `-v` prints
-each exec's environment in full.
+`trace=execve,execveat,open,openat,openat2,creat,mkdir,mkdirat,mknod,mknodat,symlink,symlinkat,rename,renameat,renameat2,link,linkat,unlink,unlinkat,rmdir,truncate,ftruncate,chmod,fchmod,fchmodat,fchmodat2,chown,fchown,lchown,fchownat,utime,utimes,utimensat,futimesat,setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr,mmap,connect,fork,vfork,clone,clone3,chdir,fchdir,kill,tkill,tgkill,pidfd_send_signal,rt_sigqueueinfo,rt_tgsigqueueinfo,io_uring_setup,ptrace,process_vm_writev`,
+with `-f -q -y -v -ttt -xx`. `-v` prints each exec's environment in full.
+Failed calls are printed and dropped by the parser, because they changed
+nothing; a connect that returns `EINPROGRESS` is kept. The tracer does not
+filter with `-z`: that holds each line until the call returns, so a `kill`
+that kills the tracer never reaches the trace (measured with strace 6.8: the
+`-z` trace ends at the agent's last exec, the unfiltered one ends with
+`kill(<tracer pid>, SIGKILL`). The parser records a call cut off by the
+tracer's death, or an `<unfinished ...>` call never resumed, as interrupted.
 
 | event | from |
 | --- | --- |
@@ -145,15 +155,25 @@ documents; a persistent tool shell's commands are each their own.
 
 ## Coverage
 
-| condition | coverage |
-| --- | --- |
-| inotify queue overflow, or a watch that could not be added | `unknown` |
-| tracer lost (no exit record for the root process) | `incomplete`, gap to the end |
-| `io_uring_setup`, `ptrace` or `process_vm_writev` | `incomplete`, gap to the end |
-| a change inotify saw with no matching traced call | `incomplete`, one-second gap; the change is recorded with no `origin` |
-| a call whose directory descriptor printed without a path | `incomplete`, one-second gap |
-| a trace line the parser does not recognise | `incomplete`, whole run |
-| none of these | `complete` |
+Every gap carries `gap_cause`: `agent` (the agent caused the loss, or alone
+had the means), `host` (the launcher's side), `sensor` (a limit of the tracer)
+or `unknown` (a change no traced call explains). Overlapping gaps of one cause
+are merged; gaps of different causes stay apart.
+
+| condition | coverage | `gap_cause` |
+| --- | --- | --- |
+| a watch that could not be added | `unknown` | (no gaps) |
+| inotify queue overflow | `incomplete`, from the last read that emptied the queue to the read that reported the overflow | `agent` when the trace shows a workspace mutation in that window, else `unknown` |
+| tracer lost (no exit record for the root process) | `incomplete`, gap to the end | `host` when the launcher timed the run out; else `agent` when the trace ends with a signal the agent sent outside its tree, or when the agent shares the tracer's uid (`tracer_uid_separated: false`); else `host` |
+| `io_uring_setup`, `ptrace`, `process_vm_writev`, or a delivered signal outside the traced tree | `incomplete`, gap to the end | `agent` |
+| a change inotify saw with no matching traced call | `incomplete`, one-second gap; the change is recorded with no `origin` | `unknown` |
+| a call whose directory descriptor printed without a path | `incomplete`, one-second gap | `sensor` |
+| a trace line the parser does not recognise | `incomplete`, whole run | `agent` when the agent shares the tracer's uid (it can write into the trace), else `sensor` |
+| none of these | `complete` | |
+
+A failed attempt to signal outside the tree (for example `kill(1, SIGKILL)`
+refused with `EPERM` under docker) changes nothing and opens no gap; it is
+listed in `signals`.
 
 ## Limits
 
