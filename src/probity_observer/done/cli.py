@@ -67,6 +67,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     keys = Keys(load_signer(Path(args.harness_key)), load_signer(Path(args.host_key)),
                 load_signer(Path(args.grader_key)))
     spec = LoopSpec(contract=Path(args.contract), out=Path(args.out), image=args.image,
+                    backend=args.backend,
                     agent_argv=tuple(args.agent), task_id=args.task_id,
                     observed_party=args.observed_party, attempts=args.attempts,
                     grader_image=args.grader_image, network=args.network,
@@ -188,6 +189,9 @@ def add_commands(sub) -> None:
     loop.add_argument("--out", required=True)
     loop.add_argument("--image", required=True)
     loop.add_argument("--grader-image")
+    loop.add_argument("--backend", choices=("docker", "openshell"), default="docker",
+                      help="where the agent runs: a traced docker container, or an OpenShell "
+                           "sandbox under --network-policy, traced from outside it")
     loop.add_argument("--task-id", required=True)
     loop.add_argument("--observed-party", default="agent")
     loop.add_argument("--attempts", type=int, default=3)
@@ -227,9 +231,11 @@ def add_commands(sub) -> None:
 
 def dispatch(args: argparse.Namespace) -> int:
     """Run the parsed subcommand; a refused input exits ``REFUSED`` with its reason."""
+    from ..launch.backend_docker import BackendError as DockerError
+    from ..launch.backend_openshell import BackendError as OpenShellError
     try:
         return args.func(args)
-    except (DoneError, OSError, ValueError, KeyError) as error:
+    except (DoneError, OSError, ValueError, KeyError, DockerError, OpenShellError) as error:
         print(f"Refused: {error}", file=sys.stderr)
         return REFUSED
 

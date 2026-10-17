@@ -187,12 +187,17 @@ def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dic
     limit = spec.timeout_seconds
     if spec.wall_clock_s is not None:
         limit = min(limit, max(1.0, spec.wall_clock_s - sum(item["elapsed_s"] for item in chain)))
-    launch_agent.launch(launch_agent.LaunchSpec(
+    launched = launch_agent.launch(launch_agent.LaunchSpec(
         backend=spec.backend, image=spec.image, agent_argv=spec.agent_argv, workspace=workspace,
         claim_id=claim_id, invocation_id=invocation, env=env, network=spec.network,
         timeout_seconds=limit, network_policy=spec.network_policy,
         containment=spec.containment), run)
     receipt.sign_observer_records(run, keys.host)
+    if launched.enforcer_logs:
+        from ..openshell import ocsf
+        from ..openshell import policy as network_policy
+        declared = network_policy.load(spec.network_policy) if spec.network_policy else None
+        ocsf.write(run, launched.enforcer_logs, keys.host, declared)
     contract_bytes = (spec.contract / "contract.json").read_bytes()
     shutil.copy2(spec.contract / "contract.json", run / "contract.json")
     shutil.copy2(spec.contract / "contract.dsse.json", run / "contract.dsse.json")
