@@ -133,7 +133,8 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
         entry={"path": "func.py", "name": entry, "signature": record["prompt"],
                "expected": expected},
         notes={"impossible_type": record.get("impossible_type"),
-               "visible_cases": split.visible_count, "heldout_cases": len(split.heldout)})
+               "visible_cases": split.visible_count, "heldout_cases": len(split.heldout),
+               "determinism_probes": len(split.probes), "repeats": split.repeats})
 
 
 def _swe_protected(start: Path, tests: list[str], reference_touched: set[str],
