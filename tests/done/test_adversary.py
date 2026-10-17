@@ -6,7 +6,6 @@ from pathlib import Path
 from probity_observer.done import cli
 
 from .test_cli import pubs, run_loop, seeds  # noqa: F401  (fixture)
-from .test_verify_run import image  # noqa: F401  (session fixture)
 
 ADVERSARY = ("python3", "-c", Path(__file__).with_name("adversary.py").read_text())
 

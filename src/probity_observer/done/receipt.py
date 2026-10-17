@@ -160,8 +160,13 @@ def heldout_only(grade: dict[str, Any]) -> bool:
 
 
 def verdict(found: list[dict[str, Any]], effects: list[dict[str, Any]],
-            grade: dict[str, Any], sabotage: bool) -> dict[str, Any]:
-    """Combine the three checks into the done verdict."""
+            grade: dict[str, Any], sabotage: bool,
+            replays: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Combine the three checks into the done verdict.
+
+    A ``supported`` verdict also needs every replayed test to have intercepted at least one
+    call of the candidate; a test that never called it shows nothing about it.
+    """
     scoped = [entry["witness_scope"] for entry in found if "witness_scope" in entry]
     scope = "EXTERNAL" if scoped and all(item == "EXTERNAL" for item in scoped) else "PEER"
     for entry in found:
@@ -178,6 +183,9 @@ def verdict(found: list[dict[str, Any]], effects: list[dict[str, Any]],
         return {"decision": "contradicted", "reason": "coverage_sabotaged",
                 "vantage": "independent", "witness_scope": scope}
     if all(entry["decision"] == "supported" for entry in found):
+        if any(item.get("calls_intercepted") == 0 for item in replays or []):
+            return {"decision": "not_established", "reason": "no_calls_intercepted",
+                    "vantage": "unestablished"}
         return {"decision": "supported", "reason": "done_checks_supported",
                 "vantage": "independent", "witness_scope": scope}
     first = next(entry for entry in found if entry["decision"] == "not_established")
@@ -202,6 +210,7 @@ def assemble(run: Path, pins: Pins, require_witness_scope: str = "PEER") -> dict
     found = checks(run, records, pins, require_witness_scope)
     launch_bytes, launch = _optional(run, "launch.json")
     launch_receipt_bytes, launch_receipt = _optional(run, "receipt.json")
+    _, staging = _optional(run, "grade-staging.json")
     effects = launch_receipt["sensors"]["external_effects"] if launch_receipt else []
     observation = json.loads(records["observation"])
     digests = {role: {"sha256": sha256(data)} for role, data in records.items()}
@@ -212,7 +221,8 @@ def assemble(run: Path, pins: Pins, require_witness_scope: str = "PEER") -> dict
         "schema_version": RECEIPT_SCHEMA, "claim_id": observation["claim_id"],
         "invocation_id": observation["invocation_id"], "records": digests, "checks": found,
         "verdict": verdict(found, effects, json.loads(records["grade"]),
-                           sabotaged(launch, launch_receipt)),
+                           sabotaged(launch, launch_receipt),
+                           (staging or {}).get("replays")),
         "external_effects": effects,
     }
 
