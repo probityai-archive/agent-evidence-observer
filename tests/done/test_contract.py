@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from probity_observer.done import contract, heldout
+from probity_observer.done import contract, heldout, pytest_plugins
 from probity_observer.done.formats import DoneError, encode, open_record, public_key, sha256
 from probity_observer.sensors import treedigest
 
@@ -82,7 +82,17 @@ def test_swe_contract_from_dataset_fields(tmp_path, swe_repo, harness):
     ids = [command.id for command in task.commands]
     assert ids == ["fail-to-pass", "pass-to-pass", "heldout-fail-to-pass"]
     assert task.commands[0].argv[-1] == "tests/test_shapes.py::test_area"
-    assert task.commands[0].argv[-5:-1] == ("-c", "../heldout/config/pytest.ini", "--rootdir", ".")
+    argv = task.commands[0].argv
+    config = argv.index("../heldout/config/pytest.ini")
+    assert argv[config - 1:config + 3] == ("-c", "../heldout/config/pytest.ini", "--rootdir", ".")
+    # The sealed plugins run every test twice and run the patched function with no test frame.
+    assert pytest_plugins.is_sealed_pytest(argv)
+    assert argv[argv.index("--probity-repeats") + 1] == "2"
+    assert argv[argv.index("--probity-isolate") + 1] == "pkg/shapes.py::area"
+    assert task.notes["isolated_targets"] == ["pkg/shapes.py::area"]
+    assert (task.heldout / "config/probity-plugins/probity_repeat.py").is_file()
+    assert task.commands[0].record()["ids"] == ["tests/test_shapes.py::test_area"]
+    assert "ids" not in task.commands[2].record()
     assert task.commands[2].argv[:2] == ("sh", "-c") and "../heldout" in task.commands[2].argv[2]
     protected = {(entry.path, entry.kind) for entry in task.protected}
     assert protected == {("tests", "directory"), ("conftest.py", "file")}

@@ -19,6 +19,7 @@ call. A real-repository task without dataset acceptance goes through :mod:`.zero
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shlex
@@ -30,7 +31,7 @@ from typing import Any, Sequence
 
 from ..sensors import treedigest
 from . import heldout as heldout_cases
-from . import mutants
+from . import mutants, pytest_plugins
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
 from .runner import Command, Runner
@@ -208,14 +209,29 @@ def _swe_protected(start: Path, tests: list[str], reference_touched: set[str],
                        for other in kept)]
 
 
+def touched_functions(source: str, ranges: list[tuple[int, int]]) -> list[str]:
+    """Top-level (non-async) functions of ``source`` that a hunk in ``ranges`` touches."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    return [node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+            and any(first <= (node.end_lineno or node.lineno) and last >= node.lineno
+                    for first, last in ranges)]
+
+
 def swe_task(record: dict[str, Any], repo: Path, work: Path,
              test_cmd: Sequence[str] = DEFAULT_TEST_CMD, protect_test_dirs: bool = True,
-             seal_config: bool = True) -> Task:
+             seal_config: bool = True, repeats: int = pytest_plugins.REPEATS,
+             isolate: bool = True) -> Task:
     """An (Impossible) SWE-bench task: ``repo`` is a checkout at ``base_commit``.
 
     ``test_cmd`` is the argv prefix the test ids are appended to; SWE-bench's own
     per-repository specification gives it; with ``seal_config`` (for pytest) the start
-    tree's own pytest configuration is sealed and passed with ``-c``. The held-out set is the
+    tree's own pytest configuration is sealed and passed with ``-c``. When ``test_cmd`` is
+    ``python -m pytest``, the sealed plugins run every test ``repeats`` times and, with
+    ``isolate``, run each top-level function the reference patch touches with no test frame
+    (``isolated_targets`` in the compile record); both report as evidence from the worker. The held-out set is the
     task's original test patch, overlaid by the verifier from ``../heldout/tree`` and never in
     the agent's tree. Every acceptance-configuration file from the root to each test file is
     protected.
@@ -241,14 +257,23 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
     prefix = tuple(test_cmd)
     if seal_config:
         prefix += sealed_config(start, held)
+    targets = {name: lines for name, lines in touched_lines(record["patch"]).items()
+               if name.endswith(".py") and name not in tests}
+    isolated = sorted(f"{name}::{function}" for name, lines in targets.items()
+                      if (reference / name).is_file()
+                      for function in touched_functions((reference / name).read_text(), lines)
+                      ) if isolate else []
+    if seal_config and pytest_plugins.is_python_pytest(prefix):
+        pytest_plugins.install(held / "config")
+        prefix = pytest_plugins.pytest_argv(prefix, tests, isolated, repeats)
+    else:
+        isolated = []
     commands = [Command("fail-to-pass", prefix + tuple(fail), ids_from=len(prefix))]
     if passing:
         commands.append(Command("pass-to-pass", prefix + tuple(passing), prepatch="pass",
                                 ids_from=len(prefix)))
     overlay = "cp -R ../heldout/tree/. . && exec " + shlex.join(prefix + tuple(fail))
     commands.append(Command("heldout-fail-to-pass", ("sh", "-c", overlay), heldout=True))
-    targets = {name: lines for name, lines in touched_lines(record["patch"]).items()
-               if name.endswith(".py") and name not in tests}
     return Task(
         task_id=record["instance_id"], source="swe",
         description=f"resolve {record['instance_id']}", start=start, reference=reference,
@@ -256,7 +281,7 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
         protected=_swe_protected(start, tests, reference_touched, protect_test_dirs),
         mutation_targets=targets,
         notes={"impossible_type": record.get("impossible_type"), "repo": record.get("repo"),
-               "base_commit": record.get("base_commit")})
+               "base_commit": record.get("base_commit"), "isolated_targets": isolated})
 
 
 def protected_digest(root: Path, entry: Protected) -> str:
@@ -383,7 +408,9 @@ def _exits(runner: Runner, state: Path, command: Command, heldout: Path | None,
 
 
 def is_pytest(argv: Sequence[str]) -> bool:
-    """A pytest invocation: ``pytest ...`` or ``python -m pytest ...``."""
+    """A pytest invocation: ``pytest ...``, ``python -m pytest ...`` or the sealed form."""
+    if pytest_plugins.is_sealed_pytest(argv):
+        return True
     head = list(argv[:4])
     return (bool(head) and head[0].rsplit("/", 1)[-1] == "pytest") or (
         len(head) >= 2 and "-m" in head and "pytest" in head)
