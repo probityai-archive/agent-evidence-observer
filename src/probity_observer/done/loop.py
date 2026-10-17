@@ -215,6 +215,7 @@ def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dic
     (run / "grade.json").write_bytes(graded.grade_bytes)
     (run / "grade.dsse.json").write_bytes(graded.envelope)
     (run / "grade-staging.json").write_bytes(encode(graded.staging))
+    receipt.write_sources(run, graded.sources)
     if witness is not None:
         witness(run)
     predicate = receipt.assemble(run, keys.pins(spec.observed_party, spec.allow_no_heldout))
@@ -233,7 +234,7 @@ def _judge(spec: LoopSpec, keys: Keys, run: Path, table: dict[str, Any],
     record["decision"] = decision.record()
     if predicate is not None:
         predicate.update(policy={"table_sha256": policy.table_sha256(table)},
-                         stop_decision=decision.record(), attempt=record)
+                         stop_decision=decision.record())
         receipt.sign_receipt(run, predicate, keys.harness)
     return Attempt(record["attempt"], run, verdict, decision, record)
 

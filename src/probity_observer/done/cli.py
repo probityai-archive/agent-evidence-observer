@@ -124,7 +124,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(f"Refused: {error}")
         return REFUSED
     recomputed = receipt.assemble(run, pins)
-    for name in ("records", "checks", "verdict", "external_mutations"):
+    for name in ("records", "checks", "verdict", "external_effects"):
         if recomputed[name] != carried[name]:
             print(f"Refused: the receipt's {name} does not recompute from the records")
             return REFUSED
