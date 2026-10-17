@@ -30,6 +30,7 @@ from typing import Any, Sequence
 
 from ..sensors import treedigest
 from . import heldout as heldout_cases
+from . import mutants
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
 from .runner import Command, Runner
@@ -380,3 +381,33 @@ def stability_report(result: Stability, runner: Runner, runs: int,
     return {"stability": {"runner": runner.name, "runs_per_state": runs,
                           "reference": "available" if reference else "unavailable",
                           "runs": result.runs, "dropped": result.dropped}}
+
+
+def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"]]:
+    """The mutant base state and mutants for a task: operator or degenerate."""
+    found: list[mutants.Mutant] = []
+    if task.reference is not None and task.mutation_targets:
+        for name, ranges in sorted(task.mutation_targets.items()):
+            path = task.reference / name
+            if path.is_file():
+                found += mutants.operator_mutants(name, path.read_text(), ranges)
+        return task.reference, mutants.sample(found, limit, task.task_id)
+    if task.entry is not None:
+        found = mutants.degenerate_mutants(task.entry["path"], task.entry["signature"],
+                                           task.entry["name"], task.entry["expected"])
+        return task.start, mutants.sample(found, limit, task.task_id)
+    return task.start, []
+
+
+def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
+                 mutant_limit: int = 40, timeout: float = 900.0) -> Sealed:
+    """Stabilize the commands, measure mutant kills, and seal the contract."""
+    stable = stabilize(task, runner, runs, timeout)
+    if not [command for command in stable.commands if not command.heldout]:
+        raise DoneError(f"{task.task_id}: no visible acceptance command is stable")
+    base, chosen = task_mutants(task, mutant_limit)
+    adequacy = mutants.measure(base, chosen, stable.commands, runner, task.heldout, timeout)
+    report = {**stability_report(stable, runner, runs, task.reference is not None),
+              "adequacy": adequacy.report()}
+    return seal(task, out, key, adequacy.field(), stable.commands,
+                mutants.mutant_set_sha256(chosen) if chosen else None, report)
