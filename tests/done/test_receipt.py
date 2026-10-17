@@ -254,3 +254,18 @@ def test_a_receipt_without_a_verifier_id_is_refused():
                 {"verifier": {"id": 7}}):
         with pytest.raises(DoneError):
             receipt.verifier_id(bad)
+
+
+def test_the_done_receipt_opens_every_record_version_the_launcher_writes():
+    """The launcher's schema constants and the done receipt's record map move together.
+
+    PR CI runs the branch merged with main: when main's observer moved to observation v3
+    and tree v2 while the done map still named v2 and v1, every docker loop run was refused
+    with "no payload type". This pins the join without docker.
+    """
+    from probity_observer import record_oe
+    from probity_observer.done import formats
+    assert receipt.ROLES["observation"] == record_oe.OBSERVATION_SCHEMA
+    assert receipt.ROLES["tree"] == record_oe.TREE_SCHEMA
+    for schema in receipt.ROLES.values():
+        assert schema in formats.PAYLOAD_TYPES
