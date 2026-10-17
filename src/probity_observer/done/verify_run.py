@@ -277,6 +277,7 @@ def _visible_part(heldout: Path, destination: Path) -> Path:
 
 
 MIN_HUNKS_EXERCISED = 1.0
+TREE_SCHEMA = "probity-tree/v2"
 PER_HUNK_MUTANTS = 3
 
 
@@ -388,6 +389,26 @@ def _isolation(contract_sha256: str, trusted: tuple[str, str], runner: DockerRun
     return report
 
 
+TREE_FIELDS = ("files", "executable", "symlinks", "special")
+
+
+def check_tree_record(final: Path, tree_record: dict[str, Any]) -> None:
+    """The final tree on disk must be exactly the ``probity-tree/v2`` record the host signed.
+
+    Every entry kind the record binds (regular files, execute bits, symbolic links with their
+    raw targets, special files) is compared, so staging from disk stages the record's tree:
+    :func:`stage_tree` then keeps a link only where the sealed start tree has the same link and
+    refuses every special entry, and nothing outside the record can reach the grader.
+    """
+    if tree_record.get("schema_version") != TREE_SCHEMA:
+        raise GradeError(f"the tree record is not {TREE_SCHEMA}")
+    scanned = treedigest.scan(final)
+    named = {name: tree_record.get(name) for name in TREE_FIELDS}
+    if (named != scanned.record_fields() or scanned.sha256 != tree_record["tree_sha256"]
+            or treedigest.record_digest(named) != tree_record["tree_sha256"]):
+        raise GradeError("the final tree on disk is not the tree the record names")
+
+
 def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[str, Any],
           context: GradeContext, runner: DockerRunner, key, timeout: float = 900.0) -> Graded:
     """Grade the agent's final tree ``final`` against the contract bundle ``bundle``.
@@ -397,9 +418,7 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
     """
     sealed, start = bundle / "sealed", bundle / "workspace"
     contract = json.loads(contract_bytes)
-    scanned = treedigest.scan(final)
-    if scanned.sha256 != tree_record["tree_sha256"] or scanned.files != tree_record["files"]:
-        raise GradeError("the final tree on disk is not the tree the record names")
+    check_tree_record(final, tree_record)
     heldout = sealed / "heldout"
     has_heldout = heldout.is_dir()
     with tempfile.TemporaryDirectory(prefix="probity-verifier-") as work:

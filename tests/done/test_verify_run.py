@@ -27,7 +27,8 @@ def final_tree(sealed, tmp_path, solution, change=None):
     if change:
         change(final)
     scanned = treedigest.scan(final)
-    return final, {"tree_sha256": scanned.sha256, "files": scanned.files}
+    return final, {"schema_version": "probity-tree/v2", "tree_sha256": scanned.sha256,
+                   **scanned.record_fields()}
 
 
 def run_grade(sealed, final, tree, image, grader):
@@ -50,6 +51,18 @@ def test_honest_tree_passes_and_the_grade_is_signed_by_the_grader(tmp_path, harn
     assert open_record(graded.envelope, public_key(grader), verify_run.GRADE_SCHEMA) == graded.grade_bytes
     from probity_verify.adapters import done_records
     assert done_records.grade(graded.grade_bytes)["tree_sha256"] == tree["tree_sha256"]
+
+
+def test_a_tree_record_that_omits_an_entry_on_disk_is_refused(tmp_path, harness, grader, image):
+    sealed = sealed_task(tmp_path, harness, LCB_ORIGINAL)
+    final, tree = final_tree(sealed, tmp_path, HONEST)
+    os.mkfifo(final / "pipe")
+    with pytest.raises(verify_run.GradeError):
+        run_grade(sealed, final, tree, image, grader)
+    stale = {**tree, "schema_version": "probity-tree/v1"}
+    os.unlink(final / "pipe")
+    with pytest.raises(verify_run.GradeError):
+        run_grade(sealed, final, stale, image, grader)
 
 
 def test_a_counter_fails_the_conflicting_task_in_the_container(tmp_path, harness, grader, image):

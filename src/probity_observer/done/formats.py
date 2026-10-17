@@ -26,8 +26,8 @@ RECEIPT_PREDICATE = PREDICATE_BASE + "done-receipt"
 
 PAYLOAD_TYPES = {
     "probity-done-contract/v1": "application/vnd.probity.done-contract.v1+json",
-    "probity-tree/v1": "application/vnd.probity.tree.v1+json",
-    "probity-observation/v2": "application/vnd.probity.observation.v2+json",
+    "probity-tree/v2": "application/vnd.probity.tree.v2+json",
+    "probity-observation/v3": "application/vnd.probity.observation.v3+json",
     "probity-capabilities/v1": "application/vnd.probity.capabilities.v1+json",
     "probity-acceptance-grade/v1": "application/vnd.probity.acceptance-grade.v1+json",
     "probity-tool-claims/v1": "application/vnd.probity.tool-claims.v1+json",
