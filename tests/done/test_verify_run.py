@@ -43,7 +43,7 @@ def final_tree(sealed, tmp_path, solution, change=None):
 
 def run_grade(sealed, final, tree, image, grader):
     runner = verify_run.DockerRunner(image)
-    return verify_run.grade((sealed.out / "contract.json").read_bytes(), sealed.out / "sealed",
+    return verify_run.grade((sealed.out / "contract.json").read_bytes(), sealed.out,
                             final, tree, verify_run.GradeContext("c1", "i1"), runner, grader,
                             timeout=120)
 
@@ -116,17 +116,41 @@ def test_isolation_block_has_the_admission_fields(tmp_path, harness, grader, ima
     assert block["reference"] == {"dir_mode": "0755", "inside_artifact_dir": False}
 
 
-def test_staging_rejects_links_out_and_special_files(tmp_path):
-    final = tmp_path / "f"
-    final.mkdir()
-    (final / "a.txt").write_text("a")
-    os.symlink("a.txt", final / "inside")
+def test_staging_keeps_only_links_the_start_tree_had(tmp_path):
+    start, final = tmp_path / "start", tmp_path / "f"
+    for root in (start, final):
+        root.mkdir()
+        (root / "a.txt").write_text("a")
+        os.symlink("a.txt", root / "inside")
+    os.symlink("a.txt", final / "conftest.py")
     os.symlink("/etc/passwd", final / "outside")
     os.symlink("../..", final / "up")
     os.mkfifo(final / "pipe")
-    staged = verify_run.stage_tree(final, tmp_path / "staged")
-    assert sorted(staged.rejected) == ["outside", "pipe", "up"]
+    staged = verify_run.stage_tree(final, tmp_path / "staged", start)
+    assert sorted(staged.rejected) == ["conftest.py", "outside", "pipe", "up"]
     assert (tmp_path / "staged" / "inside").is_symlink()
+
+
+def test_reset_removes_grader_files_the_agent_added_and_refuses_a_link_above(tmp_path):
+    start, sealed = tmp_path / "start", tmp_path / "sealed"
+    (start / "tests").mkdir(parents=True)
+    (start / "tests" / "conftest.py").write_text("# sealed\n")
+    (start / "tests" / "test_a.py").write_text("x\n")
+    shutil.copytree(start, sealed)
+    root = tmp_path / "staged"
+    shutil.copytree(start, root)
+    (root / "conftest.py").write_text("hook\n")
+    (root / "pytest.ini").write_text("[pytest]\naddopts = --collect-only\n")
+    (root / "tests" / "conftest.py").write_text("changed\n")
+    staged = verify_run.Staged(root)
+    entry = contract.Protected("tests/test_a.py", "file")
+    verify_run.reset(staged, [entry], sealed, start)
+    assert sorted(staged.removed_config) == ["conftest.py", "pytest.ini"]
+    assert (root / "tests" / "conftest.py").read_text() == "changed\n"
+    shutil.rmtree(root / "tests")
+    os.symlink(str(sealed / "tests"), root / "tests")
+    with pytest.raises(verify_run.GradeError):
+        verify_run.reset(verify_run.Staged(root), [entry], sealed, start)
 
 
 def test_a_tree_that_is_not_the_recorded_one_is_refused(tmp_path, harness, grader, image):
