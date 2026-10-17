@@ -41,7 +41,7 @@ from typing import Any
 from probity_verify.core import adjudicate
 
 from ..sensors import treedigest
-from .formats import RECEIPT_PREDICATE, DoneError, encode, open_record, sha256, sign_record, statement
+from .formats import RECEIPT_PREDICATE, VERIFIER_ID, DoneError, encode, open_record, sha256, sign_record, statement
 
 RECEIPT_SCHEMA = "probity-done-receipt/v1"
 ROLES = {"contract": "probity-done-contract/v1", "tree": "probity-tree/v2",
@@ -325,7 +325,8 @@ def assemble(run: Path, pins: Pins, require_witness_scope: str = "PEER") -> dict
         digests["launch"] = {"sha256": sha256(launch_bytes)}
         digests["launch_receipt"] = {"sha256": sha256(launch_receipt_bytes)}
     return {
-        "schema_version": RECEIPT_SCHEMA, "claim_id": observation["claim_id"],
+        "schema_version": RECEIPT_SCHEMA, "verifier": {"id": VERIFIER_ID},
+        "claim_id": observation["claim_id"],
         "invocation_id": observation["invocation_id"], "records": digests, "checks": found,
         "verdict": verdict(found, observation, json.loads(records["grade"]),
                            (staging or {}).get("replays"),
@@ -366,6 +367,16 @@ def sign_observer_records(run: Path, host_key) -> None:
     """Re-encode the launcher's observation, capability and tree records and sign them."""
     for role in ("observation", "capability", "tree"):
         write_record(run, role, json.loads((run / f"{role}.json").read_bytes()), host_key)
+
+
+def verifier_id(predicate: dict[str, Any]) -> str:
+    """The receipt's required ``verifier.id``: an absolute https URI naming the verifier that
+    signed it. A receipt without one is refused."""
+    verifier = predicate.get("verifier")
+    found = verifier.get("id") if isinstance(verifier, dict) else None
+    if not isinstance(found, str) or not found.startswith("https://") or len(found) <= 8:
+        raise DoneError("the receipt carries no verifier.id (a required https URI)")
+    return found
 
 
 def decision_line(found: dict[str, Any]) -> str:

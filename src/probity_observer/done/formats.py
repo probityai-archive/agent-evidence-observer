@@ -20,9 +20,12 @@ from probityai import dsse
 from ..witness.checkpoint import canonical, signer, verifier
 
 STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
-PREDICATE_BASE = "https://probityai.github.io/probity/predicate/v1/"
+# Hosting-independent predicate home; a change of home is this one line.
+PREDICATE_BASE = "https://w3id.org/agent-evidence/predicate/v1/"
 CONTRACT_PREDICATE = PREDICATE_BASE + "done-contract"
 RECEIPT_PREDICATE = PREDICATE_BASE + "done-receipt"
+# The required ``predicate.verifier.id`` every done receipt this verifier signs carries.
+VERIFIER_ID = "https://github.com/probityai/probity"
 
 PAYLOAD_TYPES = {
     "probity-done-contract/v1": "application/vnd.probity.done-contract.v1+json",

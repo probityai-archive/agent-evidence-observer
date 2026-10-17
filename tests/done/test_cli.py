@@ -96,6 +96,17 @@ def test_verify_holds_supported_below_a_pinned_floor_or_scope(tmp_path, keys, ca
     assert "adequacy_below_minimum" in capsys.readouterr().out
 
 
+def test_verify_refuses_a_receipt_without_a_verifier_id(tmp_path, keys, capsys):
+    run = signed_run(tmp_path, keys)
+    assert cli.main(["verify", "--run", str(run), *pubs()]) == 0
+    capsys.readouterr()
+    stripped = json.loads((run / "done-receipt.json").read_bytes())
+    del stripped["verifier"]
+    receipt.sign_receipt(run, stripped, keys[0])
+    assert cli.main(["verify", "--run", str(run), *pubs()]) == cli.REFUSED
+    assert "verifier.id" in capsys.readouterr().out
+
+
 def test_verify_refuses_a_receipt_that_does_not_recompute(tmp_path, keys, capsys):
     run = signed_run(tmp_path, keys)
     honest = json.loads((run / "done-receipt.json").read_bytes())
