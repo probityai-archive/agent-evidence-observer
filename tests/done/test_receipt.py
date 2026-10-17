@@ -195,7 +195,10 @@ def test_the_receipt_is_signed_by_the_harness_and_carries_the_records(tmp_path, 
     predicate["policy"] = {"table_sha256": "0" * 64}
     signed = receipt.sign_receipt(run, predicate, keys[0])
     assert open_record(signed.envelope, pins.harness_key, receipt.RECEIPT_SCHEMA) == signed.data
+    assert predicate["verifier"] == {"id": "https://github.com/probityai/probity"}
+    assert json.loads(signed.data)["verifier"]["id"] == "https://github.com/probityai/probity"
     statement = json.loads((run / "done-receipt.statement.json").read_bytes())
+    assert statement["predicateType"] == "https://w3id.org/agent-evidence/predicate/v1/done-receipt"
     tree = json.loads((run / "tree.json").read_bytes())
     assert statement["subject"][0]["digest"]["sha256"] == tree["tree_sha256"]
     assert predicate["records"]["contract"]["sha256"] == hashlib.sha256(
@@ -241,3 +244,13 @@ def test_a_contract_without_heldout_tests_cannot_support_done_unless_pinned(tmp_
     assert receipt.assemble(run, pins)["verdict"]["reason"] == "heldout_unavailable"
     allowed = receipt.Pins(pins.harness_key, pins.host_key, pins.grader_key, allow_no_heldout=True)
     assert receipt.assemble(run, allowed)["verdict"]["decision"] == "supported"
+
+
+def test_a_receipt_without_a_verifier_id_is_refused():
+    assert receipt.verifier_id({"verifier": {"id": "https://github.com/probityai/probity"}}) == (
+        "https://github.com/probityai/probity")
+    for bad in ({}, {"verifier": None}, {"verifier": {}}, {"verifier": {"id": ""}},
+                {"verifier": {"id": "probity"}}, {"verifier": {"id": "http://x.example"}},
+                {"verifier": {"id": 7}}):
+        with pytest.raises(DoneError):
+            receipt.verifier_id(bad)

@@ -118,6 +118,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
                         allow_no_heldout=args.allow_no_heldout)
     carried = json.loads(open_record((run / "done-receipt.dsse.json").read_bytes(),
                                      args.harness_pub, receipt.RECEIPT_SCHEMA))
+    try:
+        receipt.verifier_id(carried)
+    except DoneError as error:
+        print(f"Refused: {error}")
+        return REFUSED
     recomputed = receipt.assemble(run, pins)
     for name in ("records", "checks", "verdict", "external_mutations"):
         if recomputed[name] != carried[name]:
