@@ -198,14 +198,21 @@ def startup(pid: int, path: str, root: int, proc: str = "/proc") -> dict:
     return {"pid": pid, "status": "complete", "basis": "startup_file", "chain": chain}
 
 
+READY = {"status": "ready"}
+"""The first line :func:`serve` writes, before it reads any request: the gate counts the
+resolver as started only once this line arrives, never because its process is still alive."""
+
+
 def serve(root: int, source=None, sink=None, proc: str = "/proc") -> int:
-    """Answer each request line with one JSON line, until end of input.
+    """Write :data:`READY`, then answer each request line with one JSON line, until end of input.
 
     ``<pid> ok`` and ``<pid> fail`` serve a stopped exec that succeeded or failed;
     ``<pid> start <hex path>`` serves the tracer's first exec.
     """
     source = source or sys.stdin
     sink = sink or sys.stdout
+    sink.write(json.dumps(READY) + "\n")
+    sink.flush()
     for line in source:
         parts = line.split()
         if len(parts) == 2 and parts[0].isdigit() and parts[1] in ("ok", "fail"):

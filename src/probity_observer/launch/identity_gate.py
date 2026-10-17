@@ -28,6 +28,7 @@ from ..sensors import binary_identity
 
 ROOT_PID = 1
 START_WAIT = 30.0
+ATTEMPT_WAIT = 30.0
 _EXEC_DONE = re.compile(r"^(\d+) +\d+\.\d+ (?:<\.\.\. )?(execve|execveat)(?:\(| resumed>).*\) += (-?\d+)")
 _EXEC_PATH = re.compile(r'^\d+ +\d+\.\d+ execve\("((?:\\x[0-9a-f]{2})*)"')
 _KERNEL_STOP = re.compile(r"^(\d+) +\d+\.\d+ --- SIGSTOP \{si_signo=SIGSTOP, si_code=SI_KERNEL\} ---$")
@@ -70,29 +71,59 @@ class Gate:
         self._tail.start()
 
     def _open(self) -> bool:
+        """Start the resolver; it counts as started only when its :data:`READY` line arrives.
+
+        A process still alive after some delay proves nothing (a loaded host can take longer
+        than any delay to fail), so each attempt waits for the ready line or for the process
+        to end. Attempts repeat until :data:`START_WAIT` has passed (the container may not
+        exist yet), and the first attempt always runs to its end. An attempt that neither
+        answers nor ends is abandoned after :data:`ATTEMPT_WAIT`.
+        """
         deadline = time.monotonic() + START_WAIT
-        while not self._stop.is_set() and time.monotonic() < deadline:
+        first = True
+        while first or (not self._stop.is_set() and time.monotonic() < deadline):
+            first = False
             process = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, text=True, bufsize=1)
-            time.sleep(0.2)
-            if process.poll() is None:
-                self._process = process
-                self._reader = threading.Thread(target=self._read, daemon=True)
-                self._reader.start()
+            ready, closed = threading.Event(), threading.Event()
+            reader = threading.Thread(target=self._read, args=(process, ready, closed),
+                                      daemon=True)
+            reader.start()
+            give_up = max(deadline, time.monotonic() + ATTEMPT_WAIT)
+            while not ready.is_set() and not closed.is_set() and time.monotonic() < give_up:
+                ready.wait(0.02)
+            if ready.is_set():
+                self._process, self._reader = process, reader
                 return True
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            reader.join(timeout=5)
             message = (process.stderr.read() if process.stderr else "").strip()
-            if message:
-                self.errors.append(message.splitlines()[-1])
+            self.errors.append(message.splitlines()[-1] if message
+                               else "resolver ended without its ready line")
             time.sleep(0.2)
         return False
 
-    def _read(self) -> None:
-        assert self._process is not None and self._process.stdout is not None
-        for line in self._process.stdout:
+    def _read(self, process: subprocess.Popen[str], ready: threading.Event,
+              closed: threading.Event) -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            if not ready.is_set():
+                try:
+                    announced = json.loads(line) == binary_identity.READY
+                except json.JSONDecodeError:
+                    announced = False
+                if announced:
+                    ready.set()
+                    continue
+                self.errors.append("resolver wrote before its ready line")
+                break
             try:
                 self.answers.append(json.loads(line))
             except json.JSONDecodeError:
                 self.answers.append({"status": "failed", "reason": "unreadable resolver answer"})
+        closed.set()
 
     def _send(self, pid: int, kind: str, extra: str = "") -> None:
         self.requests.append((pid, kind))

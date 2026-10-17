@@ -144,7 +144,8 @@ def test_serve_answers_one_line_per_request(child) -> None:
     os.kill(child.pid, signal.SIGSTOP)
     assert binary_identity.serve(os.getpid(), io.StringIO(f"{child.pid} ok\nnonsense\n"),
                                  sink) == 0
-    first, second = [json.loads(line) for line in sink.getvalue().splitlines()]
+    ready, first, second = [json.loads(line) for line in sink.getvalue().splitlines()]
+    assert ready == binary_identity.READY
     assert first["status"] == "complete" and second["reason"] == "malformed request"
 
 
@@ -152,7 +153,8 @@ def test_the_module_source_runs_standalone_as_the_resolver(child) -> None:
     os.kill(child.pid, signal.SIGSTOP)
     done = subprocess.run([sys.executable, "-I", "-c", SOURCE, "serve", str(os.getpid())],
                           input=f"{child.pid} ok\n", capture_output=True, text=True, timeout=30)
-    answer = json.loads(done.stdout)
+    ready, answer = [json.loads(line) for line in done.stdout.splitlines()]
+    assert ready == binary_identity.READY
     assert answer["status"] == "complete" and answer["chain"][-1]["sha256"] == SELF_SHA
 
 
@@ -244,23 +246,48 @@ def test_startup_and_malformed_requests(tmp_path) -> None:
     sink = io.StringIO()
     missing = (tmp_path / "nope").as_posix().encode().hex()
     binary_identity.serve(os.getpid(), io.StringIO(f"5 start {missing}\n5 start zz\n"), sink)
-    first, second = [json.loads(line) for line in sink.getvalue().splitlines()]
+    ready, first, second = [json.loads(line) for line in sink.getvalue().splitlines()]
+    assert ready == binary_identity.READY
     assert first["status"] == second["status"] == "failed"
     assert "open" in first["reason"]
 
 
 def test_a_resolver_that_never_starts_fails_every_exec(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(identity_gate, "START_WAIT", 0.5)
+    """No wall-clock bound decides this: the resolver exits, so its one attempt ends there."""
+    monkeypatch.setattr(identity_gate, "START_WAIT", 0.0)
     trace = tmp_path / "trace.txt"
     trace.write_text(exec_line(5, 1.0))
     gate = identity_gate.Gate(trace, [sys.executable, "-c", "import sys; sys.stderr.write('no such container\\n'); sys.exit(1)"])
     gate.start()
-    time.sleep(1.0)
     gate.stop()
     [(pid, ok, answer)] = gate.results()
     assert (pid, ok, answer["status"]) == (5, True, "failed")
     assert answer["reason"] == "resolver gave no answer"
     assert "resolver did not start" in gate.errors and "no such container" in gate.errors
+
+
+def test_a_live_resolver_that_never_announces_is_not_started(tmp_path, monkeypatch) -> None:
+    """A process that stays alive without its ready line is not a started resolver."""
+    monkeypatch.setattr(identity_gate, "START_WAIT", 0.0)
+    monkeypatch.setattr(identity_gate, "ATTEMPT_WAIT", 0.3)
+    trace = tmp_path / "trace.txt"
+    trace.write_text(exec_line(5, 1.0))
+    gate = identity_gate.Gate(trace, [sys.executable, "-c", "import time; time.sleep(60)"])
+    gate.start()
+    gate.stop()
+    [(_, _, answer)] = gate.results()
+    assert answer["reason"] == "resolver gave no answer"
+    assert gate.errors == ["resolver ended without its ready line", "resolver did not start"]
+
+
+def test_a_resolver_that_answers_before_announcing_is_not_started(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(identity_gate, "START_WAIT", 0.0)
+    gate = identity_gate.Gate(tmp_path / "t", [sys.executable, "-c",
+                                               "print('{\"status\": \"complete\"}')"])
+    gate.start()
+    gate.stop()
+    assert "resolver wrote before its ready line" in gate.errors
+    assert "resolver did not start" in gate.errors
 
 
 def test_resolver_argv_runs_this_module_inside_the_container() -> None:
