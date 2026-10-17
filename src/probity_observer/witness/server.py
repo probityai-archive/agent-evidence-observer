@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from probityai import dsse
+from jcs_admit import dsse
 
 from . import proofs
 from .checkpoint import (

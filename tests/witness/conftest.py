@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from probityai import dsse
+from jcs_admit import dsse
 
 from probity_observer.witness.checkpoint import signer
 from probity_observer.witness.server import WitnessLog, init_witness

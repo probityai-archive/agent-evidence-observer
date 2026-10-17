@@ -15,7 +15,7 @@ import secrets
 import sys
 from pathlib import Path
 
-from probityai import dsse
+from jcs_admit import dsse
 
 from .checkpoint import EquivocationError, WitnessError, canonical, signer, verify_equivocation
 from .client import WitnessClient, WitnessUnavailable

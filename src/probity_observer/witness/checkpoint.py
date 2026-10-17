@@ -33,7 +33,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from probityai import dsse, jcs
+import jcs_admit
+from jcs_admit import dsse
 
 from .proofs import ProofError, decode_hash, parse_consistency, verify_consistency
 
@@ -63,16 +64,16 @@ class EquivocationError(WitnessError):
 
 
 def canonical(value: Any) -> bytes:
-    """Return the RFC 8785 bytes of a JSON value through ``probityai.jcs``."""
-    return jcs.admit(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    """Return the RFC 8785 bytes of a JSON value through ``jcs_admit``."""
+    return jcs_admit.admit(json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
 
 def parse_canonical(data: bytes, label: str) -> Any:
     """Parse JSON bytes that must already be in RFC 8785 form."""
     try:
-        if jcs.admit(data) != data:
+        if jcs_admit.admit(data) != data:
             raise WitnessError(f"{label} is not RFC 8785 canonical")
-    except jcs.JcsError as exc:
+    except jcs_admit.JcsError as exc:
         raise WitnessError(f"{label} is not admissible JSON: {exc.variant}") from exc
     return json.loads(data)
 

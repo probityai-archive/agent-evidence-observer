@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from probityai import dsse
+from jcs_admit import dsse
 
 from .checkpoint import (
     Checkpoint,

@@ -8,5 +8,5 @@ decides ``witnessScope``: ``EXTERNAL`` only when the consumer's pins name a
 different operator for the witness key than for the host key. ``checkpoint``
 and ``proofs`` hold the record formats and the RFC 9162 proof checks.
 
-Requires the ``witness`` extra (``probityai`` for RFC 8785 and DSSE).
+Requires the ``witness`` extra (``jcs-admit`` for RFC 8785 and DSSE).
 """

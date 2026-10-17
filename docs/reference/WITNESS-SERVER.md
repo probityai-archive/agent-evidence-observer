@@ -1,7 +1,7 @@
 # Witness server reference
 
 Source: `src/probity_observer/witness/`. Install with the `witness` extra, which
-builds `probityai` (RFC 8785 through `jcs-admit`, DSSE through `dsse`) from a
+builds the `jcs-admit` Python binding (RFC 8785 through the `jcs-admit` crate, DSSE through `dsse`) from a
 pinned commit of `probityai/jcs-admit` and needs a Rust toolchain:
 
 ```sh
