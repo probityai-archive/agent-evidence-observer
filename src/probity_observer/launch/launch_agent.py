@@ -56,6 +56,7 @@ class LaunchSpec:
     network: bool = False
     timeout_seconds: float = 3600.0
     network_policy: Path | None = None
+    containment: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,8 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
     declared = network_effects.declare(spec.network_policy, run_dir)
     if declared is not None:
         launch_record["network_policy"] = declared
+    if spec.containment is not None:
+        launch_record["policy_containment"] = spec.containment
     launch_bytes = record_oe.encoded(launch_record)
     (run_dir / "launch.json").write_bytes(launch_bytes)
     launch_sha256 = record_oe.sha256(launch_bytes)

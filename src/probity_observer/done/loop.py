@@ -22,7 +22,7 @@ import calendar
 import json
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,7 +30,8 @@ from ..launch import launch_agent
 from . import claims as claim_parser
 from . import drift, policy, receipt, verify_run
 from .contract import is_pytest
-from .formats import encode, public_key, sha256, sign_record
+from .drift import Latch
+from .formats import DoneError, encode, public_key, sha256, sign_record
 from .runner import is_replay
 
 FLAG = "[flag_for_human_intervention]"
@@ -70,6 +71,10 @@ class LoopSpec:
     mutations: int | None = None
     tokens: int | None = None
     token_source: str | None = None
+    network_policy: Path | None = None
+    policy_boundary: Path | None = None
+    prover: Path | None = None
+    containment: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -186,7 +191,8 @@ def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dic
     launch_agent.launch(launch_agent.LaunchSpec(
         backend=spec.backend, image=spec.image, agent_argv=spec.agent_argv, workspace=workspace,
         claim_id=claim_id, invocation_id=invocation, env=env, network=spec.network,
-        timeout_seconds=limit), run)
+        timeout_seconds=limit, network_policy=spec.network_policy,
+        containment=spec.containment), run)
     receipt.sign_observer_records(run, keys.host)
     contract_bytes = (spec.contract / "contract.json").read_bytes()
     shutil.copy2(spec.contract / "contract.json", run / "contract.json")
@@ -250,6 +256,31 @@ def write_loop(spec: LoopSpec, keys: Keys, table: dict[str, Any], baseline: list
     return data
 
 
+def admit_launch_policy(spec: LoopSpec) -> LoopSpec:
+    """Prove the declared launch policy within the operator's boundary before any attempt.
+
+    Only the prover's ``within_boundary`` admits the policy (:mod:`..openshell.prover`); its
+    record goes to ``out/containment.json`` either way, and into every attempt's launch record
+    when it is admitted. A declared policy without a boundary is refused.
+    """
+    if spec.network_policy is None:
+        if spec.policy_boundary is not None:
+            raise DoneError("a policy boundary needs a declared network policy")
+        return spec
+    if spec.policy_boundary is None:
+        raise DoneError("a declared network policy needs --policy-boundary to be proven within")
+    from ..openshell import prover, release
+
+    binary = spec.prover or release.executable("openshell-prover")
+    try:
+        record = prover.check(spec.network_policy, spec.policy_boundary, prover.Prover(binary))
+    except prover.ContainmentRefused as refused:
+        (spec.out / "containment.json").write_bytes(encode(refused.record))
+        raise DoneError(str(refused)) from None
+    (spec.out / "containment.json").write_bytes(encode(record))
+    return replace(spec, containment=record)
+
+
 def run_loop(spec: LoopSpec, keys: Keys,
              witness: Callable[[Path], None] | None = None) -> list[Attempt]:
     """Attempts until ``stop`` or ``escalate``; the loop record goes to ``out/loop.json``."""
@@ -259,6 +290,7 @@ def run_loop(spec: LoopSpec, keys: Keys,
     spec.out.mkdir(parents=True, exist_ok=True)
     if any(spec.out.iterdir()):
         raise ValueError("loop output directory must be empty")
+    spec = admit_launch_policy(spec)
     workspace = spec.out / "workspace"
     shutil.copytree(spec.contract / "workspace", workspace, symlinks=True)
     (spec.out / "policy.json").write_bytes(encode(table))

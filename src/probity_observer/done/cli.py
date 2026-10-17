@@ -72,7 +72,10 @@ def cmd_run(args: argparse.Namespace) -> int:
                     grader_image=args.grader_image, network=args.network,
                     timeout_seconds=args.timeout, transcript=args.transcript,
                     allow_no_heldout=args.allow_no_heldout,
-                    wall_clock_s=args.wall_clock_budget, mutations=args.mutation_budget)
+                    wall_clock_s=args.wall_clock_budget, mutations=args.mutation_budget,
+                    network_policy=Path(args.network_policy) if args.network_policy else None,
+                    policy_boundary=Path(args.policy_boundary) if args.policy_boundary else None,
+                    prover=Path(args.prover) if args.prover else None)
     attempts = run_loop(spec, keys)
     for item in attempts:
         print(f"Attempt {item.number}: {receipt.decision_line(item.verdict)}; "
@@ -197,6 +200,11 @@ def add_commands(sub) -> None:
     loop.add_argument("--transcript", choices=("text", "claude-stream"), default="text")
     loop.add_argument("--allow-no-heldout", action="store_true",
                       help="let a contract with no held-out tests support done")
+    loop.add_argument("--network-policy",
+                      help="the declared launch policy (OpenShell sandbox policy YAML)")
+    loop.add_argument("--policy-boundary",
+                      help="the operator boundary the launch policy must be proven within")
+    loop.add_argument("--prover", help="a pinned openshell-prover (default: fetched by digest)")
     for name in ("harness", "host", "grader"):
         loop.add_argument(f"--{name}-key", required=True)
     loop.add_argument("agent", nargs="+", help="the agent's argv, after --")
