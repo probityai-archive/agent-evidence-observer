@@ -19,6 +19,7 @@ These examples use controlled local effects and selected framework runs:
 | A server changed a tool after its grade. Does the saved definition still match? | [Tool grades and retained local effects](TOOL-MANIFEST-EFFECT.md) |
 | An evaluation failed. Did its tool still update the target? | [Inspect scores, authority, and effects](INSPECT-AUTHORITY-EFFECT.md) |
 | An agent says its tests pass. What did it run and change? | [Agent launcher](AGENT-LAUNCHER.md) |
+| Could the host rewrite its records, or show two readers different versions? | [Separately operated witness](WITNESS-SERVER.md) |
 
 A verified record answers a specific question under selected inputs. Read each
 example's evidence boundary before applying the result elsewhere. Separate
