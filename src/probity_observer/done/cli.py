@@ -71,7 +71,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                     observed_party=args.observed_party, attempts=args.attempts,
                     grader_image=args.grader_image, network=args.network,
                     timeout_seconds=args.timeout, transcript=args.transcript,
-                    allow_no_heldout=args.allow_no_heldout)
+                    allow_no_heldout=args.allow_no_heldout,
+                    wall_clock_s=args.wall_clock_budget, mutations=args.mutation_budget)
     attempts = run_loop(spec, keys)
     for item in attempts:
         print(f"Attempt {item.number}: {receipt.decision_line(item.verdict)}; "
@@ -178,6 +179,10 @@ def parser() -> argparse.ArgumentParser:
     loop.add_argument("--attempts", type=int, default=3)
     loop.add_argument("--network", action="store_true")
     loop.add_argument("--timeout", type=float, default=3600.0)
+    loop.add_argument("--wall-clock-budget", type=float, default=None,
+                      help="seconds of observed agent time across all attempts")
+    loop.add_argument("--mutation-budget", type=int, default=None,
+                      help="distinct (command, path) mutations across all attempts")
     loop.add_argument("--transcript", choices=("text", "claude-stream"), default="text")
     loop.add_argument("--allow-no-heldout", action="store_true",
                       help="let a contract with no held-out tests support done")

@@ -1,26 +1,39 @@
-"""The exact drift and loop latch: fires on repeats a stranger can recount from the records.
+"""The exact drift and loop latches: each fires on repeats a stranger can recount from records.
 
-Three latches, all exact and all non-decaying once fired:
+All of them are pure functions of the observation, the tree and the attempt chain, so the
+``loop_detected`` and ``stalled`` reasons recompute from the signed loop record:
 
-- **tree**: the final tree digest is the same for ``K`` attempts in a row (the agent is not
-  changing anything);
-- **command**: within one attempt, the agent runs the same ``(argv, exit)`` ``K`` times in a
-  row with no edit between (the agent is retrying a failing command);
-- **contradicted**: the count of ``contradicted`` verdicts only grows, so a later
-  ``supported`` never resets it;
-- **unestablished**: consecutive ``not_established`` verdicts are counted, so an agent that
-  keeps the record incomplete cannot run to the budget unescalated.
+- **command, across edits that cannot matter** (:func:`repeated_command`): the agent runs the
+  same command (executed path, working directory, argv and exit) ``K`` times with no mutation,
+  between two of the runs, to a path the previous run read. A ``touch .probe`` or an edit to a
+  file the command never opened does not reset the count; an edit to a file it read does;
+- **command, within one attempt** (:func:`repeated_in_attempt`): the same command ``K_cmd``
+  times in one attempt, whatever the edits between;
+- **tree** (:func:`repeated_ast_tree`): the attempt's tree, with every Python file reduced to
+  its AST (comments and layout gone; a file that does not parse is hashed with its comments
+  stripped under ``SYNTAX_ERR:``), equal to an earlier attempt's tree anywhere in the chain;
+- **progress** (:func:`progress`): the passing acceptance commands grow from the start
+  state's passing set ``B0``; ``B_t = B_{t-1} | P_t`` only when ``P_t`` keeps all of ``B0``,
+  and ``stall_after`` attempts in a row without growth is ``stalled``.
 
-The thresholds are part of the public policy table (:mod:`.policy`), whose digest every
-receipt carries, so a ``loop_detected`` reason is recomputable from the run records.
+The raw tree digest stays on every attempt record as evidence.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import ast
+import hashlib
+import io
+import os
+import tokenize
+from pathlib import Path
 from typing import Any
 
 MUTATIONS = frozenset({"write", "create", "rename", "link", "unlink", "truncate", "chmod"})
+CACHE_NAMES = frozenset({"__pycache__", ".pytest_cache"})
+COMMAND_REPEATS = 3
+COMMAND_REPEATS_IN_ATTEMPT = 4
+STALL_AFTER = 3
 
 
 def command_key(event: dict[str, Any]) -> tuple[Any, ...]:
@@ -32,60 +45,145 @@ def command_key(event: dict[str, Any]) -> tuple[Any, ...]:
     return (event.get("exe"), event.get("cwd"), tuple(event["argv"]), event.get("exit"))
 
 
-def repeated_command(events: list[dict[str, Any]], repeats: int) -> list[str] | None:
-    """The argv of the first command run ``repeats`` times in a row with the same exit.
-
-    Only the agent's own commands count: exec events with no ``origin`` (the agent's root
-    process) or whose id is an origin (the root of a command's tree). A mutation outside
-    those commands' trees breaks a run of repeats.
-    """
+def _command_roots(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The agent's own commands: execs of its root process, and the first exec of each
+    command (whose id is an ``origin``)."""
     roots = {event.get("origin") for event in events if event.get("origin")}
-    last: tuple[Any, ...] | None = None
-    count = 0
+    return [event for event in events if event["type"] == "exec"
+            and (not event.get("origin") or event["id"] in roots)]
+
+
+def _reads(events: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """The paths each command read, by its id."""
+    found: dict[str, set[str]] = {}
     for event in events:
-        if event["type"] in MUTATIONS and event.get("origin") is None:
-            last, count = None, 0
+        if event["type"] == "read" and event.get("origin") and event.get("path"):
+            found.setdefault(event["origin"], set()).add(event["path"])
+    return found
+
+
+def _paths(event: dict[str, Any]) -> set[str]:
+    return {name for name in (event.get("path"), event.get("target")) if name}
+
+
+def repeated_command(events: list[dict[str, Any]],
+                     repeats: int = COMMAND_REPEATS) -> dict[str, Any] | None:
+    """The first command run ``repeats`` times with no relevant mutation between runs.
+
+    A mutation is relevant to a command when it touches a path that the command's last run
+    read and was not made by that run itself. A run of the same argv with another exit
+    starts that command's count again.
+    """
+    reads = _reads(events)
+    roots = {event["id"] for event in _command_roots(events)}
+    counts: dict[tuple[Any, ...], int] = {}
+    last_run: dict[tuple[Any, ...], str] = {}
+    for event in events:
+        if event["type"] in MUTATIONS:
+            touched = _paths(event)
+            for key, run in list(last_run.items()):
+                if event.get("origin") != run and touched & reads.get(run, set()):
+                    counts[key] = 0
             continue
-        if event["type"] != "exec" or (event.get("origin") and event["id"] not in roots):
+        if event["type"] != "exec" or event["id"] not in roots:
             continue
         key = command_key(event)
-        count = count + 1 if key == last else 1
-        last = key
-        if count >= repeats:
-            return list(event["argv"])
+        for other in [item for item in counts if item[:3] == key[:3] and item != key]:
+            counts[other] = 0
+        counts[key] = counts.get(key, 0) + 1
+        last_run[key] = event["id"]
+        if counts[key] >= repeats:
+            return {"latch": "command", "argv": list(event["argv"]), "exit": event.get("exit"),
+                    "repeats": repeats}
     return None
 
 
-@dataclass
-class Latch:
-    tree_repeats: int = 3
-    command_repeats: int = 3
-    trees: list[str] = field(default_factory=list)
-    contradicted: int = 0
-    unestablished_run: int = 0
-    fired: str | None = None
-    evidence: dict[str, Any] = field(default_factory=dict)
+def repeated_in_attempt(events: list[dict[str, Any]],
+                        repeats: int = COMMAND_REPEATS_IN_ATTEMPT) -> dict[str, Any] | None:
+    """The first command run ``repeats`` times in one attempt, whatever happened between."""
+    counts: dict[tuple[Any, ...], int] = {}
+    for event in _command_roots(events):
+        key = command_key(event)
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] >= repeats:
+            return {"latch": "command_in_attempt", "argv": list(event["argv"]),
+                    "exit": event.get("exit"), "repeats": repeats}
+    return None
 
-    def thresholds(self) -> dict[str, int]:
-        return {"tree_repeats": self.tree_repeats, "command_repeats": self.command_repeats}
 
-    def observe(self, tree_sha256: str, events: list[dict[str, Any]], decision: str) -> str | None:
-        """Record one attempt; return ``"loop_detected"`` once any latch has fired."""
-        self.trees.append(tree_sha256)
-        if decision == "contradicted":
-            self.contradicted += 1
-        self.unestablished_run = self.unestablished_run + 1 if decision == "not_established" else 0
-        if self.fired is None:
-            tail = self.trees[-self.tree_repeats:]
-            if len(tail) == self.tree_repeats and len(set(tail)) == 1:
-                self.fired, self.evidence = "tree", {"tree_sha256": tree_sha256,
-                                                     "attempts": self.tree_repeats}
-            elif (argv := repeated_command(events, self.command_repeats)) is not None:
-                self.fired, self.evidence = "command", {"argv": argv,
-                                                        "repeats": self.command_repeats}
-        return "loop_detected" if self.fired else None
+def command_latch(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Either command latch, the across-edits one first."""
+    return repeated_command(events) or repeated_in_attempt(events)
 
-    def state(self) -> dict[str, Any]:
-        return {"thresholds": self.thresholds(), "trees": list(self.trees),
-                "contradicted": self.contradicted, "unestablished_run": self.unestablished_run,
-                "fired": self.fired, "evidence": self.evidence}
+
+def _strip_comments(source: bytes) -> bytes:
+    """A file's text without comments and blank lines, for a file that does not parse."""
+    try:
+        tokens = [token for token in tokenize.tokenize(io.BytesIO(source).readline)
+                  if token.type not in (tokenize.COMMENT, tokenize.NL)]
+        return tokenize.untokenize(tokens) if isinstance(tokenize.untokenize(tokens), bytes) \
+            else tokenize.untokenize(tokens).encode()
+    except (tokenize.TokenError, SyntaxError, UnicodeDecodeError, IndentationError):
+        lines = [line.split(b"#", 1)[0].rstrip() for line in source.splitlines()]
+        return b"\n".join(line for line in lines if line.strip())
+
+
+def file_ast_digest(source: bytes) -> str:
+    """A Python file's digest up to comments and layout."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return "SYNTAX_ERR:" + hashlib.sha256(_strip_comments(source)).hexdigest()
+    return hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
+
+
+def ast_tree_sha256(root: Path) -> str:
+    """The tree digest with each Python file replaced by its AST digest; caches left out."""
+    lines = []
+    root = Path(root)
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(name for name in dirnames if name not in CACHE_NAMES)
+        base = Path(directory)
+        for name in sorted(filenames):
+            path = base / name
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                digest = "l:" + hashlib.sha256(os.readlink(path).encode(
+                    "utf-8", "surrogateescape")).hexdigest()
+            elif not path.is_file():
+                digest = "s:special"
+            elif name.endswith(".py"):
+                digest = "ast:" + file_ast_digest(path.read_bytes())
+            else:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            lines.append(f"{digest}  {relative}\n")
+    lines.sort(key=lambda line: line.split("  ", 1)[1].encode("utf-8", "surrogateescape"))
+    return hashlib.sha256("".join(lines).encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def repeated_ast_tree(chain: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The last attempt's AST tree digest, when an earlier attempt already had it."""
+    if not chain:
+        return None
+    last = chain[-1]["ast_tree_sha256"]
+    for earlier in chain[:-1]:
+        if earlier["ast_tree_sha256"] == last:
+            return {"latch": "ast_tree", "ast_tree_sha256": last,
+                    "first_attempt": earlier["attempt"], "attempt": chain[-1]["attempt"]}
+    return None
+
+
+def progress(baseline: list[str], chain: list[dict[str, Any]]) -> tuple[list[str], int]:
+    """The grown passing set and the number of attempts in a row, ending with the last one,
+    that did not grow it."""
+    base = set(baseline)
+    grown = set(base)
+    without = 0
+    for record in chain:
+        passed = set(record["passed_ids"])
+        if passed >= base and not passed <= grown:
+            grown |= passed
+            without = 0
+        else:
+            without += 1
+    return sorted(grown), without
