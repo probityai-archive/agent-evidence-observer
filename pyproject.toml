@@ -39,6 +39,9 @@ agent-evidence-read-refund-handoff = "probity_observer.refund_handoff:main"
 agent-evidence-witness = "probity_observer.witness.cli:main"
 probity-done = "probity_observer.done.cli:main"
 
+[project.entry-points."probityai.cli_subcommands"]
+done = "probity_observer.done.cli:register"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

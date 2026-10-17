@@ -147,7 +147,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 def parser() -> argparse.ArgumentParser:
     top = argparse.ArgumentParser(prog="probity-done", description=__doc__.splitlines()[0])
-    sub = top.add_subparsers(dest="command", required=True)
+    add_commands(top.add_subparsers(dest="command", required=True))
+    return top
+
+
+def add_commands(sub) -> None:
+    """Add ``keygen``, ``contract``, ``run`` and ``verify`` to a subparsers object: the
+    standalone ``probity-done`` command line and ``probity done`` share these parsers."""
     keygen = sub.add_parser("keygen", help="write a new Ed25519 seed file and print its key")
     keygen.add_argument("path")
     keygen.set_defaults(func=cmd_keygen)
@@ -209,16 +215,35 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--host-operator", default="host")
     check.add_argument("--grader-operator", default="host")
     check.set_defaults(func=cmd_verify)
-    return top
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+def dispatch(args: argparse.Namespace) -> int:
+    """Run the parsed subcommand; a refused input exits ``REFUSED`` with its reason."""
     try:
         return args.func(args)
     except (DoneError, OSError, ValueError, KeyError) as error:
         print(f"Refused: {error}", file=sys.stderr)
         return REFUSED
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return dispatch(parser().parse_args(argv))
+
+
+SUMMARY = "seal a done contract, run the bounded loop, and re-check a done receipt"
+
+
+def register(subparsers) -> None:
+    """Add ``done`` to the ``probity`` command line (entry point ``probityai.cli_subcommands``).
+
+    ``probity done verify`` is the same handler as ``probity-done verify``: it opens the
+    signed records and gets every check's decision from probity-verify's ``adjudicate``.
+    """
+    from probityai.cli import register_leaf  # only the probity launcher calls this, so it is installed
+
+    done = subparsers.add_parser("done", help=SUMMARY, description=SUMMARY)
+    add_commands(done.add_subparsers(dest="command", required=True))
+    register_leaf(done, handler=dispatch)
 
 
 if __name__ == "__main__":

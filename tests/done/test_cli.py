@@ -197,3 +197,45 @@ def test_an_attempt_the_wall_clock_budget_cuts_short_is_graded_and_ends_the_chai
     assert only["decision"]["line"] == "wall_clock_s"
     assert policy.replay_chain(loop["policy"], loop["attempts"], loop["baseline_ids"]) == []
     assert (tmp_path / "slow" / "attempt-1" / "grade.json").is_file()
+
+
+def umbrella_cli():
+    """The ``probityai.cli`` launcher contract (probity-verify PR #19, ``register_leaf``)."""
+    import types
+    module = types.ModuleType("probityai.cli")
+
+    def register_leaf(parser, *, handler):
+        parser.set_defaults(_probity_handler=handler)
+    module.register_leaf = register_leaf
+    return module
+
+
+def test_done_is_declared_as_a_probity_subcommand():
+    from importlib.metadata import entry_points
+    found = {point.name: point.value for point in entry_points(group="probityai.cli_subcommands")}
+    assert found.get("done") == "probity_observer.done.cli:register"
+
+
+def test_probity_done_verify_runs_the_shared_verifier(tmp_path, keys, capsys, monkeypatch):
+    import argparse
+    import sys
+
+    import probity_verify.core
+    monkeypatch.setitem(sys.modules, "probityai.cli", umbrella_cli())
+    top = argparse.ArgumentParser(prog="probity")
+    cli.register(top.add_subparsers())
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(args[0]["case_id"])
+        return probity_verify.core.adjudicate(*args, **kwargs)
+    assert receipt.adjudicate is probity_verify.core.adjudicate
+    monkeypatch.setattr(receipt, "adjudicate", spy)
+    run = signed_run(tmp_path, keys)
+    calls.clear()
+    args = top.parse_args(["done", "verify", "--run", str(run), *pubs()])
+    assert args._probity_handler(args) == 0
+    assert len(calls) == 3
+    assert "Decision: supported / done_checks_supported" in capsys.readouterr().out
+    bad = top.parse_args(["done", "verify", "--run", str(tmp_path / "missing"), *pubs()])
+    assert bad._probity_handler(bad) == cli.REFUSED
