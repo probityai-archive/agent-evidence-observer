@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
@@ -34,6 +34,10 @@ done = [
 inspect = [
     { name = "inspect-ai" },
 ]
+openshell = [
+    { name = "jsonschema" },
+    { name = "pyyaml" },
+]
 test = [
     { name = "hypothesis" },
     { name = "jsonschema" },
@@ -49,14 +53,16 @@ requires-dist = [
     { name = "cryptography", specifier = ">=46,<51" },
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6,<7" },
     { name = "inspect-ai", marker = "extra == 'inspect'", specifier = "==0.3.273" },
+    { name = "jsonschema", marker = "extra == 'openshell'", specifier = "==4.26.0" },
     { name = "jsonschema", marker = "extra == 'test'", specifier = ">=4,<5" },
     { name = "probity-verify", marker = "extra == 'done'", git = "https://github.com/probityai/probity-verify?rev=adb2201356260931a75322d541c11fb311e24d3f" },
     { name = "probityai", marker = "extra == 'done'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=58a48b2f33b55cafb72de9f187f0fa53eed74d95" },
     { name = "probityai", marker = "extra == 'witness'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=58a48b2f33b55cafb72de9f187f0fa53eed74d95" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8,<10" },
+    { name = "pyyaml", marker = "extra == 'openshell'", specifier = "==6.0.3" },
     { name = "rfc8785", specifier = "==0.1.4" },
 ]
-provides-extras = ["test", "inspect", "witness", "cover", "done"]
+provides-extras = ["test", "inspect", "witness", "cover", "openshell", "done"]
 
 [[package]]
 name = "aiobotocore"

@@ -101,6 +101,18 @@ def _counts(history: Path) -> dict[str, int]:
     }
 
 
+def _verify_network_policy(output: Path, declared: dict[str, Any]) -> None:
+    """The retained policy file must load to the declaration the launch digest covers."""
+    from .openshell import policy as network_policy
+
+    try:
+        loaded = network_policy.load(output / "network-policy.yaml")
+    except (OSError, network_policy.PolicyError) as error:
+        raise VerificationError(f"retained network policy does not load: {error}") from None
+    if network_policy.declaration(loaded) != declared:
+        raise VerificationError("retained network policy differs from the launch declaration")
+
+
 def verify_workload_bundle(output: Path, observer_key: str, witness_key: str) -> dict[str, Any]:
     """Check retained bytes against separately pinned observer and witness keys."""
     report = strict_loads((output / "workload-report.json").read_bytes())
@@ -113,6 +125,8 @@ def verify_workload_bundle(output: Path, observer_key: str, witness_key: str) ->
         raise VerificationError("workload bytes differ from authority")
     if digest("probity-launch-policy-v0", launch) != authority["launchPolicySha256"]:
         raise VerificationError("launch policy differs from authority")
+    if "networkPolicy" in launch:
+        _verify_network_policy(output, launch["networkPolicy"])
     for name in ("stdout", "stderr"):
         if sha256(output / f"workload-{name}.bin") != report[f"{name}Sha256"]:
             raise VerificationError("raw workload output differs from report")
@@ -149,10 +163,21 @@ def verify_workload_bundle(output: Path, observer_key: str, witness_key: str) ->
 
 def run_workload(
     output: Path, source: Path, *, args: Sequence[str] = (), bwrap: Path | None = None,
-    interpreter: Path = Path("/usr/bin/python3"),
+    interpreter: Path = Path("/usr/bin/python3"), network_policy: Path | None = None,
 ) -> dict[str, Any]:
-    """Run a pinned script and keep the host journal as the effect record."""
+    """Run a pinned script and keep the host journal as the effect record.
+
+    ``network_policy`` names an OpenShell sandbox policy file (NemoClaw's format). Its
+    declaration (:func:`.openshell.policy.declaration`) joins the launch record, so
+    ``launchPolicySha256`` covers it, and the file is retained beside the record.
+    """
     script_bytes = source.read_bytes()
+    declared = None
+    if network_policy is not None:
+        from .openshell import policy as network_policy_reader
+
+        policy_bytes = network_policy.read_bytes()
+        declared = network_policy_reader.declaration(network_policy_reader.load(policy_bytes))
     canonical(list(args))
     output.mkdir(parents=True, exist_ok=True)
     output = output.resolve(strict=True)
@@ -166,7 +191,11 @@ def run_workload(
     script.write_bytes(script_bytes)
     bwrap = bwrap or Path(shutil.which("bwrap") or "/usr/bin/bwrap")
     command = workload_command(bwrap, socket_dir, interpreter, script, args)
-    launch = {"argv": command, "workload": str(script), "interpreter": str(interpreter)}
+    launch: dict[str, Any] = {"argv": command, "workload": str(script),
+                              "interpreter": str(interpreter)}
+    if declared is not None:
+        (output / "network-policy.yaml").write_bytes(policy_bytes)
+        launch["networkPolicy"] = declared
     (output / "launch-policy.json").write_bytes(canonical(launch))
     authority = {
         "intervalId": "workload-1", "scope": "/work", "operation": "write-file",

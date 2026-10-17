@@ -25,6 +25,7 @@ test = ["pytest>=8,<10", "hypothesis>=6,<7", "jsonschema>=4,<5"]
 inspect = ["inspect-ai==0.3.273"]
 witness = ["probityai @ git+https://github.com/probityai/jcs-admit@58a48b2f33b55cafb72de9f187f0fa53eed74d95#subdirectory=python"]
 cover = ["coverage>=7.10,<8"]
+openshell = ["PyYAML==6.0.3", "jsonschema==4.26.0"]
 done = [
     "probityai @ git+https://github.com/probityai/jcs-admit@58a48b2f33b55cafb72de9f187f0fa53eed74d95#subdirectory=python",
     "probity-verify @ git+https://github.com/probityai/probity-verify@adb2201356260931a75322d541c11fb311e24d3f",
@@ -47,6 +48,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "probity_observer.done" = ["prompts/*.txt"]
+"probity_observer.openshell" = ["vendor/*/*.json", "vendor/*/*.yaml", "vendor/*/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
