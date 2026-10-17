@@ -85,3 +85,15 @@ def test_replan_resets_the_workspace_from_the_sealed_tarball(tmp_path):
     assert (workspace / "a.py").read_text() == "start\n" and not (workspace / "new.py").exists()
     assert "protected_path_mutated" in policy.replan_input(
         policy.Decision("replan", "protected_path_mutated"), 1)
+
+
+def test_consecutive_unestablished_verdicts_escalate():
+    table = policy.table(attempts=5)
+    latch = drift.Latch()
+    latch.observe("a", [], "not_established")
+    assert policy.decide(table, UNKNOWN, 1, latch, None, False).action == "continue"
+    latch.observe("b", [], "not_established")
+    assert policy.decide(table, UNKNOWN, 2, latch, None, False).record() == {
+        "action": "escalate", "reason": "record_unestablished_repeatedly"}
+    latch.observe("c", [], "contradicted")
+    assert latch.unestablished_run == 0
