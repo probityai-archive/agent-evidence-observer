@@ -169,7 +169,10 @@ class Adequacy:
         return {"mutants": len(self.mutants), "killed": sum(self.killed)}
 
     def report(self) -> dict[str, Any]:
-        return {"mutants": [{**mutant.binding(), "killed": killed, "exits": run["exits"]}
+        vector = [bool(item) for item in self.killed]
+        return {"kill_vector": vector, "kill_vector_sha256": sha256(encode(vector)),
+                "killed_fraction": (sum(vector) / len(vector)) if vector else 0.0,
+                "mutants": [{**mutant.binding(), "killed": killed, "exits": run["exits"]}
                             for mutant, killed, run in zip(self.mutants, self.killed, self.runs)]}
 
 

@@ -44,6 +44,9 @@ def test_adequacy_counts_kills_and_is_sealed(tmp_path, harness, python_bin):
     assert "mutant_set_sha256" in record
     report = json.loads((sealed.out / "compile.json").read_bytes())
     assert len(report["adequacy"]["mutants"]) == record["adequacy"]["mutants"]
+    vector = report["adequacy"]["kill_vector"]
+    assert len(vector) == record["adequacy"]["mutants"] and all(vector)
+    assert report["adequacy"]["killed_fraction"] == 1.0 and report["adequacy"]["kill_vector_sha256"]
     assert report["stability"]["reference"] == "unavailable"
 
 

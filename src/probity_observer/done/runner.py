@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence
 
+from ..sensors import treedigest
+
 TIMEOUT_EXIT = 124
 SCRUBBED_ENV = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -47,12 +49,22 @@ class Command:
 
 
 class Runner(Protocol):
-    """Run ``argv`` on a copy of ``state`` (and ``heldout``) and return its exit status."""
+    """Run ``argv`` on a copy of ``state`` (and ``heldout``) and return its exit status.
+
+    When ``writes`` is a list, the runner appends every workspace path the run created,
+    changed or removed (regular files, compared by digest).
+    """
 
     name: str
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
-            timeout: float) -> int: ...
+            timeout: float, writes: list[str] | None = None) -> int: ...
+
+
+def changed_paths(before: Path, after: Path) -> list[str]:
+    """Regular-file paths that differ between two trees, sorted."""
+    old, new = treedigest.scan(before).files, treedigest.scan(after).files
+    return sorted(name for name in set(old) | set(new) if old.get(name) != new.get(name))
 
 
 def stage(state: Path, heldout: Path | None, scratch: Path) -> Path:
@@ -75,7 +87,7 @@ class SubprocessRunner:
             self.env["PATH"] = f"{Path(python).parent}:{self.env['PATH']}"
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
-            timeout: float) -> int:
+            timeout: float, writes: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-done-") as scratch:
             workspace = stage(Path(state), heldout, Path(scratch))
             try:
@@ -83,11 +95,14 @@ class SubprocessRunner:
                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL, timeout=timeout,
                                       check=False, start_new_session=True)
+                code = done.returncode
             except subprocess.TimeoutExpired:
-                return TIMEOUT_EXIT
+                code = TIMEOUT_EXIT
             except OSError:
-                return 127
-            return done.returncode
+                code = 127
+            if writes is not None:
+                writes.extend(changed_paths(Path(state), workspace))
+            return code
 
 
 def chmod_tree(root: Path, mode_dirs: int = 0o777, mode_files: int = 0o666) -> None:

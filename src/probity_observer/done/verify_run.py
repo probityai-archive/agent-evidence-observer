@@ -39,7 +39,7 @@ from typing import Any, Sequence
 from ..sensors import treedigest
 from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
 from .formats import DoneError, encode, sha256, sign_record
-from .runner import SCRUBBED_ENV, TIMEOUT_EXIT, chmod_tree, stage
+from .runner import SCRUBBED_ENV, TIMEOUT_EXIT, changed_paths, chmod_tree, stage
 
 GRADE_SCHEMA = "probity-acceptance-grade/v1"
 WORKER_UID = 65534
@@ -80,7 +80,7 @@ class DockerRunner:
         return command
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
-            timeout: float) -> int:
+            timeout: float, writes: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-grade-") as scratch:
             root = Path(scratch)
             stage(Path(state), heldout, root)
@@ -97,10 +97,15 @@ class DockerRunner:
             except subprocess.TimeoutExpired:
                 subprocess.run([self.docker, "kill", name], capture_output=True, check=False)
                 process.communicate()
-                return TIMEOUT_EXIT
-            if process.returncode == 125:
-                raise GradeError(f"container runtime failed: {error.decode(errors='replace').strip()}")
-            return process.returncode
+                code = TIMEOUT_EXIT
+            else:
+                if process.returncode == 125:
+                    raise GradeError("container runtime failed: "
+                                     + error.decode(errors="replace").strip())
+                code = process.returncode
+            if writes is not None:
+                writes.extend(changed_paths(Path(state), root / "workspace"))
+            return code
 
     def groups(self) -> list[int]:
         """The worker's supplementary groups, measured in a container with the same flags."""

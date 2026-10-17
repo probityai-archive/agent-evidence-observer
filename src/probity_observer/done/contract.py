@@ -351,21 +351,30 @@ class Stability:
     commands: list[Command]
     runs: list[dict[str, Any]]
     dropped: list[dict[str, Any]]
+    run_writes: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _exits(runner: Runner, state: Path, command: Command, heldout: Path | None,
-           runs: int, timeout: float) -> list[int]:
-    return [runner.run(state, command.argv, heldout, timeout) for _ in range(runs)]
+           runs: int, timeout: float, writes: list[str] | None = None) -> list[int]:
+    return [runner.run(state, command.argv, heldout, timeout, writes) for _ in range(runs)]
 
 
 def _judge(task: Task, runner: Runner, command: Command, runs: int,
-           timeout: float, log: list[dict[str, Any]]) -> str | None:
-    """``None`` when the command is stable and as expected, else the reason it is dropped."""
+           timeout: float, log: list[dict[str, Any]],
+           writes: dict[str, list[str]] | None = None) -> str | None:
+    """``None`` when the command is stable and as expected, else the reason it is dropped.
+
+    The paths the command writes on the reference state (or, with no reference, on the
+    pre-patch state) are collected into ``writes``: what an honest run of it leaves behind.
+    """
     states = [("prepatch", task.start, command.prepatch)]
     if task.reference is not None:
         states.insert(0, ("reference", task.reference, "pass"))
     for label, state, expect in states:
-        exits = _exits(runner, state, command, task.heldout, runs, timeout)
+        seen: list[str] = []
+        exits = _exits(runner, state, command, task.heldout, runs, timeout, seen)
+        if writes is not None and label == states[0][0]:
+            writes[command.id] = sorted(set(seen))
         log.append({"id": command.id, "state": label, "exits": exits})
         if len(set(exits)) != 1:
             return f"flaky_on_{label}"
@@ -405,8 +414,9 @@ def stabilize(task: Task, runner: Runner, runs: int = 3, timeout: float = 900.0)
     log: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     kept: list[Command] = []
+    writes: dict[str, list[str]] = {}
     for command in task.commands:
-        reason = _judge(task, runner, command, runs, timeout, log)
+        reason = _judge(task, runner, command, runs, timeout, log, writes)
         if reason is None:
             kept.append(command)
             continue
@@ -416,14 +426,17 @@ def stabilize(task: Task, runner: Runner, runs: int = 3, timeout: float = 900.0)
                 kept.append(narrowed)
             continue
         dropped.append({"id": command.id, "reason": reason})
-    return Stability(kept, log, dropped)
+    kept_ids = {command.id for command in kept}
+    return Stability(kept, log, dropped, {key: value for key, value in writes.items()
+                                          if key in kept_ids})
 
 
 def stability_report(result: Stability, runner: Runner, runs: int,
                      reference: bool) -> dict[str, Any]:
     return {"stability": {"runner": runner.name, "runs_per_state": runs,
                           "reference": "available" if reference else "unavailable",
-                          "runs": result.runs, "dropped": result.dropped}}
+                          "runs": result.runs, "dropped": result.dropped},
+            "run_writes": result.run_writes}
 
 
 def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"]]:
