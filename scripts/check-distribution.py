@@ -168,7 +168,7 @@ def check(wheel: Path, sdist: Path | None = None, source_root: Path | None = Non
         }
         expected = {
             str(path.relative_to(root / "src"))
-            for path in (root / "src/probity_observer").glob("*.py")
+            for path in (root / "src/probity_observer").rglob("*.py")
         }
         require(installed == expected, "root module population")
         for name in sorted(expected):
@@ -182,7 +182,7 @@ def check(wheel: Path, sdist: Path | None = None, source_root: Path | None = Non
               "all member sizes and hashes and profile routes match")
     if sdist is not None:
         authored = {"LICENSE", "README.md", "pyproject.toml"}
-        authored.update(path.relative_to(root).as_posix() for path in (root / "src/probity_observer").glob("*.py"))
+        authored.update(path.relative_to(root).as_posix() for path in (root / "src/probity_observer").rglob("*.py"))
         authored.update(path.relative_to(root).as_posix() for path in (root / "tests").glob("test*.py"))
         release_checks.check_source_archive(sdist, root, project, metadata_raw, authored,
                              "src/agent_evidence_observer.egg-info", "probity_observer")
