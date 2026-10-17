@@ -67,11 +67,13 @@ def test_swe_contract_from_dataset_fields(tmp_path, swe_repo, harness):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "work")
     assert "== 7" in (task.start / "tests/test_shapes.py").read_text()
-    assert "== 6" in (task.heldout / "tests/test_shapes.py").read_text()
+    assert "== 6" in (task.heldout / "tree/tests/test_shapes.py").read_text()
+    assert (task.heldout / "config/pytest.ini").read_text() == "[pytest]\n"
     assert "w * h" in (task.reference / "pkg/shapes.py").read_text()
     ids = [command.id for command in task.commands]
     assert ids == ["fail-to-pass", "pass-to-pass", "heldout-fail-to-pass"]
     assert task.commands[0].argv[-1] == "tests/test_shapes.py::test_area"
+    assert task.commands[0].argv[-5:-1] == ("-c", "../heldout/config/pytest.ini", "--rootdir", ".")
     assert task.commands[2].argv[:2] == ("sh", "-c") and "../heldout" in task.commands[2].argv[2]
     protected = {(entry.path, entry.kind) for entry in task.protected}
     assert protected == {("tests", "directory"), ("conftest.py", "file")}
@@ -164,3 +166,17 @@ def test_stability_on_a_real_lcb_task_without_a_reference(tmp_path, python_bin):
     result = contract.stabilize(task, SubprocessRunner(python_bin), timeout=60)
     assert [command.id for command in result.commands] == ["visible", "heldout"]
     assert {row["state"] for row in result.runs} == {"prepatch"}
+
+
+def test_acceptance_configuration_on_the_path_is_protected_and_sealed(tmp_path, swe_repo):
+    repo, record = swe_repo
+    (repo / "pyproject.toml").write_text("[tool.pytest.ini_options]\naddopts = '-q'\n")
+    (repo / "tests" / "setup.cfg").write_text("[metadata]\n")
+    (repo / "elsewhere").mkdir()
+    (repo / "elsewhere" / "tox.ini").write_text("[pytest]\n")
+    assert contract.config_paths(repo, ["tests/test_shapes.py"]) == ["pyproject.toml", "tests/setup.cfg"]
+    task = contract.swe_task(record, repo, tmp_path / "w", protect_test_dirs=False)
+    protected = {entry.path for entry in task.protected}
+    assert {"pyproject.toml", "tests/setup.cfg", "conftest.py"} <= protected
+    assert "elsewhere/tox.ini" not in protected
+    assert (task.heldout / "config/pyproject.toml").read_text().startswith("[tool.pytest")

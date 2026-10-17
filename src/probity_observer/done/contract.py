@@ -38,7 +38,9 @@ from .runner import Command, Runner
 SCHEMA = "probity-done-contract/v1"
 EXCLUDE = ("__pycache__", ".pytest_cache")
 DEFAULT_TEST_CMD = ("python", "-P", "-m", "pytest", "-p", "no:cacheprovider", "-q")
-TEST_CONFIG = ("pytest.ini", "tox.ini", "setup.cfg")
+ACCEPTANCE_CONFIG = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
+_CONFIG_SECTION = {"pytest.ini": None, "pyproject.toml": "[tool.pytest.ini_options]",
+                   "tox.ini": "[pytest]", "setup.cfg": "[tool:pytest]"}
 _DIFF_FILE = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
@@ -137,6 +139,39 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
                "determinism_probes": len(split.probes), "repeats": split.repeats})
 
 
+def config_paths(start: Path, tests: list[str]) -> list[str]:
+    """Every acceptance-configuration file on the path from the root to each test file."""
+    directories = {""}
+    for name in tests:
+        parts = Path(name).parent.parts
+        directories.update("/".join(parts[:index]) for index in range(1, len(parts) + 1))
+    found = []
+    for directory in sorted(directories):
+        for config in ACCEPTANCE_CONFIG:
+            name = f"{directory}/{config}" if directory else config
+            if (start / name).is_file():
+                found.append(name)
+    return found
+
+
+def sealed_config(start: Path, held: Path) -> tuple[str, ...]:
+    """Copy the start tree's pytest configuration where only the verifier reads it.
+
+    The returned arguments make pytest read that sealed copy (``-c``) with the workspace as
+    its root, so a configuration file the agent adds or edits is never the one in force.
+    """
+    chosen = "pytest.ini"
+    text = "[pytest]\n"
+    for name, section in _CONFIG_SECTION.items():
+        path = start / name
+        if path.is_file() and (section is None or section in path.read_text("utf-8", "replace")):
+            chosen, text = name, path.read_text("utf-8", "replace")
+            break
+    (held / "config").mkdir(parents=True, exist_ok=True)
+    (held / "config" / chosen).write_text(text)
+    return ("-c", f"../heldout/config/{chosen}", "--rootdir", ".")
+
+
 def _swe_protected(start: Path, tests: list[str], reference_touched: set[str],
                    protect_test_dirs: bool) -> list[Protected]:
     entries: dict[str, Protected] = {}
@@ -146,9 +181,8 @@ def _swe_protected(start: Path, tests: list[str], reference_touched: set[str],
         name = path.relative_to(start).as_posix()
         if not name.startswith(".git/"):
             entries[name] = Protected(name, "file")
-    for name in TEST_CONFIG:
-        if (start / name).is_file():
-            entries[name] = Protected(name, "file")
+    for name in config_paths(start, tests):
+        entries[name] = Protected(name, "file")
     if protect_test_dirs:
         for directory in sorted({str(Path(name).parent) for name in tests} - {"."}):
             if any(item == directory or item.startswith(directory + "/")
@@ -164,12 +198,16 @@ def _swe_protected(start: Path, tests: list[str], reference_touched: set[str],
 
 
 def swe_task(record: dict[str, Any], repo: Path, work: Path,
-             test_cmd: Sequence[str] = DEFAULT_TEST_CMD, protect_test_dirs: bool = True) -> Task:
+             test_cmd: Sequence[str] = DEFAULT_TEST_CMD, protect_test_dirs: bool = True,
+             seal_config: bool = True) -> Task:
     """An (Impossible) SWE-bench task: ``repo`` is a checkout at ``base_commit``.
 
     ``test_cmd`` is the argv prefix the test ids are appended to; SWE-bench's own
-    per-repository specification gives it. The held-out set is the task's original test
-    patch, overlaid by the verifier from ``../heldout`` and never in the agent's tree.
+    per-repository specification gives it; with ``seal_config`` (for pytest) the start
+    tree's own pytest configuration is sealed and passed with ``-c``. The held-out set is the
+    task's original test patch, overlaid by the verifier from ``../heldout/tree`` and never in
+    the agent's tree. Every acceptance-configuration file from the root to each test file is
+    protected.
     """
     fail, passing = _tests(record["FAIL_TO_PASS"]), _tests(record["PASS_TO_PASS"])
     start, reference, held = work / "start", work / "reference", work / "heldout"
@@ -181,20 +219,22 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
     shutil.copytree(repo, original, symlinks=True)
     apply_patch(original, record.get("original_test_patch") or record["test_patch"])
     original_tests = touched_files(record.get("original_test_patch") or record["test_patch"])
-    held.mkdir()
+    (held / "tree").mkdir(parents=True)
     for name in original_tests:
         if (original / name).is_file():
-            (held / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(original / name, held / name)
+            (held / "tree" / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(original / name, held / "tree" / name)
     shutil.rmtree(original)
     reference_touched = set(touched_files(record["patch"]))
     tests = touched_files(record["test_patch"])
     prefix = tuple(test_cmd)
+    if seal_config:
+        prefix += sealed_config(start, held)
     commands = [Command("fail-to-pass", prefix + tuple(fail), ids_from=len(prefix))]
     if passing:
         commands.append(Command("pass-to-pass", prefix + tuple(passing), prepatch="pass",
                                 ids_from=len(prefix)))
-    overlay = "cp -R ../heldout/. . && exec " + shlex.join(prefix + tuple(fail))
+    overlay = "cp -R ../heldout/tree/. . && exec " + shlex.join(prefix + tuple(fail))
     commands.append(Command("heldout-fail-to-pass", ("sh", "-c", overlay), heldout=True))
     targets = {name: lines for name, lines in touched_lines(record["patch"]).items()
                if name.endswith(".py") and name not in tests}
