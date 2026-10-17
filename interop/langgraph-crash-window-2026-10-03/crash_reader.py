@@ -27,7 +27,7 @@ def selections(root, pins, names):
     same(plan["doesNotAssert"], NONCLAIMS, "nonclaims")
     same([case["id"] for case in plan["cases"]], list(CASES), "planned-population")
     require(isinstance(plan["sourceRevision"], str) and len(plan["sourceRevision"]) == 40 and all(c in "0123456789abcdef" for c in plan["sourceRevision"]), "source-revision")
-    same([plan["environment"]["packages"][name] for name in ("langgraph", "langgraph-checkpoint-sqlite", "agent-evidence-observer")], ["1.0.10", "3.1.1", "0.0.2"], "framework-version")
+    same([plan["environment"]["packages"][name] for name in ("langgraph", "langgraph-checkpoint-sqlite", "agent-evidence-observer")], ["1.2.4", "3.1.1", "0.0.2"], "framework-version")
     manifest = load(root, "artifact-manifest.json")
     actual = names - {"artifact-manifest.json", "consumer-pins.json", "report.json"}
     same(sorted(manifest), sorted(actual), "artifact-population")
