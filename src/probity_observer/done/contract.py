@@ -322,7 +322,9 @@ def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
     if not [command for command in commands if not command.heldout]:
         raise DoneError("no visible acceptance command left to seal")
     adequacy = adequacy or {"mutants": 0, "killed": 0}
-    record = contract_record(task, adequacy, commands, heldout_digest(task.heldout),
+    has_heldout = any(command.heldout for command in commands)
+    record = contract_record(task, adequacy, commands,
+                             heldout_digest(task.heldout) if has_heldout else None,
                              mutant_sha256)
     data, envelope = sign_record(record, key)
     digest = sha256(data)
@@ -335,14 +337,21 @@ def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
     (sealed / "protected").mkdir(parents=True)
     for entry in task.protected:
         copy_protected(task.start, entry, sealed / "protected")
-    if task.heldout is not None:
+    if task.heldout is not None and has_heldout:
         shutil.copytree(task.heldout, sealed / "heldout", symlinks=True)
+    elif task.heldout is not None:
+        # Replays still read their sealed visible test from here.
+        shutil.copytree(task.heldout, sealed / "heldout", symlinks=True,
+                        ignore=shutil.ignore_patterns(heldout_cases.HELDOUT_NAME, "tree"))
     proposal = task.notes.get("proposal", {})
     compiled = {"schema_version": "probity-done-compile/v1", "task_id": task.task_id,
                 "source": task.source, "contract_sha256": digest,
                 "model_calls": proposal.get("model_calls", 0),
-                "notes": task.notes, **(report or {})}
-    (out / "compile.json").write_bytes(encode(compiled))
+                "notes": task.notes,
+                "heldout": ({"status": "sealed"} if has_heldout else
+                            {"status": "dropped", "reason": "no held-out command survived"}),
+                **(report or {})}
+    (sealed / "compile.json").write_bytes(encode(compiled))
     return Sealed(out, digest, record)
 
 
@@ -359,6 +368,35 @@ class Stability:
 def _exits(runner: Runner, state: Path, command: Command, heldout: Path | None,
            runs: int, timeout: float, writes: list[str] | None = None) -> list[int]:
     return [runner.run(state, command.argv, heldout, timeout, writes) for _ in range(runs)]
+
+
+def is_pytest(argv: Sequence[str]) -> bool:
+    """A pytest invocation: ``pytest ...`` or ``python -m pytest ...``."""
+    head = list(argv[:4])
+    return (bool(head) and head[0].rsplit("/", 1)[-1] == "pytest") or (
+        len(head) >= 2 and "-m" in head and "pytest" in head)
+
+
+def _test_files(command: Command) -> list[str]:
+    if command.ids_from is None:
+        return []
+    return sorted({test_id.split("::", 1)[0] for test_id in command.argv[command.ids_from:]})
+
+
+def _start_failure(task: Task, command: Command, exit_code: int) -> str | None:
+    """Whether a pytest exit on the pre-patch state is a real failure of the task's tests.
+
+    Exit 1 (tests ran and failed) is. Exit 2 (interrupted, usually a collection error) is
+    only when every target test file exists in the start tree and the reference passed, which
+    the caller has already checked. Exits 3, 4 and 5 (internal error, usage error, nothing
+    collected) say nothing about the task.
+    """
+    if exit_code == 1:
+        return None
+    if (exit_code == 2 and task.reference is not None
+            and all((task.start / name).is_file() for name in _test_files(command))):
+        return None
+    return f"prepatch_exit_{exit_code}"
 
 
 def _judge(task: Task, runner: Runner, command: Command, runs: int,
@@ -382,7 +420,34 @@ def _judge(task: Task, runner: Runner, command: Command, runs: int,
             return f"flaky_on_{label}"
         if (exits[0] == 0) != (expect == "pass"):
             return f"{label}_{'failed' if expect == 'pass' else 'passed'}"
+        if label == "prepatch" and expect == "fail" and is_pytest(command.argv):
+            if (reason := _start_failure(task, command, exits[0])) is not None:
+                return reason
     return None
+
+
+def collect(task: Task, runner: Runner, command: Command, timeout: float,
+            dropped: list[dict[str, Any]]) -> Command | None:
+    """Seal a pytest command's ids from ``--collect-only -q`` on the reference (or start).
+
+    An id pytest does not collect is dropped with ``not_collected``; a command with none left
+    is dropped.
+    """
+    if command.ids_from is None or not is_pytest(command.argv):
+        return command
+    prefix, ids = command.argv[:command.ids_from], command.argv[command.ids_from:]
+    printed: list[str] = []
+    runner.run(task.reference or task.start, prefix + ("--collect-only", "-q") + ids,
+               task.heldout if command.heldout else None, timeout, output=printed)
+    collected = {line.strip() for text in printed for line in text.splitlines() if "::" in line}
+    kept = [test_id for test_id in ids
+            if test_id in collected or any(item.startswith(test_id + "[") for item in collected)]
+    dropped.extend({"id": command.id, "test": test_id, "reason": "not_collected"}
+                   for test_id in ids if test_id not in kept)
+    if not kept:
+        return None
+    return Command(command.id, prefix + tuple(kept), command.heldout, command.prepatch,
+                   command.ids_from)
 
 
 def _per_id(task: Task, runner: Runner, command: Command, runs: int, timeout: float,
@@ -417,7 +482,10 @@ def stabilize(task: Task, runner: Runner, runs: int = 3, timeout: float = 900.0)
     dropped: list[dict[str, Any]] = []
     kept: list[Command] = []
     writes: dict[str, list[str]] = {}
-    for command in task.commands:
+    for listed in task.commands:
+        command = collect(task, runner, listed, timeout, dropped)
+        if command is None:
+            continue
         reason = _judge(task, runner, command, runs, timeout, log, writes)
         if reason is None:
             kept.append(command)
@@ -461,8 +529,10 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
                  mutant_limit: int = 40, timeout: float = 900.0) -> Sealed:
     """Stabilize the commands, measure mutant kills, and seal the contract."""
     stable = stabilize(task, runner, runs, timeout)
-    if not [command for command in stable.commands if not command.heldout]:
-        raise DoneError(f"{task.task_id}: no visible acceptance command is stable")
+    if not [command for command in stable.commands
+            if not command.heldout and command.prepatch == "fail"]:
+        raise DoneError(f"{task.task_id}: no stable visible command fails on the start state, "
+                        "so no command can tell the task done from not done")
     base, chosen = task_mutants(task, mutant_limit)
     adequacy = mutants.measure(base, chosen, stable.commands, runner, task.heldout, timeout)
     report = {**stability_report(stable, runner, runs, task.reference is not None),

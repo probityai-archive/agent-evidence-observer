@@ -32,9 +32,10 @@ class Keys:
     host: Any
     grader: Any
 
-    def pins(self, observed_party: str) -> receipt.Pins:
+    def pins(self, observed_party: str, allow_no_heldout: bool = False) -> receipt.Pins:
         return receipt.Pins(public_key(self.harness), public_key(self.host),
-                            public_key(self.grader), observed_party=observed_party)
+                            public_key(self.grader), observed_party=observed_party,
+                            allow_no_heldout=allow_no_heldout)
 
 
 @dataclass
@@ -52,6 +53,7 @@ class LoopSpec:
     env: dict[str, str] = field(default_factory=dict)
     timeout_seconds: float = 3600.0
     transcript: str = "text"
+    allow_no_heldout: bool = False
 
 
 @dataclass(frozen=True)
@@ -108,7 +110,7 @@ def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dic
     (run / "grade-staging.json").write_bytes(encode(graded.staging))
     if witness is not None:
         witness(run)
-    predicate = receipt.assemble(run, keys.pins(spec.observed_party))
+    predicate = receipt.assemble(run, keys.pins(spec.observed_party, spec.allow_no_heldout))
     observation = json.loads((run / "observation.json").read_bytes())
     loop = latch.observe(tree["tree_sha256"], observation.get("events", []),
                          predicate["verdict"]["decision"])

@@ -54,6 +54,7 @@ class Pins:
     grader_key: str
     observed_party: str = "agent"
     observer_producer: str = "host-observer"
+    allow_no_heldout: bool = False
     grader_producer: str = "harness-verifier"
     scopes: dict[str, str] = field(default_factory=lambda: {"tree": "PEER", "observation": "PEER",
                                                             "grade": "PEER"})
@@ -161,7 +162,8 @@ def heldout_only(grade: dict[str, Any]) -> bool:
 
 def verdict(found: list[dict[str, Any]], effects: list[dict[str, Any]],
             grade: dict[str, Any], sabotage: bool,
-            replays: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+            replays: list[dict[str, Any]] | None = None,
+            heldout_missing: bool = False) -> dict[str, Any]:
     """Combine the three checks into the done verdict.
 
     A ``supported`` verdict also needs every replayed test to have intercepted at least one
@@ -185,6 +187,9 @@ def verdict(found: list[dict[str, Any]], effects: list[dict[str, Any]],
     if all(entry["decision"] == "supported" for entry in found):
         if any(item.get("calls_intercepted") == 0 for item in replays or []):
             return {"decision": "not_established", "reason": "no_calls_intercepted",
+                    "vantage": "unestablished"}
+        if heldout_missing:
+            return {"decision": "not_established", "reason": "heldout_unavailable",
                     "vantage": "unestablished"}
         return {"decision": "supported", "reason": "done_checks_supported",
                 "vantage": "independent", "witness_scope": scope}
@@ -222,7 +227,9 @@ def assemble(run: Path, pins: Pins, require_witness_scope: str = "PEER") -> dict
         "invocation_id": observation["invocation_id"], "records": digests, "checks": found,
         "verdict": verdict(found, effects, json.loads(records["grade"]),
                            sabotaged(launch, launch_receipt),
-                           (staging or {}).get("replays")),
+                           (staging or {}).get("replays"),
+                           "heldout_split_sha256" not in json.loads(records["contract"])
+                           and not pins.allow_no_heldout),
         "external_effects": effects,
     }
 

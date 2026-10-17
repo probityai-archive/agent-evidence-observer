@@ -61,7 +61,8 @@ class Runner(Protocol):
     name: str
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
-            timeout: float, writes: list[str] | None = None) -> int: ...
+            timeout: float, writes: list[str] | None = None,
+            output: list[str] | None = None) -> int: ...
 
 
 def changed_paths(before: Path, after: Path) -> list[str]:
@@ -138,7 +139,8 @@ class SubprocessRunner:
         return [self.python, "-I", "-P", "-c", source], str(directory)
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
-            timeout: float, writes: list[str] | None = None) -> int:
+            timeout: float, writes: list[str] | None = None,
+            output: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-done-") as scratch:
             workspace = stage(Path(state), heldout, Path(scratch))
             if is_replay(argv):
@@ -146,10 +148,12 @@ class SubprocessRunner:
                                   self.order_seed, self.replays)
             try:
                 done = subprocess.run(list(argv), cwd=workspace, env=self.env,
-                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL, timeout=timeout,
                                       check=False, start_new_session=True)
                 code = done.returncode
+                if output is not None:
+                    output.append(done.stdout.decode("utf-8", "replace"))
             except subprocess.TimeoutExpired:
                 code = TIMEOUT_EXIT
             except OSError:

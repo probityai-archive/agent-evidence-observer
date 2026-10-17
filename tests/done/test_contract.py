@@ -35,7 +35,7 @@ def test_lcb_contract_holds_out_inputs_and_keeps_the_impossible_assertion(tmp_pa
                                           "sha256": treedigest.file_sha256(task.start / "test.py")}]
     assert record["heldout_split_sha256"] == treedigest.scan(tmp_path / "out/sealed/heldout").sha256
     assert not (sealed.out / "workspace" / heldout.HELDOUT_NAME).exists()
-    assert json.loads((sealed.out / "compile.json").read_bytes())["model_calls"] == 0
+    assert json.loads((sealed.out / "sealed" / "compile.json").read_bytes())["model_calls"] == 0
 
 
 def test_contract_bytes_are_canonical_and_signed(tmp_path, harness):
@@ -120,7 +120,10 @@ class Scripted:
     def __init__(self, table):
         self.table = {key: list(value) for key, value in table.items()}
 
-    def run(self, state, argv, heldout, timeout, writes=None):
+    def run(self, state, argv, heldout, timeout, writes=None, output=None):
+        if "--collect-only" in argv:
+            output.append("\n".join(item for item in argv if "::" in item and "flaky-gone" not in item))
+            return 0
         return self.table[(state.name, tuple(argv))].pop(0)
 
 
@@ -189,3 +192,41 @@ def test_stability_records_what_an_honest_run_writes(tmp_path, python_bin):
         "writes", ("python", "-c", "open('out.log', 'w').write('x'); raise SystemExit(1)"))]
     result = contract.stabilize(task, SubprocessRunner(python_bin), timeout=60)
     assert result.run_writes == {"writes": ["out.log"]}
+
+
+def test_pytest_start_failures_other_than_failing_tests_are_dropped(tmp_path, swe_repo):
+    repo, record = swe_repo
+    task = contract.swe_task(record, repo, tmp_path / "work")
+    fail, passing, held = (command.argv for command in task.commands)
+    table = {("reference", fail): [0, 0, 0], ("start", fail): [4, 4, 4],
+             ("reference", passing): [0, 0, 0], ("start", passing): [0, 0, 0],
+             ("reference", held): [0, 0, 0], ("start", held): [1, 1, 1]}
+    result = contract.stabilize(task, Scripted(table))
+    assert {"id": "fail-to-pass", "reason": "prepatch_exit_4"} in result.dropped
+    table[("start", fail)] = [2, 2, 2]
+    (task.start / "tests" / "test_shapes.py").unlink()
+    result = contract.stabilize(task, Scripted(table))
+    assert {"id": "fail-to-pass", "reason": "prepatch_exit_2"} in result.dropped
+
+
+def test_ids_are_sealed_from_collection(tmp_path, swe_repo):
+    repo, record = swe_repo
+    record = {**record, "FAIL_TO_PASS": '["tests/test_shapes.py::test_area", "tests/x.py::flaky-gone"]'}
+    task = contract.swe_task(record, repo, tmp_path / "work")
+    group = task.commands[0]
+    kept = group.argv[:group.ids_from] + ("tests/test_shapes.py::test_area",)
+    table = {("reference", kept): [0, 0, 0], ("start", kept): [1, 1, 1]}
+    dropped = []
+    narrowed = contract.collect(task, Scripted(table), group, 60, dropped)
+    assert narrowed.argv == kept
+    assert dropped == [{"id": "fail-to-pass", "test": "tests/x.py::flaky-gone", "reason": "not_collected"}]
+
+
+def test_a_dropped_heldout_leaves_no_heldout_digest(tmp_path, harness):
+    task = contract.lcb_task(LCB_RECORD, tmp_path / "w")
+    sealed = contract.seal(task, tmp_path / "out", harness, commands=[task.commands[0]])
+    assert "heldout_split_sha256" not in sealed.record
+    compiled = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
+    assert compiled["heldout"]["status"] == "dropped"
+    assert not (sealed.out / "sealed" / "heldout" / heldout.HELDOUT_NAME).exists()
+    assert not (sealed.out / "compile.json").exists()

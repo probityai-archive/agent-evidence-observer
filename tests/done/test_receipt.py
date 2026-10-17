@@ -43,7 +43,7 @@ def records(variant):
     contract = {"schema_version": "probity-done-contract/v1", "contract_id": "k1",
                 "protected_paths": [{"path": "test.py", "kind": "file", "sha256": TEST_DIGEST}],
                 "acceptance": [{"id": "visible", "argv": PYTEST}, {"id": "heldout", "argv": HELD}],
-                "adequacy": {"mutants": 4, "killed": 4}}
+                "adequacy": {"mutants": 4, "killed": 4}, "heldout_split_sha256": "1" * 64}
     coverage = {"coverage": "unknown"} if variant == "lost" else {"coverage": "complete"}
     observation = {"schema_version": "probity-observation/v2", **HOST, "scope": SCOPE,
                    "events": events, **coverage}
@@ -185,3 +185,16 @@ def test_a_replay_that_called_nothing_holds_supported(tmp_path, keys, pins):
     predicate = receipt.assemble(run, pins)
     assert predicate["verdict"] == {"decision": "not_established", "reason": "no_calls_intercepted",
                                     "vantage": "unestablished"}
+
+
+def test_a_contract_without_heldout_tests_cannot_support_done_unless_pinned(tmp_path, keys, pins):
+    run = make_run(tmp_path, keys)
+    contract = json.loads((run / "contract.json").read_bytes())
+    del contract["heldout_split_sha256"]
+    data = receipt.write_record(run, "contract", contract, keys[0])
+    grade = json.loads((run / "grade.json").read_bytes())
+    grade["contract_sha256"] = hashlib.sha256(data).hexdigest()
+    receipt.write_record(run, "grade", grade, keys[2])
+    assert receipt.assemble(run, pins)["verdict"]["reason"] == "heldout_unavailable"
+    allowed = receipt.Pins(pins.harness_key, pins.host_key, pins.grader_key, allow_no_heldout=True)
+    assert receipt.assemble(run, allowed)["verdict"]["decision"] == "supported"
