@@ -120,7 +120,7 @@ class Scripted:
     def __init__(self, table):
         self.table = {key: list(value) for key, value in table.items()}
 
-    def run(self, state, argv, heldout, timeout):
+    def run(self, state, argv, heldout, timeout, writes=None):
         return self.table[(state.name, tuple(argv))].pop(0)
 
 
@@ -180,3 +180,12 @@ def test_acceptance_configuration_on_the_path_is_protected_and_sealed(tmp_path, 
     assert {"pyproject.toml", "tests/setup.cfg", "conftest.py"} <= protected
     assert "elsewhere/tox.ini" not in protected
     assert (task.heldout / "config/pyproject.toml").read_text().startswith("[tool.pytest")
+
+
+def test_stability_records_what_an_honest_run_writes(tmp_path, python_bin):
+    from probity_observer.done.runner import SubprocessRunner
+    task = contract.lcb_task(LCB_RECORD, tmp_path / "work")
+    task.commands = [contract.Command(
+        "writes", ("python", "-c", "open('out.log', 'w').write('x'); raise SystemExit(1)"))]
+    result = contract.stabilize(task, SubprocessRunner(python_bin), timeout=60)
+    assert result.run_writes == {"writes": ["out.log"]}
