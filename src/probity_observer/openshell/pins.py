@@ -1,7 +1,7 @@
 """The exact upstream bytes this package was written against.
 
 Every value here was read from the upstream release on 2026-10-17. A consumer that runs a
-different OpenShell build is refused by :func:`check_prover_version` and by the release
+different OpenShell build is refused by :mod:`.prover` and by the release
 fetcher in ``interop/openshell-done-2026-10-17/``; nothing falls back to "latest".
 """
 
@@ -36,3 +36,14 @@ NEMOCLAW_NETWORK_SCHEMA_SHA256 = (
 ``vendor/nemoclaw/``."""
 
 OCSF_VERSION = "1.8.0"
+OCSF_CLASSES_SHA256 = "ceb606b97b0b948c43a0b5b01783d0a758d3a2bec3f18a2741b489f245799d33"
+"""Digest of ``<sha256>  classes/<name>.json`` lines, sorted by name, over the OCSF 1.8.0
+class schemas OpenShell vendors at ``crates/openshell-ocsf/schemas/ocsf/v1.8.0/`` (v0.1.4),
+copied under ``vendor/ocsf-1.8.0/``."""
+
+BINARY_SHA256 = {
+    "openshell": "b4a5b7681a674d4cd0b54fa68726e104731309ff15eeb65b9d1661f7f746f9d0",
+    "openshell-gateway": "b2c1b9db0e4c066458ffe4cdfa0d9e77e32d6250fa9a8b221968b250e854b892",
+    "openshell-prover": "49b3c5d4c9f192c9d882e61068d08519a19176fa8e8d74cea6f3fcb1c2d8f006",
+}
+"""The executables inside :data:`RELEASE_ASSETS`, by SHA-256 of the extracted file."""

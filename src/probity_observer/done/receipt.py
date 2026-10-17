@@ -23,6 +23,10 @@ verdict combines them (:func:`verdict`):
 The receipt is the ``probity-done-receipt/v1`` predicate, signed by the harness key; its
 in-toto Statement is written unsigned (see :mod:`.formats`).
 
+An enforcer's own log (OpenShell's OCSF stream) joins the receipt as the ``ocsf`` record
+digest when the run holds ``ocsf.dsse.json``: the host key signs which lines arrived, every
+line stays an ``enforcer_claim``, and it does not change the verdict.
+
 The observer signs ``probity-tree/v2`` and ``probity-observation/v3``. The pinned
 probity-verify reads ``probity-tree/v1`` and ``probity-observation/v2``, so the checks run on
 a verifier view (:func:`verifier_view`) that drops the added members and recomputes the
@@ -324,6 +328,14 @@ def assemble(run: Path, pins: Pins, require_witness_scope: str = "PEER") -> dict
     if launch_bytes is not None and launch_receipt_bytes is not None:
         digests["launch"] = {"sha256": sha256(launch_bytes)}
         digests["launch_receipt"] = {"sha256": sha256(launch_receipt_bytes)}
+    if (run / "ocsf.dsse.json").is_file():
+        from ..openshell import ocsf
+
+        ingested = ocsf.verify(run, pins.host_key)
+        digests["ocsf"] = {"sha256": sha256((run / "ocsf.json").read_bytes()),
+                           "assertion": "enforcer_claim",
+                           "records": ingested["counts"]["records"],
+                           "disagreements": ingested["counts"]["disagreements"]}
     return {
         "schema_version": RECEIPT_SCHEMA, "verifier": {"id": VERIFIER_ID},
         "claim_id": observation["claim_id"],
