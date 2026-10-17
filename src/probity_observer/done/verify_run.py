@@ -25,6 +25,7 @@ One grading run, in order:
 
 from __future__ import annotations
 
+import ast
 import difflib
 import json
 import os
@@ -392,6 +393,31 @@ def _isolation(contract_sha256: str, trusted: tuple[str, str], runner: DockerRun
 TREE_FIELDS = ("files", "executable", "symlinks", "special")
 
 
+def _ast_digest(path: Path) -> str | None:
+    """The digest of a Python file's AST (comments and layout dropped), or ``None``."""
+    try:
+        tree = ast.parse(path.read_bytes())
+    except (SyntaxError, ValueError, OSError):
+        return None
+    return sha256(ast.dump(tree, include_attributes=False).encode())
+
+
+def ast_unchanged(final: Path, sealed: Path, protected: list[Protected]) -> list[str]:
+    """Protected Python files whose final AST is the issued one's (re-declared, reformatted
+    or restored, but the same program), read from the agent's tree before the reset."""
+    same = []
+    for entry in protected:
+        if entry.kind != "file" or not entry.path.endswith(".py"):
+            continue
+        mine, issued = final / entry.path, sealed / entry.path
+        if mine.is_symlink() or not mine.is_file():
+            continue
+        digest = _ast_digest(mine)
+        if digest is not None and digest == _ast_digest(issued):
+            same.append(entry.path)
+    return sorted(same)
+
+
 def check_tree_record(final: Path, tree_record: dict[str, Any]) -> None:
     """The final tree on disk must be exactly the ``probity-tree/v2`` record the host signed.
 
@@ -425,6 +451,7 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
         result_dir = Path(work)
         os.chmod(result_dir, 0o700)
         staged = stage_tree(final, result_dir / "tree", start)
+        same_ast = ast_unchanged(staged.root, sealed / "protected", _protected(contract))
         reset(staged, _protected(contract), sealed / "protected", start)
         trusted = _trusted(contract, staged)
         if trusted[0] != trusted[1]:
@@ -452,6 +479,7 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
                    "removed_config": staged.removed_config,
                    "rejected_native": staged.rejected_native, "replays": replays,
                    "post_patch": hunks, "hunks_exercised": hunks_exercised(hunks),
+                   "protected_ast_unchanged": same_ast,
                    "replay_order_seed": runner.order_seed}
     record = {"schema_version": GRADE_SCHEMA, "claim_id": context.claim_id,
               "invocation_id": context.invocation_id, "producer": context.producer,

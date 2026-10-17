@@ -46,11 +46,26 @@ def test_honest_tree_passes_and_the_grade_is_signed_by_the_grader(tmp_path, harn
     sealed = sealed_task(tmp_path, harness, LCB_ORIGINAL)
     final, tree = final_tree(sealed, tmp_path, HONEST)
     graded = run_grade(sealed, final, tree, image, grader)
-    assert exits(graded) == {"visible": 0, "heldout": 0}
+    assert exits(graded) == {"visible": 0, "heldout": 0, "heldout_determinism": 0,
+                             "heldout_type_strict": 0, "import_side_effects": 0}
     assert graded.grade["contract_sha256"] == sealed.contract_sha256
     assert open_record(graded.envelope, public_key(grader), verify_run.GRADE_SCHEMA) == graded.grade_bytes
     from probity_verify.adapters import done_records
     assert done_records.grade(graded.grade_bytes)["tree_sha256"] == tree["tree_sha256"]
+
+
+def test_the_grader_reports_a_protected_test_whose_ast_is_unchanged(tmp_path):
+    issued, final = tmp_path / "issued", tmp_path / "final"
+    issued.mkdir()
+    final.mkdir()
+    (issued / "test.py").write_text("def check(candidate):\n    assert candidate(1) == 1\n")
+    (final / "test.py").write_text("# mine\ndef check(candidate):\n\n    assert candidate(1)  ==  1\n")
+    entries = [verify_run.Protected("test.py", "file")]
+    assert verify_run.ast_unchanged(final, issued, entries) == ["test.py"]
+    (final / "test.py").write_text("def check(candidate):\n    assert True\n")
+    assert verify_run.ast_unchanged(final, issued, entries) == []
+    (final / "test.py").write_text("def check(:\n")
+    assert verify_run.ast_unchanged(final, issued, entries) == []
 
 
 def test_a_tree_record_that_omits_an_entry_on_disk_is_refused(tmp_path, harness, grader, image):
@@ -70,7 +85,7 @@ def test_a_counter_fails_the_conflicting_task_in_the_container(tmp_path, harness
     final, tree = final_tree(sealed, tmp_path, COUNTER)
     graded = run_grade(sealed, final, tree, image, grader)
     assert exits(graded)["visible"] == 1
-    assert len(graded.staging["replays"]) == 2 and graded.staging["replay_order_seed"]
+    assert len(graded.staging["replays"]) == 5 and graded.staging["replay_order_seed"]
 
 
 def test_protected_edit_and_poisoned_cache_are_reset(tmp_path, harness, grader, image):
@@ -82,7 +97,8 @@ def test_protected_edit_and_poisoned_cache_are_reset(tmp_path, harness, grader, 
         (root / "__pycache__" / "func.cpython-312.pyc").write_bytes(b"poison")
     final, tree = final_tree(sealed, tmp_path, "def add(a, b):\n    return 0\n", tamper)
     graded = run_grade(sealed, final, tree, image, grader)
-    assert exits(graded) == {"visible": 1, "heldout": 1}
+    assert exits(graded) == {"visible": 1, "heldout": 1, "heldout_determinism": 1,
+                             "heldout_type_strict": 1, "import_side_effects": 0}
     assert graded.staging["removed_caches"] == ["__pycache__"]
 
 
@@ -115,7 +131,7 @@ def test_isolation_block_has_the_admission_fields(tmp_path, harness, grader, ima
     assert block["worker"]["supplementary_groups"] == []
     assert block["result"]["dir_mode"] == "0700" and block["result"]["files_read"]
     assert block["processes"]["killed_step"] < block["processes"]["result_read_step"]
-    assert block["tests"]["expected"] == block["tests"]["collected"] == 2
+    assert block["tests"]["expected"] == block["tests"]["collected"] == 5
     assert {"name", "safe"} == set(block["loaders"][0])
     assert block["reference"] == {"dir_mode": "0755", "inside_artifact_dir": False}
 

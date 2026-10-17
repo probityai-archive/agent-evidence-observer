@@ -84,17 +84,32 @@ def is_replay(argv: Sequence[str]) -> bool:
     return bool(argv) and argv[0] == replay_harness.COMMAND
 
 
+DETERMINISM_RUNS = 2
+
+
+def replay_mode(argv: Sequence[str]) -> str | None:
+    """The replay mode an argv names, or ``None`` when it is not a well-formed replay argv."""
+    if len(argv) == 4:
+        return "assert"
+    if len(argv) == 5 and argv[4] in replay_harness.MODES:
+        return argv[4]
+    return None
+
+
 def run_replay(scratch: Path, argv: Sequence[str], child_argv, timeout: float,
                order_seed: str, results: list[dict] | None) -> int:
     """Run a parent-compare replay command staged under ``scratch``.
 
-    ``argv`` is ``(COMMAND, <sealed test path from the workspace>, <module>, <entry>)``. Only
-    the module's file is copied into the child's directory; ``child_argv(directory, source)``
-    returns the child's command line and working directory.
+    ``argv`` is ``(COMMAND, <sealed test path from the workspace>, <module>, <entry>[, mode])``.
+    Only the module's file is copied into the child's directory; ``child_argv(directory,
+    source)`` returns the child's command line and working directory. The determinism probe
+    gives each of its child runs the whole ``timeout``, so the command's own limit is that
+    many times longer.
     """
-    if len(argv) != 4:
+    mode = replay_mode(argv)
+    if mode is None:
         return 2
-    _, test, module, entry = argv
+    _, test, module, entry = argv[:4]
     workspace = scratch / "workspace"
     candidate = scratch / "candidate"
     candidate.mkdir()
@@ -104,16 +119,18 @@ def run_replay(scratch: Path, argv: Sequence[str], child_argv, timeout: float,
         os.chmod(candidate / f"{module}.py", 0o644)
     os.chmod(candidate, 0o755)
     os.chmod(scratch, 0o755)
-    command, cwd = child_argv(candidate, replay_harness.child_source(module, entry))
+    command, cwd = child_argv(candidate, replay_harness.child_source(
+        module, entry, probe_import=mode == "import_side_effects"))
     request = {"test": str((workspace / test).resolve()), "child_argv": command,
                "child_cwd": cwd, "call_timeout": min(timeout, 60.0), "order_seed": order_seed,
-               "out": str(scratch / "replay.json")}
+               "mode": mode, "run_timeout": timeout, "out": str(scratch / "replay.json")}
     (scratch / "request.json").write_text(json.dumps(request))
+    limit = timeout * DETERMINISM_RUNS + 30 if mode == "determinism" else timeout
     try:
         done = subprocess.run([sys.executable, "-I", "-m", "probity_observer.done.replay",
                                str(scratch / "request.json")], stdin=subprocess.DEVNULL,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=timeout, check=False)
+                              timeout=limit, check=False)
     except subprocess.TimeoutExpired:
         return TIMEOUT_EXIT
     if results is not None and (scratch / "replay.json").is_file():

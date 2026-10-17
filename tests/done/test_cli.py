@@ -47,7 +47,7 @@ def seal_lcb(tmp_path, seeds, python_bin):
 def test_contract_command_seals_and_prints_adequacy(tmp_path, seeds, python_bin, capsys):
     assert seal_lcb(tmp_path, seeds, python_bin) == 0
     out = capsys.readouterr().out
-    assert "Acceptance: visible, heldout" in out and "mutants killed" in out
+    assert "Acceptance: visible, heldout, heldout_determinism" in out and "mutants killed" in out
     assert (tmp_path / "contract" / "contract.dsse.json").is_file()
 
 
