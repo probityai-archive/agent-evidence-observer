@@ -6,7 +6,7 @@ archived signed packets and policy pins. No release or host adoption is claimed.
 
 The native population has seven cases. The exhausted case retains two typed
 tool attempts raising `ModelRetry` under the declared one-retry budget. Native
-Pydantic AI 1.107.6 (1.68.0 when the recorded run below was captured) emits one retry prompt and the second tool call, then raises
+Pydantic AI 1.107.7 (1.68.0 when the recorded run below was captured) emits one retry prompt and the second tool call, then raises
 `UnexpectedModelBehavior` before appending another prompt. Its verbatim message
 history, both wrapper traces and exact terminal exception are retained. The
 separate signed GET remains at revision zero.

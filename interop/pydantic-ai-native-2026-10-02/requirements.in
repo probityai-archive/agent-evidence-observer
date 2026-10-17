@@ -1,5 +1,5 @@
 # Pinned producer, observer runtime, test and local wheel-build environment.
-pydantic-ai-slim==1.107.6
+pydantic-ai-slim==1.107.7
 cryptography==50.0.2
 pytest==9.1.1
 hypothesis==6.168.3

@@ -185,14 +185,13 @@ cryptography==50.0.2 \
     --hash=sha256:fa8f5efb344d6908a1ce62f4a24e2e5780f825d6f53f5f50ec5ffacac72936cb \
     --hash=sha256:fdd28f912fccfec1846a94e2e1e8f9b0012f557f0c46fe4f3eb0d7a87afcf90b
     # via
+    #   -c interop/pydantic-ai-native-2026-10-02/requirements.lock
     #   -r interop/pydantic-ai-native-2026-10-02/requirements.in
     #   agent-evidence-observer (pyproject.toml)
-genai-prices==0.1.9 \
-    --hash=sha256:20ec774d32ec5d345510877fac415f2560bbfeb081bc4cd4e7ebce57a5503e8d \
-    --hash=sha256:3da8faa0a126e4df7be36696b90abe2be1fea8826bfcf45d39d91bc397fa9d1d
-    # via
-    #   -c interop/pydantic-ai-native-2026-10-02/requirements.lock
-    #   pydantic-ai-slim
+genai-prices==0.0.73 \
+    --hash=sha256:64dfbbf55df91db6b74ff2b24ac752b8154952e0aed4e62868d6cd42710bf742 \
+    --hash=sha256:ddad5b23dadd7aac8a58ab5af7506addb062114037e96427324703e50bc35077
+    # via pydantic-ai-slim
 griffelib==2.3.0 \
     --hash=sha256:1b8f9cd525681c26b1d6d574faa1371651e8459ca51d209684f50b8096ae06e0 \
     --hash=sha256:7b0952caf5bca6afa4bb5ee8c6a2d183fe3f21b62efc5f6c7243cb2b26d2d115
@@ -373,9 +372,9 @@ pydantic==2.13.5 \
     #   genai-prices
     #   pydantic-ai-slim
     #   pydantic-graph
-pydantic-ai-slim==1.107.6 \
-    --hash=sha256:09e0d02c93245586d7728fde101ad2689a07e576003f77249db9f63abfec4c7b \
-    --hash=sha256:33b7a84e28448aa5ae4190158f703fd3d7de948c7610252b993420d6bc84b9a5
+pydantic-ai-slim==1.107.7 \
+    --hash=sha256:92aa6087e190017348f9b6354d30f0e67998992c0273e778930005bc31e04794 \
+    --hash=sha256:ecc02b80dcd9a4e7182e9389d21d6e559bcc324f6793b3f7171a52fb883edb5b
     # via -r interop/pydantic-ai-native-2026-10-02/requirements.in
 pydantic-core==2.46.5 \
     --hash=sha256:013d6f3483d81e02e7c328831808f336c8596ee33b4bd4026b9ffb1e960b8942 \
@@ -501,9 +500,9 @@ pydantic-core==2.46.5 \
     # via
     #   -c interop/pydantic-ai-native-2026-10-02/requirements.lock
     #   pydantic
-pydantic-graph==1.107.6 \
-    --hash=sha256:ad11b85c14b84e2c4287b8325f2fccae96d60cd24a6d748d89ce8bbc6d505ac0 \
-    --hash=sha256:f77b0949d6c89279baaf15c45d07cb34f123fdc183b72144d113b40b678e6132
+pydantic-graph==1.107.7 \
+    --hash=sha256:0a7b964d6895f80b51ebab5e77f59b500d39ca7b17095e2233861e6dfd338ec6 \
+    --hash=sha256:f58b7dfa3bf60eb7d68946e64dff2ccbb8e8c67458e957efd7d14bc9338c9400
     # via pydantic-ai-slim
 pygments==2.21.0 \
     --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9 \
