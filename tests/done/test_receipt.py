@@ -177,3 +177,11 @@ def test_signing_the_launcher_records(tmp_path, keys, pins):
         (run / f"{role}.dsse.json").unlink()
     receipt.sign_observer_records(run, keys[1])
     assert receipt.open_run(run, pins)["tree"] == (run / "tree.json").read_bytes()
+
+
+def test_a_replay_that_called_nothing_holds_supported(tmp_path, keys, pins):
+    run = make_run(tmp_path, keys)
+    (run / "grade-staging.json").write_text(json.dumps({"replays": [{"calls_intercepted": 0}]}))
+    predicate = receipt.assemble(run, pins)
+    assert predicate["verdict"] == {"decision": "not_established", "reason": "no_calls_intercepted",
+                                    "vantage": "unestablished"}

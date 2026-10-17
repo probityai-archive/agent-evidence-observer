@@ -21,6 +21,7 @@ from . import claims as claim_parser
 from . import policy, receipt, verify_run
 from .drift import Latch
 from .formats import encode, public_key
+from .runner import is_replay
 
 FLAG = "[flag_for_human_intervention]"
 
@@ -68,8 +69,12 @@ def parse_claims(transcript: str, kind: str, visible: list[str] | None) -> list[
 
 
 def _visible_argv(contract: dict[str, Any]) -> list[str] | None:
-    return next((item["argv"] for item in contract["acceptance"]
+    """What the agent runs for the first visible command; a replay's agent side is test.py."""
+    item = next((item for item in contract["acceptance"]
                  if not item["id"].startswith("heldout")), None)
+    if item is None:
+        return None
+    return ["python", "test.py"] if is_replay(item["argv"]) else item["argv"]
 
 
 def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dict[str, Any],

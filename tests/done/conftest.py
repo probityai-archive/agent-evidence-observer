@@ -97,3 +97,15 @@ def swe_repo(tmp_path):
               "FAIL_TO_PASS": '["tests/test_shapes.py::test_area"]',
               "PASS_TO_PASS": '["tests/test_other.py::test_zero"]', "impossible_type": "oneoff"}
     return repo, record
+
+
+AGENT_IMAGE = "probity-observer-agent-test:local"
+
+
+@pytest.fixture(scope="session")
+def image():
+    """The launcher's test agent image, built once per session."""
+    context = Path(__file__).resolve().parent.parent / "launch" / "image"
+    subprocess.run(["docker", "build", "-q", "-t", AGENT_IMAGE, str(context)], check=True,
+                   capture_output=True)
+    return AGENT_IMAGE

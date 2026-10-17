@@ -38,8 +38,9 @@ from typing import Any, Sequence
 
 from ..sensors import treedigest
 from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
-from .formats import DoneError, encode, sha256, sign_record
-from .runner import SCRUBBED_ENV, TIMEOUT_EXIT, changed_paths, chmod_tree, stage
+from .formats import DoneError, encode, public_key, sha256, sign_record
+from .runner import (SCRUBBED_ENV, TIMEOUT_EXIT, changed_paths, chmod_tree, is_replay,
+                     run_replay, stage)
 
 GRADE_SCHEMA = "probity-acceptance-grade/v1"
 WORKER_UID = 65534
@@ -62,6 +63,8 @@ class DockerRunner:
     tmpfs_size: str = "512m"
     docker: str = "docker"
     name: str = "docker"
+    order_seed: str = "docker"
+    replays: list[dict[str, Any]] = field(default_factory=list)
 
     def flags(self) -> list[str]:
         """Every isolation flag, in the order they are passed; part of the isolation report."""
@@ -79,11 +82,22 @@ class DockerRunner:
                     *(f"{key}={value}" for key, value in sorted(SCRUBBED_ENV.items())), *argv]
         return command
 
+    def child_argv(self, directory: Path, source: str) -> tuple[list[str], None]:
+        """A fresh container holding only the candidate's module, read-only."""
+        return ([self.docker, "run", "-i", "--rm", *self.flags(),
+                 "--volume", f"{directory}:/workspace:ro", "--workdir", "/workspace",
+                 "--entrypoint", "/usr/bin/env", self.image, "-i",
+                 *(f"{key}={value}" for key, value in sorted(SCRUBBED_ENV.items())),
+                 "python", "-I", "-P", "-c", source], None)
+
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-grade-") as scratch:
             root = Path(scratch)
             stage(Path(state), heldout, root)
+            if is_replay(argv):
+                return run_replay(root, argv, self.child_argv, timeout, self.order_seed,
+                                  self.replays)
             chmod_tree(root / "workspace")
             if heldout is not None:
                 chmod_tree(root / "heldout", 0o755, 0o644)
@@ -246,25 +260,29 @@ def _isolation(contract_sha256: str, trusted: tuple[str, str], runner: DockerRun
     """The verifier's account of itself, in the fields ``docs/VERIFIER-ISOLATION.md`` names."""
     python_isolated = all(item["argv"][0] != "python" or bool({"-I", "-P"} & set(item["argv"]))
                           for item in commands)
+    # A replay holds every assertion in the verifier's own process and receives only plain
+    # data from the candidate; any other command's result is an exit status the worker sets.
+    replayed = all(is_replay(item["argv"]) for item in commands)
     report: dict[str, Any] = {
         "contract_sha256": contract_sha256,
         "trusted_tree": {"expected_sha256": trusted[0], "measured_sha256": trusted[1],
                          "excluded_names_reset": True},
         "worker": {"uid": runner.worker_uid, "supplementary_groups": runner.groups(),
                    "env_scrubbed": True, "scratch_copy": True},
-        "verifier": {"uid": os.getuid(), "assertions_in_parent": False,
+        "verifier": {"uid": os.getuid(), "assertions_in_parent": replayed,
                      "python_isolated": python_isolated},
         "result": {"dir_mode": format(stat.S_IMODE(os.stat(result_dir).st_mode), "04o"),
                    "precleared": True, "written_by": "verifier",
-                   "files_read": ["container-exit-status"]},
+                   "files_read": ["replay-result" if replayed else "container-exit-status"]},
         "tests": {"expected": len(commands), "collected": len(commands), "skipped": 0,
-                  "exit_status_alone_accepted": True},
+                  "exit_status_alone_accepted": not replayed},
         "processes": {"worker_killed": True, "remaining": 0, "killed_step": steps[0],
                       "result_read_step": steps[1]},
         "staging": {"nofollow": True, "destination_removed_first": True,
                     "special_files_rejected": True},
-        "evidence_from_worker": ["exit_status"],
-        "loaders": [{"name": "container-exit-status", "safe": True}],
+        "evidence_from_worker": [] if replayed else ["exit_status"],
+        "loaders": [{"name": "replay-result" if replayed else "container-exit-status",
+                     "safe": True}],
         "lockdown": {"runtime": runner.name, "image": runner.image, "flags": runner.flags()},
     }
     if heldout_mode is not None:
@@ -294,10 +312,15 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
         trusted = _trusted(contract, staged)
         if trusted[0] != trusted[1]:
             raise GradeError("protected paths do not match the contract after the reset")
+        runner.order_seed = sha256((public_key(key) + sha256(contract_bytes)).encode())
+        runner.replays = []
         results = []
         for item in contract["acceptance"]:
-            exit_code = runner.run(staged.root, item["argv"], heldout if has_heldout else None,
-                                   timeout)
+            # The held-out files reach only held-out commands, and replays, which read their
+            # sealed test on the host and mount nothing of it into the candidate's container.
+            needs = item["id"].startswith("heldout") or is_replay(item["argv"])
+            exit_code = runner.run(staged.root, item["argv"],
+                                   heldout if has_heldout and needs else None, timeout)
             results.append({"id": item["id"], "argv": item["argv"], "exit": exit_code})
         # Each run's container has exited (and with it every worker process) before its
         # exit status is read: kill is step 1, the read step 2, for every command.
@@ -305,7 +328,8 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
                                (1, 2), result_dir,
                                format(0o755, "04o") if has_heldout else None)
         staging = {"rejected": staged.rejected, "removed_caches": staged.removed_caches,
-                   "removed_config": staged.removed_config}
+                   "removed_config": staged.removed_config, "replays": list(runner.replays),
+                   "replay_order_seed": runner.order_seed}
     record = {"schema_version": GRADE_SCHEMA, "claim_id": context.claim_id,
               "invocation_id": context.invocation_id, "producer": context.producer,
               "vantage": "independent", "witness_scope": context.witness_scope,

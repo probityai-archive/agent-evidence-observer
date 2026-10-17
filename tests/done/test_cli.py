@@ -11,7 +11,6 @@ from probity_observer.witness.checkpoint import signer
 
 from .conftest import GRADER_SEED, HARNESS_SEED, HOST_SEED, LCB_ORIGINAL
 from .test_receipt import make_run
-from .test_verify_run import image  # noqa: F401  (session fixture)
 
 
 @pytest.fixture

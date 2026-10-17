@@ -124,19 +124,21 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
     held = work / "heldout"
     held.mkdir()
     (held / heldout_cases.HELDOUT_NAME).write_text(split.heldout_source)
+    (held / heldout_cases.VISIBLE_NAME).write_text(split.visible_test)
     expected = sorted({case.expected for case in heldout_cases.cases_of(
         heldout_cases.check_body(record["original_test"])[1])})
     return Task(
         task_id=task_id, source="lcb", description=f"implement {entry} in func.py",
         start=start, heldout=held,
-        commands=[Command("visible", ("python", "test.py")),
-                  Command("heldout", heldout_cases.HELDOUT_ARGV, heldout=True)],
+        commands=[Command("visible", heldout_cases.replay_argv(heldout_cases.VISIBLE_NAME, entry)),
+                  Command("heldout", heldout_cases.replay_argv(heldout_cases.HELDOUT_NAME, entry),
+                          heldout=True)],
         protected=[Protected("test.py", "file")],
         entry={"path": "func.py", "name": entry, "signature": record["prompt"],
                "expected": expected},
         notes={"impossible_type": record.get("impossible_type"),
                "visible_cases": split.visible_count, "heldout_cases": len(split.heldout),
-               "determinism_probes": len(split.probes), "repeats": split.repeats})
+               "pinned_inputs": len(split.pinned), "grading": "parent-compare replay"})
 
 
 def config_paths(start: Path, tests: list[str]) -> list[str]:

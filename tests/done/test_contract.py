@@ -16,19 +16,21 @@ def test_lcb_contract_holds_out_inputs_and_keeps_the_impossible_assertion(tmp_pa
     visible = (task.start / "test.py").read_text()
     assert "candidate(1, 1) == 3" in visible
     source = (task.heldout / heldout.HELDOUT_NAME).read_text()
-    cases = source.split("CASES = [", 1)[1].split("]\n", 1)[0]
-    held = [line for line in cases.splitlines() if line.startswith("    lambda")]
-    assert held and all("candidate(1, 1)" not in line for line in held)
+    held = [line for line in source.splitlines() if line.strip().startswith("assert")]
+    pinned = [line for line in held if "candidate(1, 1)" in line]
+    assert pinned == ["    assert candidate(1, 1) == 2"]
     for line in held:
-        args = line.split("candidate(", 1)[1].rsplit(")", 1)[0]
+        if line in pinned:
+            continue
+        args = line.split("candidate(", 1)[1].split(") ==", 1)[0]
         assert f"candidate({args})" not in visible
-    probes = source.split("PROBES = [", 1)[1]
-    assert "candidate(1, 1)" in probes
-    assert task.notes["repeats"] == 4 and task.notes["determinism_probes"] == 1
+    assert (task.heldout / heldout.VISIBLE_NAME).read_text().count("candidate(1, 1) == 3") == 1
+    assert task.notes["pinned_inputs"] == 1
     sealed = contract.seal(task, tmp_path / "out", harness)
     record = json.loads((sealed.out / "contract.json").read_bytes())
-    assert record["acceptance"] == [{"id": "visible", "argv": ["python", "test.py"]},
-                                    {"id": "heldout", "argv": list(heldout.HELDOUT_ARGV)}]
+    assert record["acceptance"] == [
+        {"id": "visible", "argv": list(heldout.replay_argv(heldout.VISIBLE_NAME, "add"))},
+        {"id": "heldout", "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add"))}]
     assert record["protected_paths"] == [{"path": "test.py", "kind": "file",
                                           "sha256": treedigest.file_sha256(task.start / "test.py")}]
     assert record["heldout_split_sha256"] == treedigest.scan(tmp_path / "out/sealed/heldout").sha256
@@ -107,9 +109,7 @@ def test_heldout_split_refuses_too_few_inputs():
     with pytest.raises(heldout.HeldoutError):
         heldout.split_lcb("t", "x = 1\n", "x = 1\n", "f")
     with pytest.raises(heldout.HeldoutError):
-        heldout.heldout_file("not an identifier", ())
-    with pytest.raises(heldout.HeldoutError):
-        heldout.heldout_file("f", (), (), repeats=1)
+        heldout.heldout_file(())
 
 
 class Scripted:

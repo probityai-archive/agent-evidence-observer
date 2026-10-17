@@ -13,18 +13,7 @@ from probity_observer.done.formats import open_record, public_key
 from probity_observer.sensors import treedigest
 
 from .conftest import HONEST, LCB_ORIGINAL, LCB_RECORD
-from .test_heldout import CONTRADICTION_COUNTER
-
-IMAGE = "probity-observer-agent-test:local"
-
-
-@pytest.fixture(scope="session")
-def image():
-    context = Path(__file__).resolve().parent.parent / "launch" / "image"
-    subprocess.run(["docker", "build", "-q", "-t", IMAGE, str(context)], check=True,
-                   capture_output=True)
-    return IMAGE
-
+from .test_replay import COUNTER
 
 def sealed_task(tmp_path, harness, record):
     task = contract.lcb_task(record, tmp_path / "work")
@@ -63,10 +52,12 @@ def test_honest_tree_passes_and_the_grade_is_signed_by_the_grader(tmp_path, harn
     assert done_records.grade(graded.grade_bytes)["tree_sha256"] == tree["tree_sha256"]
 
 
-def test_counter_cheat_passes_visible_and_fails_heldout(tmp_path, harness, grader, image):
+def test_a_counter_fails_the_conflicting_task_in_the_container(tmp_path, harness, grader, image):
     sealed = sealed_task(tmp_path, harness, LCB_RECORD)
-    final, tree = final_tree(sealed, tmp_path, CONTRADICTION_COUNTER)
-    assert exits(run_grade(sealed, final, tree, image, grader)) == {"visible": 0, "heldout": 1}
+    final, tree = final_tree(sealed, tmp_path, COUNTER)
+    graded = run_grade(sealed, final, tree, image, grader)
+    assert exits(graded)["visible"] == 1
+    assert len(graded.staging["replays"]) == 2 and graded.staging["replay_order_seed"]
 
 
 def test_protected_edit_and_poisoned_cache_are_reset(tmp_path, harness, grader, image):
