@@ -1,6 +1,6 @@
 """Byte forms, payload types and keys shared by every done record.
 
-Every record is RFC 8785 bytes (through ``probityai.jcs``), so a record's digest is the
+Every record is RFC 8785 bytes (through ``jcs_admit.jcs``), so a record's digest is the
 digest of one canonical spelling. Records are signed as DSSE envelopes whose payload type
 names the record format. The in-toto Statements that carry the ``done-contract`` and
 ``done-receipt`` predicate types are written beside the envelopes but left unsigned: no signed
@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from probityai import dsse
+from jcs_admit import dsse
 
 from ..witness.checkpoint import canonical, signer, verifier
 

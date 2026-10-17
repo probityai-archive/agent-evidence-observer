@@ -28,8 +28,8 @@ cover = [
     { name = "coverage" },
 ]
 done = [
+    { name = "jcs-admit" },
     { name = "probity-verify" },
-    { name = "probityai" },
 ]
 inspect = [
     { name = "inspect-ai" },
@@ -40,7 +40,7 @@ test = [
     { name = "pytest" },
 ]
 witness = [
-    { name = "probityai" },
+    { name = "jcs-admit" },
 ]
 
 [package.metadata]
@@ -49,10 +49,10 @@ requires-dist = [
     { name = "cryptography", specifier = ">=46,<51" },
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6,<7" },
     { name = "inspect-ai", marker = "extra == 'inspect'", specifier = "==0.3.273" },
+    { name = "jcs-admit", marker = "extra == 'done'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=b69943787266702da3c02741dcc3a37643c7dc3e" },
+    { name = "jcs-admit", marker = "extra == 'witness'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=b69943787266702da3c02741dcc3a37643c7dc3e" },
     { name = "jsonschema", marker = "extra == 'test'", specifier = ">=4,<5" },
     { name = "probity-verify", marker = "extra == 'done'", git = "https://github.com/probityai/probity?subdirectory=packages%2Fprobity-verify&rev=b20e2d269cadb1ecfb4e5e12bac2249aa5e9e84c" },
-    { name = "probityai", marker = "extra == 'done'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=58a48b2f33b55cafb72de9f187f0fa53eed74d95" },
-    { name = "probityai", marker = "extra == 'witness'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=58a48b2f33b55cafb72de9f187f0fa53eed74d95" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8,<10" },
     { name = "rfc8785", specifier = "==0.1.4" },
 ]
@@ -1147,6 +1147,11 @@ wheels = [
 ]
 
 [[package]]
+name = "jcs-admit"
+version = "0.1.0"
+source = { git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=b69943787266702da3c02741dcc3a37643c7dc3e#b69943787266702da3c02741dcc3a37643c7dc3e" }
+
+[[package]]
 name = "jmespath"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1686,11 +1691,6 @@ source = { git = "https://github.com/probityai/probity?subdirectory=packages%2Fp
 dependencies = [
     { name = "cryptography" },
 ]
-
-[[package]]
-name = "probityai"
-version = "0.1.0"
-source = { git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=58a48b2f33b55cafb72de9f187f0fa53eed74d95#58a48b2f33b55cafb72de9f187f0fa53eed74d95" }
 
 [[package]]
 name = "propcache"
