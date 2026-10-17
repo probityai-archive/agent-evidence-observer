@@ -30,7 +30,6 @@ from ..launch import launch_agent
 from . import claims as claim_parser
 from . import drift, policy, receipt, verify_run
 from .contract import is_pytest
-from .drift import Latch
 from .formats import DoneError, encode, public_key, sha256, sign_record
 from .runner import is_replay
 
