@@ -25,6 +25,7 @@ also holds the sensors.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import time
@@ -34,9 +35,17 @@ from typing import Any
 
 from .. import record_oe
 from ..sensors import inotify, strace, treedigest
-from . import backend_apptainer, backend_docker, identity_gate, network_effects, snapshot
+from . import (
+    backend_apptainer,
+    backend_docker,
+    backend_openshell,
+    identity_gate,
+    network_effects,
+    snapshot,
+)
 
-BACKENDS = {"docker": backend_docker, "apptainer": backend_apptainer}
+BACKENDS = {"docker": backend_docker, "apptainer": backend_apptainer,
+            "openshell": backend_openshell}
 UNPRIVILEGED_UID = 65534
 RECORD_ROLES = ("observation", "capability", "tree")
 
@@ -66,6 +75,8 @@ class LaunchResult:
     agent_exit: int | None
     coverage: str
     receipt: dict[str, Any]
+    enforcer_logs: dict[str, bytes] = field(default_factory=dict)
+    """The enforcer's own log streams by name (the OpenShell backend's ``docker logs``)."""
 
 
 def observer_source_sha256() -> str:
@@ -152,6 +163,8 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
         raise ValueError("run directory must be empty")
     workspace = Path(spec.workspace).resolve()
     start_sha256 = snapshot.seal(workspace, run_dir / "start.tar")
+    if backend is backend_openshell:
+        return _launch_openshell(spec, run_dir, workspace, start_sha256)
     identity = backend.preflight(spec.image)
     uid = backend.agent_uid(identity, workspace, _agent_uid(workspace))
     name = container_name(spec.invocation_id)
@@ -218,13 +231,29 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
     report = watcher.stop()
     backend.restore(identity, workspace)
 
+    tree = treedigest.scan(workspace)
+    _, receipt = _finish(spec, run_dir, backend=backend, launch_record=launch_record,
+                         launch_sha256=launch_sha256, start_sha256=start_sha256,
+                         report=report, started=started, ended=ended,
+                         exit_code=exit_code, timed_out=timed_out, gate=gate, declared=declared,
+                         tree=tree)
+    (run_dir / "receipt.json").write_bytes(record_oe.encoded(receipt))
+    return LaunchResult(run_dir, launch_sha256, receipt["agent_exit"],
+                        receipt["coverage"], receipt)
+
+
+def _finish(spec: LaunchSpec, run_dir: Path, *, backend: Any, launch_record: dict[str, Any],
+            launch_sha256: str, start_sha256: str, report: inotify.Report,
+            started: float, ended: float, exit_code: int | None, timed_out: bool,
+            gate: identity_gate.Gate | None, declared: dict[str, Any] | None,
+            tree: treedigest.Tree) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Parse the trace, join the sensors, write the three records; return (built, receipt)."""
     trace_text = (run_dir / "trace.txt").read_text("utf-8", "surrogateescape")
     trace = strace.parse(trace_text)
     found = strace.effects(trace, backend.WORKSPACE)
     strace.assign_origins(found)
     if gate is not None:
         identity_gate.assign(found.events, gate.results())
-    tree = treedigest.scan(workspace)
     context = record_oe.Context(spec.claim_id, spec.invocation_id, spec.producer,
                                 backend.WORKSPACE, started, ended, timed_out=timed_out,
                                 tracer_uid_separated=launch_record["tracer_uid_separated"])
@@ -241,7 +270,118 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
         receipt["sensors"]["s4_identity"] = gate.summary()
     if declared is not None:
         receipt["network_effects"] = network_effects.judge(run_dir, found)
-    (run_dir / "receipt.json").write_bytes(record_oe.encoded(receipt))
-    return LaunchResult(run_dir, launch_sha256, receipt["agent_exit"],
-                        receipt["coverage"], receipt)
+    return built, receipt
 
+
+def _launch_openshell(spec: LaunchSpec, run_dir: Path, workspace: Path,
+                      start_sha256: str) -> LaunchResult:
+    """One launch under OpenShell (:mod:`.backend_openshell`): it enforces, the sensors observe."""
+    backend = backend_openshell
+    if spec.network_policy is None:
+        raise ValueError("the openshell backend needs a declared launch policy (--network-policy)")
+    if spec.network:
+        raise ValueError("under the openshell backend the declared policy decides network access")
+    from ..openshell import policy as network_policy
+    loaded = network_policy.load(Path(spec.network_policy))
+    uid = backend.policy_uid(loaded)
+    identity = backend.preflight(spec.image)
+    session = backend.Session(identity, policy_path=Path(spec.network_policy),
+                              name=container_name(spec.invocation_id))
+    try:
+        session.start_gateway()
+        session.create()
+        session.upload(workspace)
+        start_tree = session.verify_start(workspace)
+        argv = session.exec_argv(list(spec.agent_argv), spec.env)
+        tracer = session.tracer_argv()
+        launch_record = {
+            "schema_version": "probity-launch/v1",
+            "backend": spec.backend,
+            "image": identity.image,
+            "image_id": identity.image_id,
+            "runtime_version": identity.runtime_version,
+            "strace_version": identity.strace_version,
+            "container_argv": argv,
+            "tracer_argv": tracer,
+            "trace_expression": strace.TRACE_EXPRESSION,
+            "tracer_flags": list(backend.tracer_flags()),
+            "tracer_uid_separated": backend.uid_separated(identity),
+            "uid_map": None,
+            "agent_argv": list(spec.agent_argv),
+            "agent_uid": uid,
+            "env": dict(sorted(spec.env.items())),
+            "network": False,
+            "container_workspace": backend.WORKSPACE,
+            "start_tarball_sha256": start_sha256,
+            "observer_source_sha256": observer_source_sha256(),
+            "timeout_seconds": spec.timeout_seconds,
+            "identity_gate": backend.IDENTITY_GATE,
+            "openshell": {**identity.openshell, **session.record},
+        }
+        declared = network_effects.declare(spec.network_policy, run_dir)
+        launch_record["network_policy"] = declared
+        if spec.containment is not None:
+            launch_record["policy_containment"] = spec.containment
+        launch_bytes = record_oe.encoded(launch_record)
+        (run_dir / "launch.json").write_bytes(launch_bytes)
+        launch_sha256 = record_oe.sha256(launch_bytes)
+
+        started = time.time()
+        timed_out = False
+        with open(run_dir / "transcript.txt", "wb") as transcript, \
+                open(run_dir / "trace.txt", "wb") as trace_file, \
+                open(run_dir / "exec-cli.txt", "wb") as cli_err, \
+                open(run_dir / "tracer.jsonl", "wb") as tracer_out:
+            process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=transcript,
+                                       stderr=cli_err, env=session.env)
+            tracing = subprocess.Popen(tracer, stdin=subprocess.DEVNULL, stdout=tracer_out,
+                                       stderr=trace_file)
+            gate = identity_gate.Gate(run_dir / "trace.txt", session.resolver_argv(),
+                                      startup_exec=backend.STARTUP_EXEC)
+            gate.start()
+            try:
+                exit_code = process.wait(timeout=spec.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                session.stop_agent()
+                try:
+                    exit_code = process.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    exit_code = process.wait()
+            try:
+                tracing.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                session.stop_agent()
+                tracing.wait(timeout=60)
+            gate.stop()
+        ended = time.time()
+        final_root = session.download(session.state / "final")
+        backend._replace_tree(final_root, workspace)
+        tree = treedigest.scan(workspace)
+        report = inotify.Report(changes=backend.tree_changes(start_tree, tree, ended))
+        _, receipt = _finish(spec, run_dir, backend=backend, launch_record=launch_record,
+                                 launch_sha256=launch_sha256, start_sha256=start_sha256,
+                                 report=report, started=started,
+                                 ended=ended, exit_code=exit_code, timed_out=timed_out,
+                                 gate=gate, declared=declared, tree=tree)
+        receipt["sensors"]["s1_inotify"] = {
+            "status": "replaced_by_tree_diff",
+            "changes": len(report.changes),
+            "reason": "the workspace lives inside the OpenShell sandbox, so no host watch can "
+                      "see it; every path that differs between the sealed start tree and the "
+                      "downloaded final tree must be accounted for by a traced mutation",
+        }
+        receipt["sensors"]["tracer"] = [json.loads(line) for line in
+                                        (run_dir / "tracer.jsonl").read_text().splitlines()
+                                        if line.strip()]
+        receipt["doesNotAssert"] = [*receipt["doesNotAssert"],
+                                    ("a mutation the trace missed and the agent undid before the "
+                                     "final tree was downloaded (the tree diff sees net changes "
+                                     "only)")]
+        (run_dir / "receipt.json").write_bytes(record_oe.encoded(receipt))
+        logs = session.logs()
+    finally:
+        session.close()
+    return LaunchResult(run_dir, launch_sha256, receipt["agent_exit"], receipt["coverage"],
+                        receipt, enforcer_logs=logs)

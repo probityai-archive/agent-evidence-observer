@@ -9,7 +9,9 @@ outside the traced tree), which hashes the chain and sends the one ``SIGCONT`` t
 that stop. A ``SIGSTOP`` the agent sends itself is not ``SI_KERNEL`` and is left alone. The
 tracer does not stop its own first exec (the launcher's wrapper shell, before any agent code
 runs); the gate asks the resolver to hash that program's image file instead
-(``basis: startup_file``). Answers are kept in request order. :func:`assign` then attaches each answer to the trace's exec event of the same pid and
+(``basis: startup_file``). A tracer that attaches to a running process instead
+(the OpenShell launch) stops every exec it sees, the first included, so with
+``startup_exec`` false every exec is gated alike. Answers are kept in request order. :func:`assign` then attaches each answer to the trace's exec event of the same pid and
 order. An exec without a complete answer carries ``identity.status`` ``failed``, which the
 observation records as a coverage gap: the identity fails closed, never open.
 """
@@ -53,13 +55,15 @@ def exec_results(line: str) -> tuple[int, bool] | None:
 class Gate:
     """Tail ``trace_path`` and serve every exec through one resolver process."""
 
-    def __init__(self, trace_path: Path, argv: Sequence[str]) -> None:
+    def __init__(self, trace_path: Path, argv: Sequence[str], startup_exec: bool = True) -> None:
+        """``startup_exec`` False: the tracer attached to a running process (``strace -p``),
+        so the first traced exec is stopped like every other and is gated as one."""
         self.trace_path = trace_path
         self.argv = list(argv)
         self.requests: list[tuple[int, str]] = []
         self._pending: dict[int, bool] = {}
         self._kernel: set[int] = set()
-        self._started = False
+        self._started = not startup_exec
         self.answers: list[dict[str, Any]] = []
         self.errors: list[str] = []
         self._stop = threading.Event()
