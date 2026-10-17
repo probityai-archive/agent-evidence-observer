@@ -2,7 +2,10 @@
 
 import json
 
+import pytest
+
 from probity_observer.done import contract, mutants
+from probity_observer.done.formats import DoneError
 from probity_observer.done.runner import SubprocessRunner
 
 from .conftest import LCB_ORIGINAL, LCB_RECORD
@@ -42,7 +45,7 @@ def test_adequacy_counts_kills_and_is_sealed(tmp_path, harness, python_bin):
     record = sealed.record
     assert record["adequacy"]["mutants"] == record["adequacy"]["killed"] >= 3
     assert "mutant_set_sha256" in record
-    report = json.loads((sealed.out / "compile.json").read_bytes())
+    report = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
     assert len(report["adequacy"]["mutants"]) == record["adequacy"]["mutants"]
     vector = report["adequacy"]["kill_vector"]
     assert len(vector) == record["adequacy"]["mutants"] and all(vector)
@@ -50,12 +53,12 @@ def test_adequacy_counts_kills_and_is_sealed(tmp_path, harness, python_bin):
     assert report["stability"]["reference"] == "unavailable"
 
 
-def test_a_suite_that_kills_nothing_is_sealed_with_zero(tmp_path, harness, python_bin):
+def test_a_contract_with_no_failing_visible_command_is_refused(tmp_path, harness, python_bin):
     task = contract.lcb_task(LCB_RECORD, tmp_path / "w")
     task.commands = [contract.Command("visible", ("python", "-c", "pass"), prepatch="pass")]
-    sealed = contract.compile_task(task, tmp_path / "out", harness,
-                                   SubprocessRunner(python_bin), timeout=60)
-    assert sealed.record["adequacy"]["killed"] == 0 and sealed.record["adequacy"]["mutants"] > 0
+    with pytest.raises(DoneError, match="fails on the start state"):
+        contract.compile_task(task, tmp_path / "out", harness, SubprocessRunner(python_bin),
+                              timeout=60)
 
 
 def test_swe_operator_mutants_come_from_the_reference(tmp_path, swe_repo):

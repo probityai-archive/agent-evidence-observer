@@ -28,12 +28,14 @@ def repo(tmp_path):
     (root / "tests").mkdir(parents=True)
     (root / "app.py").write_text("def double(x):\n    return x\n")
     (root / "tests" / "test_app.py").write_text(
-        "import sys, os\nsys.path.insert(0, os.getcwd())\nfrom app import double\n"
-        "assert double(2) == 4\nassert double(0) == 0\n")
+        "import os, sys\nsys.path.insert(0, os.getcwd())\nfrom app import double\n\n\n"
+        "def test_double():\n    assert double(2) == 4\n    assert double(0) == 0\n")
     return root
 
 
-ANSWER = json.dumps({"acceptance": [{"id": "unit", "argv": ["python", "tests/test_app.py"],
+ANSWER = json.dumps({"acceptance": [{"id": "unit", "argv": ["python", "-m", "pytest", "-q",
+                                                             "-p", "no:cacheprovider",
+                                                             "tests/test_app.py"],
                                      "expect_on_start": "fail"}],
                      "protected_paths": [{"path": "tests", "kind": "directory"}],
                      "rationale": "the test file checks doubling"})
@@ -44,7 +46,7 @@ def test_template_text_is_shipped_and_filled(repo):
     assert "{task}" in text and "expect_on_start" in text
     prompt = zeroshot.render(repo, "make double double")
     assert "make double double" in prompt and "tests/test_app.py" in prompt
-    assert "assert double(2) == 4" in prompt
+    assert "def test_double" in prompt
 
 
 def test_a_proposal_seals_after_stability(tmp_path, repo, harness, python_bin):
@@ -53,12 +55,15 @@ def test_a_proposal_seals_after_stability(tmp_path, repo, harness, python_bin):
     assert len(model.prompts) == 1 and proposal.record["model"] == "fixed-test-model"
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
-    compiled = json.loads((sealed.out / "compile.json").read_bytes())
+    compiled = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
     assert compiled["model_calls"] == 1 and compiled["notes"]["proposal"]["template_sha256"]
     assert sealed.record["protected_paths"][0]["exclude"] == list(contract.EXCLUDE)
 
 
 @pytest.mark.parametrize("answer", [
+    json.dumps({"acceptance": [{"id": "a", "argv": ["sh", "-c", "test -f DONE"],
+                                "expect_on_start": "fail"}],
+                "protected_paths": [], "rationale": ""}),
     "no json here",
     "{not json}",
     json.dumps({"acceptance": []}),

@@ -160,3 +160,16 @@ def test_a_runtime_failure_is_an_error_not_a_failing_test(tmp_path):
         runner.run(state, ["true"], None, 60)
     with pytest.raises(verify_run.GradeError):
         runner.groups()
+
+
+def test_staging_rejects_a_native_binary_the_start_tree_did_not_have(tmp_path):
+    start, final = tmp_path / "start", tmp_path / "f"
+    for root in (start, final):
+        root.mkdir()
+        (root / "same.so").write_bytes(b"\x7fELFsame")
+    (final / "evil.so").write_bytes(b"\x7fELFevil")
+    (final / "hidden").write_bytes(b"\x7fELFnoext")
+    (final / "plain.py").write_text("x = 1\n")
+    staged = verify_run.stage_tree(final, tmp_path / "staged", start)
+    assert sorted(staged.rejected_native) == ["evil.so", "hidden"]
+    assert (tmp_path / "staged" / "same.so").exists() and (tmp_path / "staged" / "plain.py").exists()

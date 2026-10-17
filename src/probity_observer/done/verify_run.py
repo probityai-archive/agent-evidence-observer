@@ -91,7 +91,8 @@ class DockerRunner:
                  "python", "-I", "-P", "-c", source], None)
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
-            timeout: float, writes: list[str] | None = None) -> int:
+            timeout: float, writes: list[str] | None = None,
+            output: list[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-grade-") as scratch:
             root = Path(scratch)
             stage(Path(state), heldout, root)
@@ -104,10 +105,12 @@ class DockerRunner:
             os.chmod(root, 0o755)
             name = f"probity-grade-{uuid.uuid4().hex[:12]}"
             process = subprocess.Popen(self.command(name, root, argv, heldout is not None),
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE)
             try:
-                _, error = process.communicate(timeout=timeout)
+                printed, error = process.communicate(timeout=timeout)
+                if output is not None:
+                    output.append(printed.decode("utf-8", "replace"))
             except subprocess.TimeoutExpired:
                 subprocess.run([self.docker, "kill", name], capture_output=True, check=False)
                 process.communicate()
@@ -137,6 +140,7 @@ class Staged:
     rejected: list[str] = field(default_factory=list)
     removed_caches: list[str] = field(default_factory=list)
     removed_config: list[str] = field(default_factory=list)
+    rejected_native: list[str] = field(default_factory=list)
 
 
 def _copy_file(source: Path, target: Path) -> None:
@@ -157,11 +161,29 @@ def _inside(root: Path, link: Path) -> bool:
     return resolved == str(root) or resolved.startswith(str(root) + os.sep)
 
 
+NATIVE_SUFFIXES = (".so", ".pyd", ".dll", ".dylib")
+
+
+def native(path: Path) -> bool:
+    """A compiled binary the Python-level layers cannot see into."""
+    if path.name.endswith(NATIVE_SUFFIXES) or ".so." in path.name:
+        return True
+    with open(path, "rb") as handle:
+        return handle.read(4) == b"\x7fELF"
+
+
+def _same_file(path: Path, sealed: Path) -> bool:
+    return (sealed.is_file() and not sealed.is_symlink()
+            and treedigest.file_sha256(sealed) == treedigest.file_sha256(path))
+
+
 def stage_tree(final: Path, destination: Path, start: Path) -> Staged:
     """Copy ``final`` into a new ``destination`` without following any link.
 
     A symbolic link is kept only when the sealed start tree ``start`` has the same link at
-    the same path; any other link, and every special file, is rejected and listed. A tree
+    the same path; any other link, and every special file, is rejected and listed. So is a
+    native binary (an ELF file or a ``.so``, ``.pyd``, ``.dll``, ``.dylib``) that the start
+    tree did not have byte for byte: compiled code is beyond every Python-level layer. A tree
     record hashes regular files only, so a link the agent made (``conftest.py -> /tmp/x``)
     would otherwise reach the grader unseen.
     """
@@ -185,7 +207,11 @@ def stage_tree(final: Path, destination: Path, start: Path) -> Staged:
             elif stat.S_ISDIR(mode):
                 target.mkdir()
             elif stat.S_ISREG(mode):
-                _copy_file(source, target)
+                if native(source) and not _same_file(source, start / relative / name):
+                    staged.rejected.append((relative / name).as_posix())
+                    staged.rejected_native.append((relative / name).as_posix())
+                else:
+                    _copy_file(source, target)
             else:
                 staged.rejected.append((relative / name).as_posix())
     return staged
@@ -235,6 +261,17 @@ def _trusted(contract: dict[str, Any], staged: Staged) -> tuple[str, str]:
     expected = [item["sha256"] for item in contract["protected_paths"]]
     measured = [protected_digest(staged.root, entry) for entry in _protected(contract)]
     return sha256(encode(expected)), sha256(encode(measured))
+
+
+def _visible_part(heldout: Path, destination: Path) -> Path:
+    """The part of the sealed directory a visible command may read."""
+    destination.mkdir()
+    if (heldout / "config").is_dir():
+        shutil.copytree(heldout / "config", destination / "config")
+    for name in ("visible_test.py",):
+        if (heldout / name).is_file():
+            shutil.copy2(heldout / name, destination / name)
+    return destination
 
 
 @dataclass(frozen=True)
@@ -314,13 +351,13 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
             raise GradeError("protected paths do not match the contract after the reset")
         runner.order_seed = sha256((public_key(key) + sha256(contract_bytes)).encode())
         runner.replays = []
+        visible = _visible_part(heldout, result_dir / "visible-sealed") if has_heldout else None
         results = []
         for item in contract["acceptance"]:
-            # The held-out files reach only held-out commands, and replays, which read their
-            # sealed test on the host and mount nothing of it into the candidate's container.
-            needs = item["id"].startswith("heldout") or is_replay(item["argv"])
-            exit_code = runner.run(staged.root, item["argv"],
-                                   heldout if has_heldout and needs else None, timeout)
+            # Held-out tests reach only held-out commands. Visible commands get the sealed
+            # configuration and the sealed visible test, never a held-out file.
+            sealed_dir = heldout if item["id"].startswith("heldout") else visible
+            exit_code = runner.run(staged.root, item["argv"], sealed_dir, timeout)
             results.append({"id": item["id"], "argv": item["argv"], "exit": exit_code})
         # Each run's container has exited (and with it every worker process) before its
         # exit status is read: kill is step 1, the read step 2, for every command.
@@ -328,7 +365,8 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
                                (1, 2), result_dir,
                                format(0o755, "04o") if has_heldout else None)
         staging = {"rejected": staged.rejected, "removed_caches": staged.removed_caches,
-                   "removed_config": staged.removed_config, "replays": list(runner.replays),
+                   "removed_config": staged.removed_config,
+                   "rejected_native": staged.rejected_native, "replays": list(runner.replays),
                    "replay_order_seed": runner.order_seed}
     record = {"schema_version": GRADE_SCHEMA, "claim_id": context.claim_id,
               "invocation_id": context.invocation_id, "producer": context.producer,

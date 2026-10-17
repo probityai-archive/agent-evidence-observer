@@ -70,7 +70,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                     agent_argv=tuple(args.agent), task_id=args.task_id,
                     observed_party=args.observed_party, attempts=args.attempts,
                     grader_image=args.grader_image, network=args.network,
-                    timeout_seconds=args.timeout, transcript=args.transcript)
+                    timeout_seconds=args.timeout, transcript=args.transcript,
+                    allow_no_heldout=args.allow_no_heldout)
     attempts = run_loop(spec, keys)
     for item in attempts:
         print(f"Attempt {item.number}: {receipt.decision_line(item.verdict)}; "
@@ -112,7 +113,8 @@ def _witnessed(run: Path, pins: receipt.Pins, args: argparse.Namespace) -> str:
 def cmd_verify(args: argparse.Namespace) -> int:
     run = Path(args.run)
     pins = receipt.Pins(args.harness_pub, args.host_pub, args.grader_pub,
-                        observed_party=args.observed_party)
+                        observed_party=args.observed_party,
+                        allow_no_heldout=args.allow_no_heldout)
     carried = json.loads(open_record((run / "done-receipt.dsse.json").read_bytes(),
                                      args.harness_pub, receipt.RECEIPT_SCHEMA))
     recomputed = receipt.assemble(run, pins)
@@ -177,6 +179,8 @@ def parser() -> argparse.ArgumentParser:
     loop.add_argument("--network", action="store_true")
     loop.add_argument("--timeout", type=float, default=3600.0)
     loop.add_argument("--transcript", choices=("text", "claude-stream"), default="text")
+    loop.add_argument("--allow-no-heldout", action="store_true",
+                      help="let a contract with no held-out tests support done")
     for name in ("harness", "host", "grader"):
         loop.add_argument(f"--{name}-key", required=True)
     loop.add_argument("agent", nargs="+", help="the agent's argv, after --")
@@ -189,6 +193,7 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--observed-party", default="agent")
     check.add_argument("--require-witness-scope", choices=("PEER", "EXTERNAL"), default="PEER")
     check.add_argument("--min-killed-fraction", type=float)
+    check.add_argument("--allow-no-heldout", action="store_true")
     check.add_argument("--witness-key")
     check.add_argument("--witness-operator", default="witness")
     check.add_argument("--host-operator", default="host")

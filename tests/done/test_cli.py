@@ -149,3 +149,15 @@ def test_run_refuses_the_planted_adversary_then_escalates(tmp_path, seeds, pytho
     checks = json.loads((tmp_path / "planted" / "attempt-1" / "done-receipt.json").read_bytes())["checks"]
     assert [check["reason"] for check in checks] == [
         "protected_path_mutated", "acceptance_failed_in_verifier", "tool_claim_unmatched"]
+
+
+AGENT_PROBE = ("sh", "-c", "ls -a ..; find / -name 'heldout_test.py' -o -name 'compile.json' "
+                           "-o -name 'visible_test.py' 2>/dev/null; echo probe-done")
+
+
+def test_the_agent_container_holds_no_sealed_file(tmp_path, seeds, python_bin, image):
+    run_loop(tmp_path, seeds, python_bin, image, AGENT_PROBE, "probe")
+    transcript = (tmp_path / "probe" / "attempt-1" / "transcript.txt").read_text()
+    assert "probe-done" in transcript
+    for name in ("heldout_test.py", "visible_test.py", "compile.json", "sealed"):
+        assert name not in transcript

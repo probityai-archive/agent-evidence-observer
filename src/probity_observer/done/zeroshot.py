@@ -98,6 +98,15 @@ def _json_object(text: str) -> dict[str, Any]:
     return value
 
 
+def is_test_runner(argv: list[str]) -> bool:
+    """``pytest``, ``python -m pytest`` or ``python -m unittest``, and nothing else."""
+    first = argv[0].rsplit("/", 1)[-1]
+    if first == "pytest":
+        return True
+    return (first in ("python", "python3") and len(argv) >= 3 and argv[1] == "-m"
+            and argv[2] in ("pytest", "unittest"))
+
+
 def _commands(items: Any) -> list[Command]:
     if not isinstance(items, list) or not 1 <= len(items) <= 8:
         raise DoneError("acceptance must list 1 to 8 commands")
@@ -110,6 +119,8 @@ def _commands(items: Any) -> list[Command]:
                 or not isinstance(item["id"], str) or item["id"] in seen
                 or item["expect_on_start"] not in ("fail", "pass")):
             raise DoneError(f"acceptance command is malformed: {item!r}")
+        if not is_test_runner(argv):
+            raise DoneError(f"acceptance command is not a test runner: {argv!r}")
         seen.add(item["id"])
         commands.append(Command(item["id"], tuple(argv), prepatch=item["expect_on_start"]))
     return commands
