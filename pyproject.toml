@@ -31,6 +31,7 @@ agent-evidence-admit = "probity_observer.admission:main"
 agent-evidence-read-native = "probity_observer.native_reader:main"
 agent-evidence-read-atomic = "probity_observer.atomic_reader:main"
 agent-evidence-read-refund-handoff = "probity_observer.refund_handoff:main"
+agent-evidence-witness = "probity_observer.witness.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
