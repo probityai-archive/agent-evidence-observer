@@ -64,7 +64,7 @@ class Task:
     protected: list[Protected]
     heldout: Path | None = None
     reference: Path | None = None
-    mutation_targets: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
+    mutation_targets: dict[str, list[tuple[int, int]] | None] = field(default_factory=dict)
     entry: dict[str, Any] | None = None
     notes: dict[str, Any] = field(default_factory=dict)
 
@@ -294,8 +294,10 @@ def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
         copy_protected(task.start, entry, sealed / "protected")
     if task.heldout is not None:
         shutil.copytree(task.heldout, sealed / "heldout", symlinks=True)
+    proposal = task.notes.get("proposal", {})
     compiled = {"schema_version": "probity-done-compile/v1", "task_id": task.task_id,
-                "source": task.source, "contract_sha256": digest, "model_calls": 0,
+                "source": task.source, "contract_sha256": digest,
+                "model_calls": proposal.get("model_calls", 0),
                 "notes": task.notes, **(report or {})}
     (out / "compile.json").write_bytes(encode(compiled))
     return Sealed(out, digest, record)
