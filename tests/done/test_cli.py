@@ -154,6 +154,21 @@ def test_run_admits_an_honest_agent_in_one_attempt(tmp_path, seeds, python_bin, 
     assert stored["stop_decision"] == {"action": "stop", "reason": "done_checks_supported"}
     assert stored["verifier_isolation"]["contract_sha256"] == stored["records"]["contract"]["sha256"]
     assert cli.main(["verify", "--run", str(attempt), *pubs()]) == 0
+    # probity-verify, run as its own command line, verifies the receipt this CLI emitted.
+    from probity_verify import cli as verifier_cli
+    pins = receipt.Pins(*(public_key(signer(seed)) for seed in (HARNESS_SEED, HOST_SEED, GRADER_SEED)))
+    case, verify_policy = receipt.done_receipt_case(
+        attempt, receipt.open_run(attempt, pins),
+        (attempt / "done-receipt.statement.json").read_bytes(), pins)
+    (tmp_path / "case.json").write_text(json.dumps(case))
+    (tmp_path / "policy.json").write_text(json.dumps(verify_policy))
+    capsys.readouterr()
+    assert verifier_cli.main([str(tmp_path / "case.json"), "--policy", str(tmp_path / "policy.json"),
+                              "--artifact-root", str(attempt), "--json"]) == 0
+    decided = json.loads(capsys.readouterr().out)
+    assert (decided["claim_type"], decided["decision"], decided["reason"]) == (
+        "done_receipt/v1", "supported", "done_checks_supported")
+    assert decided["verifier_id"] == "https://github.com/probityai/probity"
 
 
 def test_a_claimed_lcb_test_run_is_refused_as_shadowed(tmp_path, seeds, python_bin, image, capsys):
@@ -242,16 +257,18 @@ def test_probity_done_verify_runs_the_shared_verifier(tmp_path, keys, capsys, mo
     cli.register(top.add_subparsers())
     calls = []
 
-    def spy(*args, **kwargs):
-        calls.append(args[0]["case_id"])
-        return probity_verify.core.adjudicate(*args, **kwargs)
+    def spy(case, policy, *args, **kwargs):
+        calls.append(policy["assessments"][case["case_id"]]["claim_type"])
+        return probity_verify.core.adjudicate(case, policy, *args, **kwargs)
     assert receipt.adjudicate is probity_verify.core.adjudicate
     monkeypatch.setattr(receipt, "adjudicate", spy)
     run = signed_run(tmp_path, keys)
     calls.clear()
     args = top.parse_args(["done", "verify", "--run", str(run), *pubs()])
     assert args._probity_handler(args) == 0
-    assert len(calls) == 3
+    # done_receipt/v1 derives the verdict again; the three checks recompute the carried list.
+    assert calls == ["done_receipt/v1", "protected_paths/v1", "acceptance_observed/v1",
+                     "tool_claim_match/v1"]
     assert "Decision: supported / done_checks_supported" in capsys.readouterr().out
     bad = top.parse_args(["done", "verify", "--run", str(tmp_path / "missing"), *pubs()])
     assert bad._probity_handler(bad) == cli.REFUSED
