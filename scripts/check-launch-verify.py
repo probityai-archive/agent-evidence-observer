@@ -14,8 +14,12 @@ or on a Slurm node with apptainer, against a ``.sif`` built from
     python scripts/check-launch-verify.py <output> --backend apptainer --image agent.sif
 
 The lost-events run kills the tracer mid-run: from the host under docker,
-where the agent cannot reach it, and from the agent itself under apptainer,
-where both run as one uid.
+where the agent cannot reach it, and from the agent itself under apptainer.
+Where apptainer runs the agent under the tracer's uid, the kill succeeds and
+the gap is the agent's (``gap_cause: agent``); where the fakeroot namespace
+separates the two, the kill is refused, the trace is complete and the run's
+verdicts are those of an agent that never ran the tests. Under docker the gap
+is the host's.
 
 It exits nonzero on the first verdict that differs and prints every verdict.
 """
@@ -67,6 +71,8 @@ EXPECTED = {
     "lost-events": {"protected_paths/v1": ("not_established", None),
                     "tool_claim_match/v1": ("not_established", None)},
 }
+REFUSED_SELF_KILL = {"protected_paths/v1": ("supported", "protected_paths_untouched"),
+                     "tool_claim_match/v1": ("contradicted", "tool_claim_unmatched")}
 CHECKS = {
     "protected_paths/v1": ("contract", "capability", "observation", "tree"),
     "tool_claim_match/v1": ("claims", "capability", "observation"),
@@ -118,6 +124,41 @@ def launch(name: str, root: Path, output: Path, backend: str, image: str) -> Pat
     return run_dir
 
 
+def for_verifier(role: str, data: bytes) -> bytes:
+    """The record in the version the pinned probity-verify reads.
+
+    The launcher writes ``probity-tree/v2``, which adds symbolic links,
+    special files and execute bits to the digest, and
+    ``probity-observation/v3``, which adds the executed path, working
+    directory and loader environment to each exec, the address to each
+    connect, the cause to each gap, and the workspace root and the mutations
+    outside the workspace to the record. probity-verify at the commit the workflow pins reads
+    ``probity-tree/v1`` and ``probity-observation/v2``, so each record is
+    re-expressed in the older version by dropping the added members (and, for
+    the tree, recomputing the digest over the regular files). The verdicts checked here depend
+    only on members both versions share. Delete this function when
+    probity-verify reads the new version and the workflow pins that commit.
+    """
+    value = json.loads(data)
+    if role == "tree" and value["schema_version"] == "probity-tree/v2":
+        for member in ("executable", "symlinks", "special"):
+            del value[member]
+        value["schema_version"] = "probity-tree/v1"
+        value["tree_sha256"] = treedigest.tree_digest(value["files"])
+        return encoded(value)
+    if role == "observation" and value["schema_version"] == "probity-observation/v3":
+        del value["workspace_root"]
+        del value["external_mutations"]
+        for item in value.get("events", []):
+            for member in ("exe", "cwd", "env", "address"):
+                item.pop(member, None)
+        for gap in value.get("gaps", []):
+            del gap["gap_cause"]
+        value["schema_version"] = "probity-observation/v2"
+        return encoded(value)
+    return data
+
+
 def verdicts(name: str, run_dir: Path, sealed: dict) -> dict:
     observation = json.loads((run_dir / "observation.json").read_text())
     raw = {
@@ -126,8 +167,8 @@ def verdicts(name: str, run_dir: Path, sealed: dict) -> dict:
                            "invocation_id": "call-1", "producer": "transcript-parser",
                            "claims": [{"id": "c1", "argv": UNITTEST, "exit": 0}]}),
         "capability": (run_dir / "capability.json").read_bytes(),
-        "observation": (run_dir / "observation.json").read_bytes(),
-        "tree": (run_dir / "tree.json").read_bytes(),
+        "observation": for_verifier("observation", (run_dir / "observation.json").read_bytes()),
+        "tree": for_verifier("tree", (run_dir / "tree.json").read_bytes()),
     }
     found = {}
     for claim_type, roles in CHECKS.items():
@@ -172,13 +213,39 @@ def main() -> int:
         root = workspace(scratch / name / "workspace")
         sealed = contract(root)
         run_dir = launch(name, root, output, arguments.backend, arguments.image)
+        separated = json.loads((run_dir / "launch.json").read_text())["tracer_uid_separated"]
+        expected = EXPECTED[name]
+        if name == "lost-events" and separated and arguments.backend == "apptainer":
+            expected = REFUSED_SELF_KILL
         for claim_type, (decision, reason, scope) in verdicts(name, run_dir, sealed).items():
-            want_decision, want_reason = EXPECTED[name][claim_type]
+            want_decision, want_reason = expected[claim_type]
             ok = decision == want_decision and want_reason in (None, reason)
             failures += not ok
             print(json.dumps({"run": name, "check": claim_type, "decision": decision,
                               "reason": reason, "witness_scope": scope, "ok": ok}))
+        if name == "lost-events":
+            failures += not lost_tracer_attributed(run_dir, arguments.backend, separated)
     return 1 if failures else 0
+
+
+def lost_tracer_attributed(run_dir: Path, backend: str, separated: bool) -> bool:
+    """The lost-events run's gap names who lost the tracer, and the trace shows it."""
+    observation = json.loads((run_dir / "observation.json").read_text())
+    signals = json.loads((run_dir / "receipt.json").read_text())["sensors"]["s2_strace"][
+        "signals"]
+    if backend == "apptainer" and separated:
+        found = {"coverage": observation["coverage"],
+                 "signals": [item["status"] for item in signals]}
+        ok = found == {"coverage": "complete", "signals": ["failed"]}
+    else:
+        cause = observation["gaps"][-1]["gap_cause"]
+        want = "host" if backend == "docker" else "agent"
+        found = {"gap_cause": cause, "signals": [item["status"] for item in signals]}
+        ok = cause == want and (backend == "docker" or "interrupted" in found["signals"])
+    print(json.dumps({"run": "lost-events", "check": "lost tracer attribution",
+                      "backend": backend, "tracer_uid_separated": separated, **found,
+                      "ok": ok}))
+    return ok
 
 
 if __name__ == "__main__":

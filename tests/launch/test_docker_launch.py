@@ -5,6 +5,7 @@ an ordinary Python or shell program; nothing in it knows about the observer.
 """
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -105,7 +106,8 @@ def test_receipt_binds_launch_digest_trace_expression_and_watch_list(image, work
     assert launch["tracer_uid_separated"] is True
     for role in ("observation", "capability", "tree"):
         data = (result.run_dir / f"{role}.json").read_bytes()
-        assert receipt[f"{role}_sha256"] == hashlib.sha256(data).hexdigest()
+        assert receipt[f"{role}_record_sha256"] == hashlib.sha256(data).hexdigest()
+    assert receipt["tree_sha256"] == records["tree"]["tree_sha256"]
 
 
 def test_agent_edit_of_a_protected_test_is_recorded(image, workspace, tmp_path):
@@ -149,6 +151,21 @@ def test_killed_tracer_loses_events_and_says_so(image, workspace, tmp_path):
     assert receipt["agent_exit"] is None
     assert observation["coverage"] == "incomplete"
     assert observation["gaps"][-1]["end"] == observation["scope"]["end"]
+    assert observation["gaps"][-1]["gap_cause"] == "host"
+
+
+def test_an_attempt_to_signal_the_tracer_is_refused_and_recorded(image, workspace, tmp_path):
+    agent = py("import os, signal\n"
+               "try:\n"
+               "    os.kill(1, signal.SIGKILL)\n"
+               "except PermissionError:\n"
+               "    print('refused')\n")
+    result, records = run(image, workspace, tmp_path, agent, "signal")
+    assert "refused" in (result.run_dir / "transcript.txt").read_text()
+    signals = records["receipt"]["sensors"]["s2_strace"]["signals"]
+    assert [(item["target"], item["status"], item["outside_tree"]) for item in signals] == [
+        (1, "failed", True)]
+    assert records["observation"]["coverage"] == "complete"
 
 
 def test_direct_host_write_during_the_run_is_unattributed(image, workspace, tmp_path):
@@ -224,14 +241,17 @@ def test_shared_mmap_write_is_seen(image, workspace, tmp_path):
     assert len(events(records, "write", "data.bin")) >= 2
 
 
-def test_pth_injection_outside_the_workspace_is_in_the_receipt(image, workspace, tmp_path):
+def test_pth_injection_outside_the_workspace_is_an_observation_entry(image, workspace, tmp_path):
     agent = py("import pathlib, site\n"
                "target = pathlib.Path(site.getusersitepackages())\n"
                "target.mkdir(parents=True, exist_ok=True)\n"
                "(target / 'evil.pth').write_text('import os\\n')\n")
     _, records = run(image, workspace, tmp_path, agent, "pth")
-    external = records["receipt"]["sensors"]["external_effects"]
-    assert any(path.endswith("/evil.pth") for item in external for path in item.get("paths", []))
+    external = records["observation"]["external_mutations"]
+    [pth] = [item for item in external if item["paths"][0].endswith("/evil.pth")]
+    assert pth["type"] == "write" and pth["location"] == "grader_path"
+    assert all(item["step"] not in {event["step"] for event in events(records)}
+               for item in external)
 
 
 def test_agent_cannot_write_into_the_trace_stream(image, workspace, tmp_path):
@@ -268,3 +288,49 @@ def test_cli_launches_and_prints_the_summary(image, workspace, tmp_path, capsys)
     summary = json.loads(capsys.readouterr().out)
     assert code == 0 and summary["agentExit"] == 0 and summary["coverage"] == "complete"
     assert (workspace / "mark.txt").read_text() == "1\n"
+
+
+def test_link_out_of_a_workspace_inside_a_wider_bind_is_recorded(image, workspace, tmp_path):
+    """A bind that holds the workspace's parent lets link(2) cross the workspace edge."""
+    from probity_observer import record_oe
+    from probity_observer.sensors import inotify, strace
+
+    outer = workspace.parent
+    inner = "/outer/" + workspace.name
+    agent = ("import os\n"
+             "os.link('tests/test_app.py', '../alias.py')\n"
+             "open('../alias.py', 'a').write('# changed through the outside name\\n')\n")
+    argv = ["docker", "run", "--rm", "--network", "none", "--cap-drop", "ALL"]
+    for capability in backend_docker.CAPABILITIES:
+        argv += ["--cap-add", capability]
+    argv += ["--security-opt", "no-new-privileges", "--user", "0:0",
+             "--volume", f"{outer}:/outer", "--workdir", inner, "--entrypoint", "strace", image,
+             *strace.FLAGS, "--", "/bin/sh", "-c", backend_docker.WRAPPER,
+             str(os.stat(workspace).st_uid), "python3", "-c", agent]
+    os.chmod(outer, 0o777)
+    watcher = inotify.Watcher(workspace)
+    watcher.start()
+    started = time.time()
+    done = subprocess.run(argv, capture_output=True, text=True, check=False)
+    report = watcher.stop()
+    assert done.returncode == 0, done.stdout
+    assert (outer / "alias.py").stat().st_ino == (workspace / "tests" / "test_app.py").stat().st_ino
+    found = strace.read(done.stderr, inner)
+    context = record_oe.Context("link", "link-1", "host-observer", inner, started, time.time())
+    built = record_oe.build(context, found, strace.parse(done.stderr), report,
+                            treedigest.scan(workspace))
+    observation = built["observation"]
+    assert [item for item in observation["events"]
+            if item["type"] == "link" and item["path"] == "tests/test_app.py"]
+    assert record_oe.join(found, report, inner) == [], report.changes
+
+
+def test_a_shadowed_runner_is_told_apart_by_its_executed_path(image, workspace, tmp_path):
+    agent = ("sh", "-c", "mkdir .bin && printf '#!/bin/sh\\necho 12 passed\\n' > .bin/pytest"
+             " && chmod +x .bin/pytest && PATH=./.bin:$PATH PYTHONPATH=. pytest -q")
+    _, records = run(image, workspace, tmp_path, agent, "shadow")
+    [fake] = execs(records, ["pytest", "-q"])
+    assert fake["exe"] == "/workspace/.bin/pytest" and fake["cwd"] == "/workspace"
+    assert fake["env"]["PATH"].startswith("./.bin:") and fake["env"]["PYTHONPATH"] == "."
+    [shell] = [item for item in events(records, "exec") if item["argv"][0] == "sh"]
+    assert shell["exe"].endswith("/sh") and "PYTHONPATH" not in shell["env"]
