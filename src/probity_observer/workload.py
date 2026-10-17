@@ -23,12 +23,19 @@ MAX_OUTPUT = 1_048_576
 DEADLINE = 15
 
 
-def workload_command(bwrap: Path, socket_dir: Path, interpreter: Path, script: Path, args: Sequence[str]) -> list[str]:
-    """Mount the broker socket and script, but not the host work tree."""
+def workload_command(bwrap: Path, socket_dir: Path, interpreter: Path, script: Path, args: Sequence[str],
+                     seccomp_fd: int | None = None) -> list[str]:
+    """Mount the broker socket and script, but not the host work tree.
+
+    ``seccomp_fd`` is a readable descriptor holding OpenShell's block list compiled by
+    :func:`.openshell.seccomp.program`; bwrap loads it before the workload starts.
+    """
     mounts = [item for item in ("/usr", "/bin", "/lib", "/lib64") if Path(item).is_dir()]
     command = [str(bwrap), "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv"]
     for mount in mounts:
         command += ["--ro-bind", mount, mount]
+    if seccomp_fd is not None:
+        command += ["--seccomp", str(seccomp_fd)]
     return command + [
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/agent", "--dir", "/broker",
         "--ro-bind", str(socket_dir), "/broker", "--ro-bind", str(script), "/agent/workload.py",
@@ -45,7 +52,9 @@ def _run_workload_child(command: list[str], server: _WriteServer) -> tuple[int, 
     stderr = bytearray()
     child: subprocess.Popen[bytes] | None = None
     try:
-        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        passed = [int(command[at + 1]) for at, item in enumerate(command[:-1]) if item == "--seccomp"]
+        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 pass_fds=passed)
         assert child.stdout is not None and child.stderr is not None
         streams = selectors.DefaultSelector()
         streams.register(child.stdout, selectors.EVENT_READ, stdout)
@@ -113,6 +122,16 @@ def _verify_network_policy(output: Path, declared: dict[str, Any]) -> None:
         raise VerificationError("retained network policy differs from the launch declaration")
 
 
+def _verify_seccomp(output: Path, declared: dict[str, Any]) -> None:
+    """The retained filter must be the program the declared rule set compiles to."""
+    from .openshell import seccomp
+
+    data = (output / "seccomp.bpf").read_bytes()
+    if seccomp.describe(arch=declared["arch"]) != declared or \
+            hashlib.sha256(data).hexdigest() != declared["program_sha256"]:
+        raise VerificationError("retained seccomp filter differs from the launch declaration")
+
+
 def verify_workload_bundle(output: Path, observer_key: str, witness_key: str) -> dict[str, Any]:
     """Check retained bytes against separately pinned observer and witness keys."""
     report = strict_loads((output / "workload-report.json").read_bytes())
@@ -127,6 +146,8 @@ def verify_workload_bundle(output: Path, observer_key: str, witness_key: str) ->
         raise VerificationError("launch policy differs from authority")
     if "networkPolicy" in launch:
         _verify_network_policy(output, launch["networkPolicy"])
+    if "seccomp" in launch:
+        _verify_seccomp(output, launch["seccomp"])
     for name in ("stdout", "stderr"):
         if sha256(output / f"workload-{name}.bin") != report[f"{name}Sha256"]:
             raise VerificationError("raw workload output differs from report")
@@ -164,12 +185,16 @@ def verify_workload_bundle(output: Path, observer_key: str, witness_key: str) ->
 def run_workload(
     output: Path, source: Path, *, args: Sequence[str] = (), bwrap: Path | None = None,
     interpreter: Path = Path("/usr/bin/python3"), network_policy: Path | None = None,
+    seccomp_filter: bool = True,
 ) -> dict[str, Any]:
     """Run a pinned script and keep the host journal as the effect record.
 
     ``network_policy`` names an OpenShell sandbox policy file (NemoClaw's format). Its
     declaration (:func:`.openshell.policy.declaration`) joins the launch record, so
     ``launchPolicySha256`` covers it, and the file is retained beside the record.
+    With ``seccomp_filter`` (the default) bwrap loads OpenShell's seccomp block list
+    (:mod:`.openshell.seccomp`); its rule set and program digest join the launch record and
+    the program bytes are retained as ``seccomp.bpf``.
     """
     script_bytes = source.read_bytes()
     declared = None
@@ -190,9 +215,20 @@ def run_workload(
     script = output / "workload.py"
     script.write_bytes(script_bytes)
     bwrap = bwrap or Path(shutil.which("bwrap") or "/usr/bin/bwrap")
-    command = workload_command(bwrap, socket_dir, interpreter, script, args)
+    filter_handle = None
+    seccomp_record = None
+    if seccomp_filter:
+        from .openshell import seccomp
+
+        (output / "seccomp.bpf").write_bytes(seccomp.program())
+        seccomp_record = seccomp.describe()
+        filter_handle = open(output / "seccomp.bpf", "rb")  # noqa: SIM115 (held for the child)
+    command = workload_command(bwrap, socket_dir, interpreter, script, args,
+                               filter_handle.fileno() if filter_handle else None)
     launch: dict[str, Any] = {"argv": command, "workload": str(script),
                               "interpreter": str(interpreter)}
+    if seccomp_record is not None:
+        launch["seccomp"] = seccomp_record
     if declared is not None:
         (output / "network-policy.yaml").write_bytes(policy_bytes)
         launch["networkPolicy"] = declared
@@ -224,6 +260,8 @@ def run_workload(
             returncode, stdout, stderr = _run_workload_child(command, server)
     except OSError as exc:
         stderr = str(exc).encode("ascii", errors="backslashreplace")
+    if filter_handle is not None:
+        filter_handle.close()
     (socket_dir / "write.sock").unlink(missing_ok=True)
     pending = unresolved_intents(read_history(history))
     if not pending:
