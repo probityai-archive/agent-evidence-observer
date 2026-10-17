@@ -12,12 +12,16 @@ The output formats are the ones ``probity-verify`` defines in
 ``docs/done-receipt.md``, in the versions this module adds to:
 ``probity-observation/v3`` (an exec event carries the executed path ``exe``,
 its working directory ``cwd`` and the loader environment ``env``, all as
-container paths under the declared ``workspace_root``),
+container paths under the declared ``workspace_root``; a ``connect`` carries
+its ``address``; and ``external_mutations`` lists every mutation outside the
+workspace, numbered in the same step sequence as ``events``, with its
+absolute ``paths``, its ``origin`` and its ``location``, ``grader_path`` or
+``outside_workspace``, see :func:`location`),
 ``probity-capabilities/v1`` and ``probity-tree/v2`` (every non-directory
 entry, symbolic links and special files included; see
 :mod:`.sensors.treedigest`). Those records are strict
 and carry no launch detail, so the launch digest, the exact trace expression,
-the inotify watch list, effects outside the workspace and the join's findings
+the inotify watch list and the join's findings
 go into the receipt beside them (``probity-launch-receipt/v1``). The receipt's
 ``witnessScope`` is the observer's own field; the verify records carry the same
 value as ``witness_scope``.
@@ -41,6 +45,8 @@ OBSERVATION_SCHEMA = "probity-observation/v3"
 WITNESS_SCOPE = "PEER"
 VANTAGE = "independent"
 DEVICE_TREES = ("/dev/", "/proc/", "/sys/")
+GRADER_FILES = frozenset({"sitecustomize.py", "usercustomize.py", "reward.json", "reward.txt"})
+GRADER_DIRECTORIES = frozenset({"site-packages", "dist-packages", "verifier"})
 
 
 def instant(seconds: float) -> str:
@@ -129,7 +135,7 @@ def _record_event(event: strace.Event, workspace: str) -> dict | None:
             fields["exit"] = event.exit
         return fields
     if event.kind == "connect":
-        return {}
+        return {"address": event.address}
     path = strace.within(event.path, workspace) if event.path else None
     target = strace.within(event.target, workspace) if event.target else None
     if event.kind in ("rename", "link"):
@@ -143,10 +149,24 @@ def _record_event(event: strace.Event, workspace: str) -> dict | None:
     return {"path": path} if path else None
 
 
+def location(path: str) -> str:
+    """``grader_path`` when a mutation there can change how a grader runs or scores.
+
+    A grader path is a Python startup hook (``sitecustomize.py``,
+    ``usercustomize.py``, any ``.pth`` file), a reward file (``reward.json``,
+    ``reward.txt``), or anything under a ``site-packages``, ``dist-packages``
+    or ``verifier`` directory. Every other path is ``outside_workspace``.
+    """
+    parts = path.split("/")
+    name = parts[-1]
+    if (name in GRADER_FILES or name.endswith(".pth")
+            or any(part in GRADER_DIRECTORIES for part in parts[:-1])):
+        return "grader_path"
+    return "outside_workspace"
+
+
 def _external(event: strace.Event, workspace: str) -> dict | None:
-    """An effect outside the workspace, for the receipt."""
-    if event.kind == "connect":
-        return {"type": "connect", "address": event.address, "time": instant(event.time)}
+    """A mutation outside the workspace, as an ``external_mutations`` entry body."""
     if event.kind not in strace.MUTATION_TYPES:
         return None
     outside = [path for path in (event.path, event.target)
@@ -154,7 +174,9 @@ def _external(event: strace.Event, workspace: str) -> dict | None:
                and not path.startswith(DEVICE_TREES)]
     if not outside:
         return None
-    return {"type": event.kind, "paths": outside, "time": instant(event.time)}
+    places = {location(path) for path in outside}
+    return {"type": event.kind, "paths": outside,
+            "location": "grader_path" if "grader_path" in places else "outside_workspace"}
 
 
 def _merge(gaps: list[tuple[int, int]]) -> list[dict]:
@@ -177,21 +199,19 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
     end = max(math.floor(last) + 1, start + 1)
     gaps: list[tuple[int, int]] = []
 
-    rows: list[tuple[float, dict, strace.Event | None]] = []
-    external: list[dict] = []
+    rows: list[tuple[float, dict, strace.Event | None, bool]] = []
     for event in effects.events:
-        if (outside := _external(event, workspace)) is not None:
-            external.append(outside)
         fields = _record_event(event, workspace)
-        if fields is None:
-            continue
-        kind = fields.pop("kind", event.kind)
-        rows.append((event.time, {"type": kind, **fields}, event))
+        if fields is not None:
+            kind = fields.pop("kind", event.kind)
+            rows.append((event.time, {"type": kind, **fields}, event, False))
+        if (outside := _external(event, workspace)) is not None:
+            rows.append((event.time, outside, event, True))
     for change in unattributed:
         at = 0
         while at < len(rows) and rows[at][0] <= change.time:
             at += 1
-        rows.insert(at, (change.time, {"type": change.kind, "path": change.path}, None))
+        rows.insert(at, (change.time, {"type": change.kind, "path": change.path}, None, False))
         second = max(math.floor(change.time), start)
         gaps.append((second, second + 1))
 
@@ -207,15 +227,17 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
         gaps.append((start, end))
 
     ids: dict[str, str] = {}
-    events = []
-    for step, (when, fields, source) in enumerate(rows, start=1):
+    events: list[dict] = []
+    external: list[dict] = []
+    for step, (when, fields, source, outside) in enumerate(rows, start=1):
         record = {"id": f"e{step}", "step": step, "time": instant(min(max(when, start), end)),
                   **fields}
         if source is not None:
-            ids[source.id] = record["id"]
+            if source.kind == "exec":
+                ids[source.id] = record["id"]
             if source.origin is not None and source.origin in ids:
                 record["origin"] = ids[source.origin]
-        events.append(record)
+        (external if outside else events).append(record)
 
     base = {"claim_id": context.claim_id, "invocation_id": context.invocation_id,
             "producer": context.producer}
@@ -223,7 +245,7 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
     scope = {"id": context.invocation_id, "start": instant(start), "end": instant(end)}
     observation: dict[str, Any] = {"schema_version": OBSERVATION_SCHEMA, **observed,
                                    "workspace_root": workspace, "scope": scope,
-                                   "events": events}
+                                   "events": events, "external_mutations": external}
     if report.lost:
         observation["coverage"] = "unknown"
     elif gaps:
@@ -253,7 +275,6 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
         "join": {"unattributed": [{"type": change.kind, "path": change.path,
                                    "time": instant(change.time),
                                    "scanned": change.scanned} for change in unattributed]},
-        "external_effects": external,
     }
     return {"observation": observation, "capability": capability, "tree": tree_record,
             "sensors": sensors}

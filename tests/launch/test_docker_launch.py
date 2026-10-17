@@ -226,14 +226,17 @@ def test_shared_mmap_write_is_seen(image, workspace, tmp_path):
     assert len(events(records, "write", "data.bin")) >= 2
 
 
-def test_pth_injection_outside_the_workspace_is_in_the_receipt(image, workspace, tmp_path):
+def test_pth_injection_outside_the_workspace_is_an_observation_entry(image, workspace, tmp_path):
     agent = py("import pathlib, site\n"
                "target = pathlib.Path(site.getusersitepackages())\n"
                "target.mkdir(parents=True, exist_ok=True)\n"
                "(target / 'evil.pth').write_text('import os\\n')\n")
     _, records = run(image, workspace, tmp_path, agent, "pth")
-    external = records["receipt"]["sensors"]["external_effects"]
-    assert any(path.endswith("/evil.pth") for item in external for path in item.get("paths", []))
+    external = records["observation"]["external_mutations"]
+    [pth] = [item for item in external if item["paths"][0].endswith("/evil.pth")]
+    assert pth["type"] == "write" and pth["location"] == "grader_path"
+    assert all(item["step"] not in {event["step"] for event in events(records)}
+               for item in external)
 
 
 def test_agent_cannot_write_into_the_trace_stream(image, workspace, tmp_path):

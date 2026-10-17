@@ -128,20 +128,51 @@ def test_origins_survive_renumbering_when_host_events_are_inserted():
     assert [item["step"] for item in events] == list(range(1, len(events) + 1))
 
 
-def test_outside_effects_go_to_the_receipt_not_the_record():
+def test_outside_mutations_are_observation_events_with_their_location():
     found = effects(event("exec", 0.1, argv=["agent"], exit=0),
+                    event("exec", 0.5, pid=11, argv=["python3", "-m", "pytest"], exit=0),
+                    event("write", 0.6, pid=11, path="/tmp/pytest-of-x/cache"),
                     event("write", 1.0, path="/tmp/.local/lib/python3.12/site-packages/x.pth"),
+                    event("write", 1.05, path="/usr/lib/python3.12/sitecustomize.py"),
                     event("write", 1.1, path="/dev/null"),
                     event("connect", 1.2, address="{sa_family=AF_INET}"),
                     event("rename", 1.3, path="/tmp/stage", target="/workspace/in.txt"))
-    records = built(found)
-    paths = [item.get("path") for item in records["observation"]["events"]]
+    found.parents[11] = 10
+    strace.assign_origins(found)
+    observation = built(found)["observation"]
+    paths = [item.get("path") for item in observation["events"]]
     assert "in.txt" in paths and not any(path and path.startswith("/") for path in paths)
-    created = [item for item in records["observation"]["events"] if item.get("path") == "in.txt"]
+    created = [item for item in observation["events"] if item.get("path") == "in.txt"]
     assert created[0]["type"] == "create"
-    external = records["sensors"]["external_effects"]
-    assert [item["type"] for item in external] == ["write", "connect", "rename"]
-    assert external[0]["paths"] == ["/tmp/.local/lib/python3.12/site-packages/x.pth"]
+    [connect] = [item for item in observation["events"] if item["type"] == "connect"]
+    assert connect["address"] == "{sa_family=AF_INET}"
+    outside = observation["external_mutations"]
+    assert [(item["type"], item["paths"], item["location"]) for item in outside] == [
+        ("write", ["/tmp/pytest-of-x/cache"], "outside_workspace"),
+        ("write", ["/tmp/.local/lib/python3.12/site-packages/x.pth"], "grader_path"),
+        ("write", ["/usr/lib/python3.12/sitecustomize.py"], "grader_path"),
+        ("rename", ["/tmp/stage"], "outside_workspace")]
+    run = next(item for item in observation["events"] if item.get("argv", [""])[0] == "python3")
+    assert outside[0]["origin"] == run["id"] and "origin" not in outside[1]
+    steps = [item["step"] for item in observation["events"] + outside]
+    assert len(set(steps)) == len(steps)
+    by_step = sorted(observation["events"] + outside, key=lambda item: item["step"])
+    assert [item["time"] for item in by_step] == sorted(item["time"] for item in by_step)
+    assert "external_effects" not in built(found)["sensors"]
+
+
+@pytest.mark.parametrize("path,location", [
+    ("/usr/lib/python3/dist-packages/pkg/__init__.py", "grader_path"),
+    ("/opt/verifier/run.py", "grader_path"),
+    ("/logs/reward.json", "grader_path"),
+    ("/logs/reward.txt", "grader_path"),
+    ("/home/u/.local/lib/python3.12/site-packages/usercustomize.py", "grader_path"),
+    ("/tmp/hooks/evil.pth", "grader_path"),
+    ("/tmp/notes.txt", "outside_workspace"),
+    ("/tmp/site-packages-notes.txt", "outside_workspace"),
+])
+def test_grader_path_rule(path, location):
+    assert record_oe.location(path) == location
 
 
 def test_records_carry_the_verify_field_names():

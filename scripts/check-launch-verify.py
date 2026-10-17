@@ -124,8 +124,9 @@ def for_verifier(role: str, data: bytes) -> bytes:
     The launcher writes ``probity-tree/v2``, which adds symbolic links,
     special files and execute bits to the digest, and
     ``probity-observation/v3``, which adds the executed path, working
-    directory and loader environment to each exec and the workspace root to
-    the record. probity-verify at the commit the workflow pins reads
+    directory and loader environment to each exec, the address to each
+    connect, and the workspace root and the mutations outside the workspace
+    to the record. probity-verify at the commit the workflow pins reads
     ``probity-tree/v1`` and ``probity-observation/v2``, so each record is
     re-expressed in the older version by dropping the added members (and, for
     the tree, recomputing the digest over the regular files). The verdicts checked here depend
@@ -141,8 +142,9 @@ def for_verifier(role: str, data: bytes) -> bytes:
         return encoded(value)
     if role == "observation" and value["schema_version"] == "probity-observation/v3":
         del value["workspace_root"]
+        del value["external_mutations"]
         for item in value.get("events", []):
-            for member in ("exe", "cwd", "env"):
+            for member in ("exe", "cwd", "env", "address"):
                 item.pop(member, None)
         value["schema_version"] = "probity-observation/v2"
         return encoded(value)

@@ -74,10 +74,11 @@ say `vantage: independent`, `witness_scope: PEER`. The receipt says
   `process_vm_writev`), and the origin rule;
 - `s3_tree`: the tree digest and the counts of files, symbolic links and
   special files;
-- `join.unattributed`: changes inotify saw that the trace did not;
-- `external_effects`: mutations outside the workspace (for example a `.pth`
-  file in the user site directory) and network connects. Paths under `/dev`,
-  `/proc` and `/sys` are left out.
+- `join.unattributed`: changes inotify saw that the trace did not.
+
+Mutations outside the workspace and connect addresses are in the observation
+itself, not the receipt, so a reader of the observation alone can recompute a
+verdict that depends on them.
 
 ## Tree record
 
@@ -110,7 +111,18 @@ each exec's environment in full.
 | `create`, `rename`, `link`, `unlink`, `truncate` | the matching calls; `rename` and `link` carry `target` |
 | `chmod` | mode, owner, timestamp and extended-attribute changes |
 | `read` | a read-only open inside the workspace |
-| `connect` | `connect`, with no path; the address is in the receipt |
+| `connect` | `connect`, with no path and with `address`, the socket address as the tracer printed it |
+
+Every mutation outside the workspace is an entry of the observation's
+`external_mutations`: `id`, `step` (from the same sequence as `events`, so a
+reader can order it against each exec), `time`, `type` (the mutation type),
+`paths` (absolute container paths of the sides outside the workspace),
+`origin` when a command caused it, and `location`. `location` is `grader_path`
+for a Python startup hook (`sitecustomize.py`, `usercustomize.py`, any `.pth`
+file), a reward file (`reward.json`, `reward.txt`), or anything under a
+`site-packages`, `dist-packages` or `verifier` directory, and
+`outside_workspace` otherwise. Paths under `/dev`, `/proc` and `/sys` are left
+out.
 
 `exe` and `cwd` are container paths. The observation's `workspace_root` names
 the container path of the workspace, so a reader can tell a runner on the
