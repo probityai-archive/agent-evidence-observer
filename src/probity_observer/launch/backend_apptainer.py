@@ -78,7 +78,10 @@ def uid_separated(identity: Identity) -> bool:
 
 
 def _run(argv: list[str]) -> str:
-    done = subprocess.run(argv, capture_output=True, text=True, check=False)
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise BackendError(f"{argv[0]} cannot run: {error}") from error
     if done.returncode != 0:
         raise BackendError(f"{' '.join(argv[:3])} failed: {done.stderr.strip()}")
     return done.stdout.strip()
@@ -127,16 +130,16 @@ def _chown_inside(identity: Identity, workspace: Path, owner: str,
           f"{workspace}:{WORKSPACE}", identity.image, "chown", "-R", owner, WORKSPACE])
 
 
-def prepare(identity: Identity, workspace: Path) -> None:
+def prepare(identity: Identity, workspace: Path, apptainer: str = "apptainer") -> None:
     """Hand the workspace to the agent's uid when the namespace separates it."""
     if identity.uid_separated:
-        _chown_inside(identity, workspace, f"{AGENT_UID}:{AGENT_UID}")
+        _chown_inside(identity, workspace, f"{AGENT_UID}:{AGENT_UID}", apptainer)
 
 
-def restore(identity: Identity, workspace: Path) -> None:
+def restore(identity: Identity, workspace: Path, apptainer: str = "apptainer") -> None:
     """Hand the workspace back to the submitting user (root in the namespace)."""
     if identity.uid_separated:
-        _chown_inside(identity, workspace, "0:0")
+        _chown_inside(identity, workspace, "0:0", apptainer)
 
 
 def command(identity: Identity, *, name: str, workspace: str, agent_argv: list[str],
