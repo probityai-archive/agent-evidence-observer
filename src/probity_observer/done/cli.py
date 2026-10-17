@@ -111,6 +111,23 @@ def _witnessed(run: Path, pins: receipt.Pins, args: argparse.Namespace) -> str:
     return "EXTERNAL" if scopes and all(item == "EXTERNAL" for item in scopes) else "PEER"
 
 
+def shared_receipt_check(run: Path, pins: receipt.Pins, carried: dict[str, Any]) -> dict[str, Any]:
+    """probity-verify's ``done_receipt/v1`` over the attempt: it derives the verdict again
+    from the signed records and the receipt Statement, which must carry the signed predicate."""
+    records = receipt.open_run(run, pins)
+    statement_bytes = (run / "done-receipt.statement.json").read_bytes()
+    if json.loads(statement_bytes).get("predicate") != carried:
+        raise DoneError("the receipt Statement does not carry the signed predicate")
+    case, policy = receipt.done_receipt_case(run, records, statement_bytes, pins)
+    return receipt.adjudicate(case, policy, run)
+
+
+# done_receipt/v1 reasons that say the receipt does not describe these records.
+UNBOUND = {"receipt_verdict_mismatch": "verdict", "receipt_records_mismatch": "records",
+           "receipt_subject_mismatch": "subject", "receipt_context_mismatch": "context",
+           "receipt_unavailable_or_unbound": "Statement"}
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     run = Path(args.run)
     pins = receipt.Pins(args.harness_pub, args.host_pub, args.grader_pub,
@@ -123,12 +140,21 @@ def cmd_verify(args: argparse.Namespace) -> int:
     except DoneError as error:
         print(f"Refused: {error}")
         return REFUSED
+    shared = shared_receipt_check(run, pins, carried)
+    if shared["reason"] in UNBOUND:
+        print(f"Refused: the receipt's {UNBOUND[shared['reason']]} does not recompute from "
+              "the records")
+        return REFUSED
+    # The checks and the external effects are carried too; they must recompute as well.
     recomputed = receipt.assemble(run, pins)
-    for name in ("records", "checks", "verdict", "external_effects"):
-        if recomputed[name] != carried[name]:
+    for name in ("records", "checks", "external_effects"):
+        if recomputed.get(name) != carried.get(name):
             print(f"Refused: the receipt's {name} does not recompute from the records")
             return REFUSED
-    verdict = recomputed["verdict"]
+    verdict = {"decision": shared["decision"], "reason": shared["reason"],
+               "vantage": shared.get("vantage", "unestablished")}
+    if "witness_scope" in shared:
+        verdict["witness_scope"] = shared["witness_scope"]
     if args.require_witness_scope == "EXTERNAL" and verdict["decision"] == "supported":
         if not args.witness_key or _witnessed(run, pins, args) != "EXTERNAL":
             verdict = {"decision": "not_established", "reason": "witness_scope_below_required",
@@ -137,7 +163,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             verdict = {**verdict, "witness_scope": "EXTERNAL"}
     verdict, adequacy = _adequacy_floor(run, verdict, args.min_killed_fraction)
     print(receipt.decision_line(verdict))
-    for check in recomputed["checks"]:
+    derived = next((item for item in shared["checks"] if item["id"] == "derived_verdict"), None)
+    for check in (derived or {}).get("checks", []):
         print(f"  {check['claim_type']}: {check['decision']} / {check['reason']}")
     print(adequacy)
     if "stop_decision" in carried:
