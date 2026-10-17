@@ -105,7 +105,8 @@ def test_receipt_binds_launch_digest_trace_expression_and_watch_list(image, work
     assert launch["tracer_uid_separated"] is True
     for role in ("observation", "capability", "tree"):
         data = (result.run_dir / f"{role}.json").read_bytes()
-        assert receipt[f"{role}_sha256"] == hashlib.sha256(data).hexdigest()
+        assert receipt[f"{role}_record_sha256"] == hashlib.sha256(data).hexdigest()
+    assert receipt["tree_sha256"] == records["tree"]["tree_sha256"]
 
 
 def test_agent_edit_of_a_protected_test_is_recorded(image, workspace, tmp_path):

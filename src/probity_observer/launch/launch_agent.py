@@ -38,6 +38,7 @@ from . import backend_apptainer, backend_docker, snapshot
 
 BACKENDS = {"docker": backend_docker, "apptainer": backend_apptainer}
 UNPRIVILEGED_UID = 65534
+RECORD_ROLES = ("observation", "capability", "tree")
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,54 @@ def _agent_uid(workspace: Path) -> int:
             os.lchown(Path(directory) / name, UNPRIVILEGED_UID, UNPRIVILEGED_UID)
     os.chown(workspace, UNPRIVILEGED_UID, UNPRIVILEGED_UID)
     return UNPRIVILEGED_UID
+
+
+def write_records(built: dict[str, Any], run_dir: Path) -> dict[str, str]:
+    """Write the three verify records and return each one's ``<role>_record_sha256``."""
+    written = {}
+    for role in RECORD_ROLES:
+        data = record_oe.encoded(built[role])
+        (run_dir / f"{role}.json").write_bytes(data)
+        written[f"{role}_record_sha256"] = record_oe.sha256(data)
+    return written
+
+
+def receipt_record(spec: LaunchSpec, built: dict[str, Any], written: dict[str, str], *,
+                   run_dir: Path, launch_sha256: str, start_sha256: str,
+                   tree: treedigest.Tree, exit_code: int | None, agent_exit: int | None,
+                   timed_out: bool) -> dict[str, Any]:
+    """The ``probity-launch-receipt/v1`` body.
+
+    ``tree_sha256`` is the digest of the final tree; the digest of the
+    ``tree.json`` bytes is ``tree_record_sha256``. Record digests carry the
+    ``_record_sha256`` suffix so that no record digest can shadow a content
+    digest of the same name.
+    """
+    return {
+        "schema_version": record_oe.RECEIPT_SCHEMA,
+        "claim_id": spec.claim_id,
+        "invocation_id": spec.invocation_id,
+        "producer": spec.producer,
+        "witnessScope": record_oe.WITNESS_SCOPE,
+        "launch_sha256": launch_sha256,
+        "trace_expression": strace.TRACE_EXPRESSION,
+        "watch_list": built["sensors"]["s1_inotify"]["watch_list"],
+        "start_tarball_sha256": start_sha256,
+        "tree_sha256": tree.sha256,
+        "coverage": built["observation"]["coverage"],
+        "container_exit": exit_code,
+        "agent_exit": agent_exit,
+        "timed_out": timed_out,
+        "transcript_sha256": record_oe.sha256((run_dir / "transcript.txt").read_bytes()),
+        "trace_sha256": record_oe.sha256((run_dir / "trace.txt").read_bytes()),
+        **written,
+        "sensors": built["sensors"],
+        "doesNotAssert": [
+            "that the host operator is independent of the agent's operator (scope is PEER)",
+            "effects through channels the trace expression does not name",
+            "that a symbolic link in a path outside an open() call was resolved",
+        ],
+    }
 
 
 def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
@@ -159,39 +208,14 @@ def launch(spec: LaunchSpec, run_dir: Path) -> LaunchResult:
     context = record_oe.Context(spec.claim_id, spec.invocation_id, spec.producer,
                                 backend.WORKSPACE, started, ended)
     built = record_oe.build(context, found, trace, report, tree)
-    written = {}
-    for role in ("observation", "capability", "tree"):
-        data = record_oe.encoded(built[role])
-        (run_dir / f"{role}.json").write_bytes(data)
-        written[f"{role}_sha256"] = record_oe.sha256(data)
+    written = write_records(built, run_dir)
     root_exec = next((event for event in found.events
                       if event.kind == "exec" and event.pid == found.root_pid
                       and event.exit is not None), None)
-    receipt = {
-        "schema_version": record_oe.RECEIPT_SCHEMA,
-        "claim_id": spec.claim_id,
-        "invocation_id": spec.invocation_id,
-        "producer": spec.producer,
-        "witnessScope": record_oe.WITNESS_SCOPE,
-        "launch_sha256": launch_sha256,
-        "trace_expression": strace.TRACE_EXPRESSION,
-        "watch_list": built["sensors"]["s1_inotify"]["watch_list"],
-        "start_tarball_sha256": start_sha256,
-        "tree_sha256": tree.sha256,
-        "coverage": built["observation"]["coverage"],
-        "container_exit": exit_code,
-        "agent_exit": root_exec.exit if root_exec else None,
-        "timed_out": timed_out,
-        "transcript_sha256": record_oe.sha256((run_dir / "transcript.txt").read_bytes()),
-        "trace_sha256": record_oe.sha256((run_dir / "trace.txt").read_bytes()),
-        **written,
-        "sensors": built["sensors"],
-        "doesNotAssert": [
-            "that the host operator is independent of the agent's operator (scope is PEER)",
-            "effects through channels the trace expression does not name",
-            "that a symbolic link in a path outside an open() call was resolved",
-        ],
-    }
+    receipt = receipt_record(spec, built, written, run_dir=run_dir,
+                             launch_sha256=launch_sha256, start_sha256=start_sha256, tree=tree,
+                             exit_code=exit_code, agent_exit=root_exec.exit if root_exec else None,
+                             timed_out=timed_out)
     (run_dir / "receipt.json").write_bytes(record_oe.encoded(receipt))
     return LaunchResult(run_dir, launch_sha256, receipt["agent_exit"],
                         receipt["coverage"], receipt)

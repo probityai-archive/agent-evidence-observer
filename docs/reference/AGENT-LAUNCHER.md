@@ -62,8 +62,10 @@ say `vantage: independent`, `witness_scope: PEER`. The receipt says
 
 `launch_sha256` (SHA-256 of `launch.json`), `trace_expression`, `watch_list`
 (each watched directory and when its watch was added), `start_tarball_sha256`,
-`tree_sha256`, `coverage`, `container_exit`, `agent_exit`, `timed_out`, the
-digests of the transcript, trace and three records, `doesNotAssert`, and
+`tree_sha256` (the digest of the final tree, the same value as in `tree.json`),
+`coverage`, `container_exit`, `agent_exit`, `timed_out`, `transcript_sha256`,
+`trace_sha256`, the SHA-256 of each record's bytes as `observation_record_sha256`,
+`capability_record_sha256` and `tree_record_sha256`, `doesNotAssert`, and
 `sensors`:
 
 - `s1_inotify`: change count, `overflow`, `watch_failures`, the watch mask;
