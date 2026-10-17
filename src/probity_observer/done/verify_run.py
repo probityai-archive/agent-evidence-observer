@@ -25,6 +25,7 @@ One grading run, in order:
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import shutil
@@ -37,6 +38,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..sensors import treedigest
+from . import mutants
 from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
 from .formats import DoneError, encode, public_key, sha256, sign_record
 from .runner import (SCRUBBED_ENV, TIMEOUT_EXIT, changed_paths, chmod_tree, is_replay,
@@ -274,6 +276,65 @@ def _visible_part(heldout: Path, destination: Path) -> Path:
     return destination
 
 
+MIN_HUNKS_EXERCISED = 1.0
+PER_HUNK_MUTANTS = 3
+
+
+def patch_hunks(start: Path, staged: Path, protected: list[Protected]) -> list[tuple[str, tuple[int, int]]]:
+    """Python source lines the agent added or changed, one range per hunk, outside protected paths."""
+    hunks = []
+    for path in sorted(staged.rglob("*.py")):
+        name = path.relative_to(staged).as_posix()
+        if path.is_symlink() or any(name == entry.path or name.startswith(entry.path + "/")
+                                    for entry in protected):
+            continue
+        before = (start / name).read_text("utf-8", "replace").splitlines() if (start / name).is_file() else []
+        after = path.read_text("utf-8", "replace").splitlines()
+        for tag, _, _, first, last in difflib.SequenceMatcher(None, before, after).get_opcodes():
+            if tag in ("replace", "insert") and last > first:
+                hunks.append((name, (first + 1, last)))
+    return hunks
+
+
+def _killed(runner, state: Path, commands: list[dict[str, Any]], sealed: dict[str, Path | None],
+            timeout: float) -> bool:
+    for item in commands:
+        if runner.run(state, item["argv"], sealed[item["id"]], timeout) != 0:
+            return True
+    return False
+
+
+def post_patch(runner, root: Path, start: Path, contract: dict[str, Any],
+               sealed: dict[str, Path | None], timeout: float) -> list[dict[str, Any]]:
+    """Mutate each hunk of the agent's patch and require the acceptance commands to notice.
+
+    A hunk whose mutants all survive was not exercised by the tests that passed: the pass
+    says nothing about that change. Logging calls and docstrings are never mutation sites.
+    """
+    report = []
+    for name, lines in patch_hunks(start, root, _protected(contract)):
+        try:
+            found = mutants.operator_mutants(name, (root / name).read_text(), [lines])
+        except SyntaxError:
+            found = []
+        chosen = mutants.stratified([found], PER_HUNK_MUTANTS, f"{name}:{lines}")
+        kills = []
+        for mutant in chosen:
+            with tempfile.TemporaryDirectory(prefix="probity-hunk-") as scratch:
+                state = Path(scratch) / "tree"
+                shutil.copytree(root, state, symlinks=True)
+                (state / name).write_text(mutant.source)
+                kills.append(_killed(runner, state, contract["acceptance"], sealed, timeout))
+        report.append({"path": name, "lines": list(lines), "mutants": len(chosen),
+                       "killed": sum(kills), "kill_vector": kills})
+    return report
+
+
+def hunks_exercised(report: list[dict[str, Any]]) -> float:
+    counted = [item for item in report if item["mutants"]]
+    return 1.0 if not counted else sum(1 for item in counted if item["killed"]) / len(counted)
+
+
 @dataclass(frozen=True)
 class Graded:
     grade: dict[str, Any]
@@ -353,12 +414,16 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
         runner.replays = []
         visible = _visible_part(heldout, result_dir / "visible-sealed") if has_heldout else None
         results = []
+        # Held-out tests reach only held-out commands. Visible commands get the sealed
+        # configuration and the sealed visible test, never a held-out file.
+        dirs = {item["id"]: heldout if item["id"].startswith("heldout") else visible
+                for item in contract["acceptance"]}
         for item in contract["acceptance"]:
-            # Held-out tests reach only held-out commands. Visible commands get the sealed
-            # configuration and the sealed visible test, never a held-out file.
-            sealed_dir = heldout if item["id"].startswith("heldout") else visible
-            exit_code = runner.run(staged.root, item["argv"], sealed_dir, timeout)
+            exit_code = runner.run(staged.root, item["argv"], dirs[item["id"]], timeout)
             results.append({"id": item["id"], "argv": item["argv"], "exit": exit_code})
+        replays = list(runner.replays)
+        hunks = (post_patch(runner, staged.root, start, contract, dirs, timeout)
+                 if all(item["exit"] == 0 for item in results) else [])
         # Each run's container has exited (and with it every worker process) before its
         # exit status is read: kill is step 1, the read step 2, for every command.
         isolation = _isolation(sha256(contract_bytes), trusted, runner, contract["acceptance"],
@@ -366,7 +431,8 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
                                format(0o755, "04o") if has_heldout else None)
         staging = {"rejected": staged.rejected, "removed_caches": staged.removed_caches,
                    "removed_config": staged.removed_config,
-                   "rejected_native": staged.rejected_native, "replays": list(runner.replays),
+                   "rejected_native": staged.rejected_native, "replays": replays,
+                   "post_patch": hunks, "hunks_exercised": hunks_exercised(hunks),
                    "replay_order_seed": runner.order_seed}
     record = {"schema_version": GRADE_SCHEMA, "claim_id": context.claim_id,
               "invocation_id": context.invocation_id, "producer": context.producer,
