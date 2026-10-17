@@ -19,9 +19,10 @@ def cwd(path: str = WS) -> str:
     return "AT_FDCWD<" + hx(path)[1:-1] + ">"
 
 
-def execve(pid, t, *argv):
+def execve(pid, t, *argv, exe=None, env=("PATH=/usr/bin:/bin", "HOME=/tmp")):
     args = ", ".join(hx(item) for item in argv)
-    return f"{pid} {t:.6f} execve({hx(argv[0])}, [{args}], 0x7ffd /* 3 vars */) = 0"
+    envp = ", ".join(hx(item) for item in env)
+    return f"{pid} {t:.6f} execve({hx(exe or argv[0])}, [{args}], [{envp}]) = 0"
 
 
 def line(pid, t, body):
@@ -43,7 +44,7 @@ def test_flags_name_every_family_and_print_exits():
                  "ftruncate", "chmod", "fchmodat2", "mmap", "connect", "clone3", "vfork"):
         assert name in expression.removeprefix("trace=").split(",")
     assert "-qq" not in strace.FLAGS and "-q" in strace.FLAGS
-    assert {"-f", "-y", "-xx", "-ttt", "-z"} <= set(strace.FLAGS)
+    assert {"-f", "-y", "-xx", "-ttt", "-z", "-v"} <= set(strace.FLAGS)
 
 
 def test_raw_open_syscall_is_a_write():
@@ -228,3 +229,40 @@ def test_within_keeps_only_workspace_paths():
     assert strace.within("/workspace", WS) is None
     assert strace.within("/workspacex/a", WS) is None
     assert strace.within("/tmp/a", WS) is None
+
+
+def test_exec_records_the_executed_path_cwd_and_loader_environment():
+    found = build([
+        execve(10, 1.0, "agent", exe="/usr/bin/agent"),
+        line(10, 1.1, f"chdir({hx('sub')}) = 0"),
+        execve(10, 1.2, "pytest", "-q", exe="./.bin/pytest",
+               env=("PATH=./.bin:/usr/bin", "PYTHONPATH=.", "LD_PRELOAD=/w/x.so",
+                    "PYTEST_ADDOPTS=-p evil", "SECRET=1", "HOME=/tmp")),
+        line(10, 1.3, "+++ exited with 0 +++"),
+    ])
+    first, second = kinds(found, "exec")
+    assert first.exe == "/usr/bin/agent" and first.cwd == WS
+    assert first.env == {"PATH": "/usr/bin:/bin"}
+    assert second.argv == ["pytest", "-q"]
+    assert second.exe == "/workspace/sub/.bin/pytest" and second.cwd == "/workspace/sub"
+    assert second.env == {"PATH": "./.bin:/usr/bin", "PYTHONPATH": ".",
+                          "LD_PRELOAD": "/w/x.so", "PYTEST_ADDOPTS": "-p evil"}
+
+
+def test_execveat_resolves_against_its_directory_descriptor():
+    argv = ", ".join(hx(item) for item in ("tool",))
+    found = build([
+        execve(10, 1.0, "agent"),
+        line(10, 1.1, f"execveat({fd('/workspace/bin')}, {hx('tool')}, [{argv}], "
+                      f"[{hx('PATH=/bin')}], 0) = 0"),
+        line(10, 1.2, f"execveat({fd('/workspace/bin/tool2', '4')}, {hx('')}, [{argv}], "
+                      f"[], AT_EMPTY_PATH) = 0"),
+    ])
+    _, at, empty = kinds(found, "exec")
+    assert at.exe == "/workspace/bin/tool" and at.env == {"PATH": "/bin"}
+    assert empty.exe == "/workspace/bin/tool2" and empty.env == {}
+
+
+def test_an_abbreviated_environment_is_a_trace_error():
+    with pytest.raises(strace.TraceError):
+        build([f"10 1.000000 execve({hx('/a')}, [{hx('a')}], 0x7ffd /* 3 vars */) = 0"])

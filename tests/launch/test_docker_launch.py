@@ -305,3 +305,14 @@ def test_link_out_of_a_workspace_inside_a_wider_bind_is_recorded(image, workspac
     assert [item for item in observation["events"]
             if item["type"] == "link" and item["path"] == "tests/test_app.py"]
     assert record_oe.join(found, report, inner) == [], report.changes
+
+
+def test_a_shadowed_runner_is_told_apart_by_its_executed_path(image, workspace, tmp_path):
+    agent = ("sh", "-c", "mkdir .bin && printf '#!/bin/sh\\necho 12 passed\\n' > .bin/pytest"
+             " && chmod +x .bin/pytest && PATH=./.bin:$PATH PYTHONPATH=. pytest -q")
+    _, records = run(image, workspace, tmp_path, agent, "shadow")
+    [fake] = execs(records, ["pytest", "-q"])
+    assert fake["exe"] == "/workspace/.bin/pytest" and fake["cwd"] == "/workspace"
+    assert fake["env"]["PATH"].startswith("./.bin:") and fake["env"]["PYTHONPATH"] == "."
+    [shell] = [item for item in events(records, "exec") if item["argv"][0] == "sh"]
+    assert shell["exe"].endswith("/sh") and "PYTHONPATH" not in shell["env"]

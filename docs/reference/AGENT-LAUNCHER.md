@@ -49,7 +49,7 @@ The image must provide `strace` 6.6 or later (for `fchmodat2`), `setpriv` and
 | `launch.json` | `probity-launch/v1`: backend, image and image id, runtime and tracer versions, the full container argv, `trace_expression`, `tracer_flags`, `tracer_uid_separated`, agent argv, uid, environment, network, start tarball digest, observer source digest |
 | `transcript.txt` | the agent's stdout and stderr |
 | `trace.txt` | the raw tracer output |
-| `observation.json` | `probity-observation/v2` |
+| `observation.json` | `probity-observation/v3`: `probity-observation/v2` plus `workspace_root` and the exec fields below |
 | `capability.json` | `probity-capabilities/v1`: the event types the sensors can see |
 | `tree.json` | `probity-tree/v2`: every non-directory entry of the final tree, below |
 | `receipt.json` | `probity-launch-receipt/v1`, below |
@@ -100,19 +100,27 @@ regular files.
 
 The trace expression is
 `trace=execve,execveat,open,openat,openat2,creat,mkdir,mkdirat,mknod,mknodat,symlink,symlinkat,rename,renameat,renameat2,link,linkat,unlink,unlinkat,rmdir,truncate,ftruncate,chmod,fchmod,fchmodat,fchmodat2,chown,fchown,lchown,fchownat,utime,utimes,utimensat,futimesat,setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr,mmap,connect,fork,vfork,clone,clone3,chdir,fchdir,io_uring_setup,ptrace,process_vm_writev`,
-with `-f -q -y -ttt -xx -z`. Only successful calls are recorded.
+with `-f -q -y -v -ttt -xx -z`. Only successful calls are recorded. `-v` prints
+each exec's environment in full.
 
 | event | from |
 | --- | --- |
-| `exec` with `argv`, and `exit` when the process ended | `execve`, `execveat`; the exit status (128 plus the signal number for a signal) goes to the last exec of the process |
+| `exec` with `argv`, `exe`, `cwd`, `env`, and `exit` when the process ended | `execve`, `execveat`; `exe` is the path the kernel executed, resolved against the process's working directory or the `execveat` descriptor (never `argv[0]`); `cwd` is the process's working directory; `env` holds the members of the environment that change which code runs (`PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSAFEPATH`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `PYTHONNOUSERSITE`, `PYTHONPYCACHEPREFIX`, `PYTHONWARNINGS`, `PYTEST_ADDOPTS`, `PYTEST_PLUGINS`, `NODE_OPTIONS`, `NODE_PATH`), only those present; the exit status (128 plus the signal number for a signal) goes to the last exec of the process |
 | `write` | an open with `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC` or `O_APPEND`, `creat`, and a shared writable `mmap` |
 | `create`, `rename`, `link`, `unlink`, `truncate` | the matching calls; `rename` and `link` carry `target` |
 | `chmod` | mode, owner, timestamp and extended-attribute changes |
 | `read` | a read-only open inside the workspace |
 | `connect` | `connect`, with no path; the address is in the receipt |
 
+`exe` and `cwd` are container paths. The observation's `workspace_root` names
+the container path of the workspace, so a reader can tell a runner on the
+image (`/usr/local/bin/pytest`) from one the agent placed in the workspace
+(`/workspace/.bin/pytest`) whose argv is the same.
+
 A rename or link from outside the workspace into it is recorded as a `create`
-of the target; one from inside to outside, as an `unlink`.
+of the target; a rename from inside to outside, as an `unlink`; a hard link
+from an inside file to an outside name, as a `link` on the inside path with no
+`target`. No mutation that touches the workspace is left out.
 
 ### Origin
 

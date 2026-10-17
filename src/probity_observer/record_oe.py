@@ -9,7 +9,10 @@ counting as an edit, and the observation names a coverage gap around it. S3
 (the final tree) becomes the tree record.
 
 The output formats are the ones ``probity-verify`` defines in
-``docs/done-receipt.md``: ``probity-observation/v2``,
+``docs/done-receipt.md``, in the versions this module adds to:
+``probity-observation/v3`` (an exec event carries the executed path ``exe``,
+its working directory ``cwd`` and the loader environment ``env``, all as
+container paths under the declared ``workspace_root``),
 ``probity-capabilities/v1`` and ``probity-tree/v2`` (every non-directory
 entry, symbolic links and special files included; see
 :mod:`.sensors.treedigest`). Those records are strict
@@ -34,6 +37,7 @@ from .sensors.treedigest import Tree
 
 RECEIPT_SCHEMA = "probity-launch-receipt/v1"
 TREE_SCHEMA = "probity-tree/v2"
+OBSERVATION_SCHEMA = "probity-observation/v3"
 WITNESS_SCOPE = "PEER"
 VANTAGE = "independent"
 DEVICE_TREES = ("/dev/", "/proc/", "/sys/")
@@ -119,7 +123,8 @@ def _record_event(event: strace.Event, workspace: str) -> dict | None:
     hold). No mutation that touches the workspace is dropped.
     """
     if event.kind == "exec":
-        fields: dict[str, Any] = {"argv": event.argv}
+        fields: dict[str, Any] = {"argv": event.argv, "exe": event.exe, "cwd": event.cwd,
+                                  "env": event.env or {}}
         if event.exit is not None:
             fields["exit"] = event.exit
         return fields
@@ -216,8 +221,9 @@ def build(context: Context, effects: strace.Effects, trace: strace.Trace,
             "producer": context.producer}
     observed = {**base, "vantage": VANTAGE, "witness_scope": WITNESS_SCOPE}
     scope = {"id": context.invocation_id, "start": instant(start), "end": instant(end)}
-    observation: dict[str, Any] = {"schema_version": "probity-observation/v2", **observed,
-                                   "scope": scope, "events": events}
+    observation: dict[str, Any] = {"schema_version": OBSERVATION_SCHEMA, **observed,
+                                   "workspace_root": workspace, "scope": scope,
+                                   "events": events}
     if report.lost:
         observation["coverage"] = "unknown"
     elif gaps:

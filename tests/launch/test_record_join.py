@@ -204,3 +204,14 @@ def test_tree_record_binds_links_special_files_and_modes():
     assert record["symlinks"] == {"conftest.py": "/tmp/evil"}
     without_link = dict(record, symlinks={})
     assert treedigest.record_digest(without_link) != record["tree_sha256"]
+
+
+def test_exec_events_carry_the_executed_path_cwd_and_loader_environment():
+    found = effects(event("exec", 0.1, argv=["pytest", "-q"], exe="/workspace/.bin/pytest",
+                          cwd="/workspace", env={"PATH": "./.bin:/usr/bin"}, exit=0))
+    observation = built(found)["observation"]
+    assert observation["schema_version"] == "probity-observation/v3"
+    assert observation["workspace_root"] == WS
+    [run] = observation["events"]
+    assert run["exe"] == "/workspace/.bin/pytest" and run["cwd"] == "/workspace"
+    assert run["env"] == {"PATH": "./.bin:/usr/bin"} and run["argv"] == ["pytest", "-q"]

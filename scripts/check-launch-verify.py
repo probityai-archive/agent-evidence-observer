@@ -122,10 +122,13 @@ def for_verifier(role: str, data: bytes) -> bytes:
     """The record in the version the pinned probity-verify reads.
 
     The launcher writes ``probity-tree/v2``, which adds symbolic links,
-    special files and execute bits to the digest. probity-verify at the commit
-    the workflow pins reads ``probity-tree/v1`` (regular files only), so the
-    tree record is re-expressed in v1 by dropping the added members and
-    recomputing the digest over the files. The verdicts checked here depend
+    special files and execute bits to the digest, and
+    ``probity-observation/v3``, which adds the executed path, working
+    directory and loader environment to each exec and the workspace root to
+    the record. probity-verify at the commit the workflow pins reads
+    ``probity-tree/v1`` and ``probity-observation/v2``, so each record is
+    re-expressed in the older version by dropping the added members (and, for
+    the tree, recomputing the digest over the regular files). The verdicts checked here depend
     only on members both versions share. Delete this function when
     probity-verify reads the new version and the workflow pins that commit.
     """
@@ -135,6 +138,13 @@ def for_verifier(role: str, data: bytes) -> bytes:
             del value[member]
         value["schema_version"] = "probity-tree/v1"
         value["tree_sha256"] = treedigest.tree_digest(value["files"])
+        return encoded(value)
+    if role == "observation" and value["schema_version"] == "probity-observation/v3":
+        del value["workspace_root"]
+        for item in value.get("events", []):
+            for member in ("exe", "cwd", "env"):
+                item.pop(member, None)
+        value["schema_version"] = "probity-observation/v2"
         return encoded(value)
     return data
 

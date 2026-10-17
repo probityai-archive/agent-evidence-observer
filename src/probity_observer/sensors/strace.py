@@ -9,11 +9,15 @@ binary such as busybox writes. The expression is recorded verbatim in the
 receipt.
 
 Strings are printed in hex (``-xx``) and descriptors with their paths
-(``-y``), so the parser never guesses at quoting. Only successful calls are
+(``-y``), so the parser never guesses at quoting. Structures are printed in
+full (``-v``), so each exec's environment is read, and the members that change
+which code runs (:data:`LOADER_ENV`) go into the exec event with the path the
+kernel executed and the process's working directory. Only successful calls are
 printed (``-z``); a failed write changed nothing.
 
 The parser turns the trace into ordered events: ``exec`` with argv and the
-process's exit status, mutation events (``write``, ``create``, ``rename``,
+process's exit status, the executed path, the working directory and the
+loader environment, mutation events (``write``, ``create``, ``rename``,
 ``link``, ``unlink``, ``truncate``, ``chmod``) on paths, ``read`` and
 ``connect``. Each event inside a command's process tree carries ``origin``,
 the event id of the exec at the root of that tree; see :func:`assign_origins`.
@@ -43,8 +47,12 @@ PROCESS = ("fork", "vfork", "clone", "clone3", "chdir", "fchdir")
 ESCAPE = ("io_uring_setup", "ptrace", "process_vm_writev")
 TRACED = EXEC + OPEN + CREATE + RENAME + LINK + UNLINK + TRUNCATE + CHMOD + MMAP + CONNECT + PROCESS + ESCAPE
 TRACE_EXPRESSION = "trace=" + ",".join(TRACED)
-FLAGS = ("-o", "/dev/stderr", "-f", "-q", "-y", "-ttt", "-xx", "-z", "-s", "65535", "-e", "signal=none",
-         "-e", TRACE_EXPRESSION)
+FLAGS = ("-o", "/dev/stderr", "-f", "-q", "-y", "-v", "-ttt", "-xx", "-z", "-s", "65535", "-e",
+         "signal=none", "-e", TRACE_EXPRESSION)
+LOADER_ENV = ("PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "PYTHONHOME",
+              "PYTHONSAFEPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONNOUSERSITE",
+              "PYTHONPYCACHEPREFIX", "PYTHONWARNINGS", "PYTEST_ADDOPTS", "PYTEST_PLUGINS",
+              "NODE_OPTIONS", "NODE_PATH")
 MUTATION_TYPES = ("write", "create", "rename", "link", "unlink", "truncate", "chmod")
 VISIBLE_EVENT_TYPES = ("exec",) + MUTATION_TYPES + ("read", "connect")
 WRITE_FLAGS = ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND")
@@ -222,6 +230,9 @@ class Event:
     path: str | None = None
     target: str | None = None
     argv: list[str] | None = None
+    exe: str | None = None
+    cwd: str | None = None
+    env: dict[str, str] | None = None
     exit: int | None = None
     address: str | None = None
     id: str = ""
@@ -326,6 +337,34 @@ def _path_effect(name: str, args: list[str], result: str, pid: int,
     raise TraceError(f"no effect rule for {name}")
 
 
+def loader_env(envp: list[str]) -> dict[str, str]:
+    """The members of an exec's environment that change which code is loaded."""
+    found = {}
+    for item in envp:
+        key, sep, value = item.partition("=")
+        if sep and key in LOADER_ENV:
+            found[key] = value
+    return found
+
+
+def _exec_event(name: str, args: list[str], pid: int, when: float,
+                resolve: _Resolver) -> Event:
+    """An exec with the path the kernel ran, the working directory and the loader keys.
+
+    ``-v`` prints the environment in full; an abbreviated one is a trace the
+    configuration did not produce, so it is a :class:`TraceError`.
+    """
+    if name == "execve":
+        exe = resolve.path(pid, string_arg(args[0]))
+        argv, envp = argv_arg(args[1]), argv_arg(args[2])
+    else:
+        raw = string_arg(args[1])
+        exe = _fd(args[0]) if raw == "" else resolve.path(pid, raw, args[0])
+        argv, envp = argv_arg(args[2]), argv_arg(args[3])
+    return Event("exec", pid, when, argv=argv, exe=exe, cwd=resolve.of(pid),
+                 env=loader_env(envp))
+
+
 def effects(trace: Trace, workdir: str) -> Effects:
     """Turn parsed calls into events, in the order the calls completed.
 
@@ -357,8 +396,7 @@ def effects(trace: Trace, workdir: str) -> Effects:
             elif name == "fchdir":
                 resolve.cwd[here] = _fd(args[0])
             elif name in EXEC:
-                argv = argv_arg(args[1] if name == "execve" else args[2])
-                found.events.append(Event("exec", here, call.time, argv=argv))
+                found.events.append(_exec_event(name, args, here, call.time, resolve))
             elif name in CONNECT:
                 found.events.append(Event("connect", here, call.time,
                                           address=args[1] if len(args) > 1 else ""))
