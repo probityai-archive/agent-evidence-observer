@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
@@ -50,7 +50,7 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6,<7" },
     { name = "inspect-ai", marker = "extra == 'inspect'", specifier = "==0.3.273" },
     { name = "jsonschema", marker = "extra == 'test'", specifier = ">=4,<5" },
-    { name = "probity-verify", marker = "extra == 'done'", git = "https://github.com/probityai/probity-verify?rev=adb2201356260931a75322d541c11fb311e24d3f" },
+    { name = "probity-verify", marker = "extra == 'done'", git = "https://github.com/probityai/probity?subdirectory=packages%2Fprobity-verify&rev=b20e2d269cadb1ecfb4e5e12bac2249aa5e9e84c" },
     { name = "probityai", marker = "extra == 'done'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=58a48b2f33b55cafb72de9f187f0fa53eed74d95" },
     { name = "probityai", marker = "extra == 'witness'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=58a48b2f33b55cafb72de9f187f0fa53eed74d95" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8,<10" },
@@ -1681,8 +1681,8 @@ wheels = [
 
 [[package]]
 name = "probity-verify"
-version = "0.1.1"
-source = { git = "https://github.com/probityai/probity-verify?rev=adb2201356260931a75322d541c11fb311e24d3f#adb2201356260931a75322d541c11fb311e24d3f" }
+version = "0.2.0"
+source = { git = "https://github.com/probityai/probity?subdirectory=packages%2Fprobity-verify&rev=b20e2d269cadb1ecfb4e5e12bac2249aa5e9e84c#b20e2d269cadb1ecfb4e5e12bac2249aa5e9e84c" }
 dependencies = [
     { name = "cryptography" },
 ]

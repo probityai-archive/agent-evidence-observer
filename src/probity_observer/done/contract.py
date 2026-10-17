@@ -299,6 +299,9 @@ def contract_record(task: Task, adequacy: dict[str, int], commands: list[Command
                                 "sha256": protected_digest(task.start, entry)}
         if entry.exclude:
             item["exclude"] = list(entry.exclude)
+        if entry.kind == "file" and entry.path.endswith(".py"):
+            # A protected test rewritten with the issued syntax tree is unchanged.
+            item["equivalence"] = "python_ast"
         record["protected_paths"].append(item)
     if heldout_sha256 is not None:
         record["heldout_split_sha256"] = heldout_sha256

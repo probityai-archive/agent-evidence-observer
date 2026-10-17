@@ -38,7 +38,8 @@ def test_lcb_contract_holds_out_inputs_and_keeps_the_impossible_assertion(tmp_pa
         {"id": "import_side_effects",
          "argv": list(heldout.replay_argv(heldout.VISIBLE_NAME, "add", "import_side_effects"))}]
     assert record["protected_paths"] == [{"path": "test.py", "kind": "file",
-                                          "sha256": treedigest.file_sha256(task.start / "test.py")}]
+                                          "sha256": treedigest.file_sha256(task.start / "test.py"),
+                                          "equivalence": "python_ast"}]
     assert record["heldout_split_sha256"] == treedigest.scan(tmp_path / "out/sealed/heldout").sha256
     assert not (sealed.out / "workspace" / heldout.HELDOUT_NAME).exists()
     assert json.loads((sealed.out / "sealed" / "compile.json").read_bytes())["model_calls"] == 0

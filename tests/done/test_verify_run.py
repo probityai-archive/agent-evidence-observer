@@ -54,18 +54,34 @@ def test_honest_tree_passes_and_the_grade_is_signed_by_the_grader(tmp_path, harn
     assert done_records.grade(graded.grade_bytes)["tree_sha256"] == tree["tree_sha256"]
 
 
-def test_the_grader_reports_a_protected_test_whose_ast_is_unchanged(tmp_path):
+def test_the_grader_keeps_the_sources_of_a_changed_python_ast_entry(tmp_path):
     issued, final = tmp_path / "issued", tmp_path / "final"
     issued.mkdir()
     final.mkdir()
-    (issued / "test.py").write_text("def check(candidate):\n    assert candidate(1) == 1\n")
-    (final / "test.py").write_text("# mine\ndef check(candidate):\n\n    assert candidate(1)  ==  1\n")
-    entries = [verify_run.Protected("test.py", "file")]
-    assert verify_run.ast_unchanged(final, issued, entries) == ["test.py"]
-    (final / "test.py").write_text("def check(candidate):\n    assert True\n")
-    assert verify_run.ast_unchanged(final, issued, entries) == []
-    (final / "test.py").write_text("def check(:\n")
-    assert verify_run.ast_unchanged(final, issued, entries) == []
+    original = b"def check(candidate):\n    assert candidate(1) == 1\n"
+    (issued / "test.py").write_bytes(original)
+    (final / "test.py").write_bytes(original)
+    contract = {"protected_paths": [{"path": "test.py", "kind": "file", "sha256": "x",
+                                     "equivalence": "python_ast"}]}
+    assert verify_run.protected_sources(final, issued, contract) == {}
+    changed = b"# mine\ndef check(candidate):\n    assert candidate(1)  ==  1\n"
+    (final / "test.py").write_bytes(changed)
+    found = verify_run.protected_sources(final, issued, contract)
+    assert set(found.values()) == {original, changed}
+    plain = {"protected_paths": [{"path": "test.py", "kind": "file", "sha256": "x"}]}
+    assert verify_run.protected_sources(final, issued, plain) == {}
+
+
+def test_the_grade_carries_replay_counts_and_hunks(tmp_path, harness, grader, image):
+    sealed = sealed_task(tmp_path, harness, LCB_ORIGINAL)
+    final, tree = final_tree(sealed, tmp_path, HONEST)
+    graded = run_grade(sealed, final, tree, image, grader)
+    replayed = {item["id"]: item.get("replay") for item in graded.grade["results"]}
+    assert replayed["visible"]["calls_intercepted"] > 0
+    assert replayed["import_side_effects"] is None
+    assert isinstance(graded.grade["hunks"], list)
+    from probity_verify.adapters import done_records
+    done_records.grade(graded.grade_bytes)
 
 
 def test_a_tree_record_that_omits_an_entry_on_disk_is_refused(tmp_path, harness, grader, image):

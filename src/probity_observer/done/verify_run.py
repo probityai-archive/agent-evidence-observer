@@ -25,7 +25,6 @@ One grading run, in order:
 
 from __future__ import annotations
 
-import ast
 import difflib
 import json
 import os
@@ -344,6 +343,7 @@ class Graded:
     envelope: bytes
     isolation: dict[str, Any]
     staging: dict[str, Any]
+    sources: dict[str, bytes] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -393,29 +393,25 @@ def _isolation(contract_sha256: str, trusted: tuple[str, str], runner: DockerRun
 TREE_FIELDS = ("files", "executable", "symlinks", "special")
 
 
-def _ast_digest(path: Path) -> str | None:
-    """The digest of a Python file's AST (comments and layout dropped), or ``None``."""
-    try:
-        tree = ast.parse(path.read_bytes())
-    except (SyntaxError, ValueError, OSError):
-        return None
-    return sha256(ast.dump(tree, include_attributes=False).encode())
+def protected_sources(final: Path, sealed: Path, contract: dict[str, Any]) -> dict[str, bytes]:
+    """Sealed and final bytes, by SHA-256, of each ``python_ast`` protected file that changed.
 
-
-def ast_unchanged(final: Path, sealed: Path, protected: list[Protected]) -> list[str]:
-    """Protected Python files whose final AST is the issued one's (re-declared, reformatted
-    or restored, but the same program), read from the agent's tree before the reset."""
-    same = []
-    for entry in protected:
-        if entry.kind != "file" or not entry.path.endswith(".py"):
+    probity-verify's ``protected_paths`` reads them as ``source:<sha256>`` case artifacts to
+    decide whether the final file keeps the sealed syntax tree; each is bound by its own
+    digest. Read from the agent's tree before the reset.
+    """
+    found: dict[str, bytes] = {}
+    for item in contract["protected_paths"]:
+        if item.get("equivalence") != "python_ast":
             continue
-        mine, issued = final / entry.path, sealed / entry.path
-        if mine.is_symlink() or not mine.is_file():
+        mine, issued = final / item["path"], sealed / item["path"]
+        if mine.is_symlink() or not mine.is_file() or not issued.is_file():
             continue
-        digest = _ast_digest(mine)
-        if digest is not None and digest == _ast_digest(issued):
-            same.append(entry.path)
-    return sorted(same)
+        data, original = mine.read_bytes(), issued.read_bytes()
+        if data != original:
+            found[sha256(data)] = data
+            found[sha256(original)] = original
+    return found
 
 
 def check_tree_record(final: Path, tree_record: dict[str, Any]) -> None:
@@ -451,7 +447,7 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
         result_dir = Path(work)
         os.chmod(result_dir, 0o700)
         staged = stage_tree(final, result_dir / "tree", start)
-        same_ast = ast_unchanged(staged.root, sealed / "protected", _protected(contract))
+        sources = protected_sources(staged.root, sealed / "protected", contract)
         reset(staged, _protected(contract), sealed / "protected", start)
         trusted = _trusted(contract, staged)
         if trusted[0] != trusted[1]:
@@ -479,12 +475,19 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
                    "removed_config": staged.removed_config,
                    "rejected_native": staged.rejected_native, "replays": replays,
                    "post_patch": hunks, "hunks_exercised": hunks_exercised(hunks),
-                   "protected_ast_unchanged": same_ast,
                    "replay_order_seed": runner.order_seed}
+    by_argv = {tuple(item["argv"]): item for item in replays}
+    for item in results:
+        replayed = by_argv.get(tuple(item["argv"]))
+        if replayed is not None and replayed.get("mode", "assert") != "import_side_effects":
+            item["replay"] = {"calls_intercepted": replayed["calls_intercepted"],
+                              "distinct_calls": replayed["distinct_calls"]}
     record = {"schema_version": GRADE_SCHEMA, "claim_id": context.claim_id,
               "invocation_id": context.invocation_id, "producer": context.producer,
               "vantage": "independent", "witness_scope": context.witness_scope,
               "contract_sha256": sha256(contract_bytes), "tree_sha256": tree_record["tree_sha256"],
-              "results": results}
+              "results": results,
+              "hunks": [{key: hunk[key] for key in ("path", "lines", "mutants", "killed")}
+                        for hunk in hunks]}
     data, envelope = sign_record(record, key)
-    return Graded(record, data, envelope, isolation, staging)
+    return Graded(record, data, envelope, isolation, staging, sources)
