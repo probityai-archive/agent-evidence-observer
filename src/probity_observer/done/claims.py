@@ -21,7 +21,11 @@ the sealed arguments whose program is the sealed ``argv[0]``, a sealed ``exe`` p
 one-command ``sh -c`` or ``bash -lc``. Other commands the agent ran (``ls -R``, an editor call)
 say nothing about done and are left out, with their output. A test summary counts only in a kept
 command's output or in the agent's own text, never under a ``# <tool>`` line, where the agent displays a file or a tool
-result (a viewed ``test.py`` that prints "All tests passed!" is not a test run). A line
+result (a viewed ``test.py`` that prints "All tests passed!" is not a test run). The harness marks
+where the agent's own text begins with a line that is exactly :data:`AGENT_TEXT`: it ends a
+displayed block and a command's output, so a summary the agent writes after a viewed file or a
+failed run is the agent's claim of the first visible acceptance command. A harness writes
+:data:`AGENT_TEXT`, ``$ `` and ``# `` lines itself and escapes them in tool output. A line
 ``[exit N]`` in a kept command's output states that run's exit. Only the agent's last claim of
 each sealed command is kept, because the verifier settles a claim on that command's last run,
 and only when it does not state a failure, because a run the agent says failed is no claim of
@@ -37,6 +41,8 @@ import shlex
 from typing import Any
 
 SCHEMA = "probity-tool-claims/v1"
+# The line a harness prints before the agent's own text (its messages, not a tool's output).
+AGENT_TEXT = "@ agent"
 # unittest ends a passing run with a line that is "OK" alone or "OK (skipped=1)"; a prose line
 # that merely starts with "OK" is not a test summary.
 _PASSED = re.compile(r"(?:\b\d+ passed\b|All tests passed|^OK(?: \([^)\n]*\))?$)", re.MULTILINE)
@@ -139,6 +145,9 @@ def from_text(transcript: str, visible_argv: list[str] | None,
             current[0] = None if argv is None else {"id": f"c{len(claims) + 1}", "argv": argv}
             if current[0] is not None:
                 claims.append(current[0])
+        elif line.rstrip() == AGENT_TEXT:
+            close()
+            shown[0], current[0] = False, None
         elif commands is not None and line.startswith("# "):
             close()
             shown[0], current[0] = True, None
