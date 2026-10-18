@@ -644,7 +644,9 @@ def measure(base: Path, mutants: list[Mutant], commands: list[Command], runner: 
     with tempfile.TemporaryDirectory(prefix="probity-mutant-") as scratch:
         for index, mutant in enumerate(mutants):
             state = Path(scratch) / f"m{index}"
-            shutil.copytree(base, state, symlinks=True)
+            # No bytecode cache: a .pyc kept from the base would hide the mutated source.
+            shutil.copytree(base, state, symlinks=True,
+                            ignore=shutil.ignore_patterns("__pycache__"))
             for name, text in mutant.files():
                 (state / name).write_text(text)
             exits = []
