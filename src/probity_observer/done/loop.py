@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ..launch import launch_agent
+from ..launch import launch_agent, snapshot
 from . import claims as claim_parser
 from . import drift, policy, receipt, verify_run
 from .contract import is_pytest
@@ -210,6 +210,9 @@ def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dic
         backend=spec.backend, image=spec.image, agent_argv=spec.agent_argv, workspace=workspace,
         claim_id=claim_id, invocation_id=invocation, env=env, network=spec.network,
         timeout_seconds=limit), run)
+    # The final tree the agent left, kept beside the start tree: the next attempt starts from a
+    # reset workspace, so without it no attempt but the last could be graded again later.
+    snapshot.seal(workspace, run / "end.tar")
     receipt.sign_observer_records(run, keys.host)
     contract_bytes = (spec.contract / "contract.json").read_bytes()
     shutil.copy2(spec.contract / "contract.json", run / "contract.json")

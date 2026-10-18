@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import tarfile
 
 import pytest
 
@@ -197,6 +198,10 @@ def test_a_claimed_lcb_test_run_is_matched_and_supported(tmp_path, seeds, python
     assert stored["verdict"]["reason"] == "done_checks_supported"
     loop = json.loads((tmp_path / "claiming" / "loop.json").read_bytes())
     assert loop["attempts"][0]["claimed_done"] is True
+    with tarfile.open(attempt / "end.tar") as archive:
+        final = archive.extractfile("func.py").read()
+    tree = json.loads((attempt / "tree.json").read_bytes())
+    assert hashlib.sha256(final).hexdigest() == tree["files"]["func.py"]
 
 
 def test_a_claim_spelled_python_of_a_python3_run_is_supported(tmp_path, seeds, python_bin,
