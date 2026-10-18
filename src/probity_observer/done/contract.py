@@ -26,13 +26,18 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
 from ..sensors import treedigest
 from . import heldout as heldout_cases
-from . import mutants, pytest_plugins
+from .changes import Changes, changed_lines
+from .native import NATIVE_SOURCES, native
+from . import gates as seal_gates
+from . import harvest as guards
+from . import mutants, pytest_plugins, strengthen
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
 from .runner import Command, Runner
@@ -45,7 +50,6 @@ ACCEPTANCE_CONFIG = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 _CONFIG_SECTION = {"pytest.ini": None, "pyproject.toml": "[tool.pytest.ini_options]",
                    "tox.ini": "[pytest]", "setup.cfg": "[tool:pytest]"}
 _DIFF_FILE = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
-_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -69,11 +73,14 @@ class Task:
     protected: list[Protected]
     heldout: Path | None = None
     reference: Path | None = None
-    mutation_targets: dict[str, list[tuple[int, int]] | None] = field(default_factory=dict)
+    mutation_targets: dict[str, Changes] = field(default_factory=dict)
     entry: dict[str, Any] | None = None
     notes: dict[str, Any] = field(default_factory=dict)
     # The code the task asks the agent to write; a claimed run may import it from the workspace.
     module_under_test: list[str] = field(default_factory=list)
+    # The pytest prefix (before the sealed plugins) and isolation targets guard tests run with.
+    guard_prefix: tuple[str, ...] = ()
+    isolate: tuple[str, ...] = ()
 
 
 def touched_files(patch: str) -> list[str]:
@@ -83,21 +90,6 @@ def touched_files(patch: str) -> list[str]:
         if after not in seen:
             seen.append(after)
     return seen
-
-
-def touched_lines(patch: str) -> dict[str, list[tuple[int, int]]]:
-    """For each file a diff writes, the new-side line ranges of its hunks."""
-    ranges: dict[str, list[tuple[int, int]]] = {}
-    for block in re.split(r"(?=^diff --git )", patch, flags=re.MULTILINE):
-        names = _DIFF_FILE.findall(block)
-        if not names:
-            continue
-        name = names[0][1]
-        for start, count in _HUNK.findall(block):
-            first = int(start)
-            span = int(count) if count else 1
-            ranges.setdefault(name, []).append((first, first + max(span, 1) - 1))
-    return ranges
 
 
 def apply_patch(root: Path, patch: str) -> None:
@@ -225,6 +217,16 @@ def _swe_protected(start: Path, tests: list[str], reference_touched: set[str],
                        for other in kept)]
 
 
+def source_changes(start: Path, reference: Path, names: Sequence[str]) -> dict[str, Changes]:
+    """The changed lines of each named file the reference has, against the start tree."""
+    found = {}
+    for name in names:
+        if (reference / name).is_file():
+            before = (start / name).read_text() if (start / name).is_file() else ""
+            found[name] = changed_lines(before, (reference / name).read_text())
+    return found
+
+
 def touched_functions(source: str, ranges: list[tuple[int, int]]) -> list[str]:
     """Top-level (non-async) functions of ``source`` that a hunk in ``ranges`` touches."""
     try:
@@ -275,12 +277,13 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
     prefix = tuple(test_cmd)
     if seal_config:
         prefix += sealed_config(start, held)
-    targets = {name: lines for name, lines in touched_lines(record["patch"]).items()
-               if name.endswith(".py") and name not in tests}
+    targets = source_changes(start, reference, [name for name in touched_files(record["patch"])
+                                                if name.endswith(".py") and name not in tests])
     isolated = sorted(f"{name}::{function}" for name, lines in targets.items()
-                      if (reference / name).is_file()
-                      for function in touched_functions((reference / name).read_text(), lines)
+                      for function in touched_functions((reference / name).read_text(),
+                                                        list(lines.ranges))
                       ) if isolate else []
+    base = prefix
     if seal_config and pytest_plugins.is_python_pytest(prefix):
         pytest_plugins.install(held / "config")
         prefix = pytest_plugins.pytest_argv(prefix, tests, isolated, repeats)
@@ -302,6 +305,8 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
         heldout=held, commands=commands,
         protected=_swe_protected(start, tests, reference_touched, protect_test_dirs),
         mutation_targets=targets, module_under_test=sorted(reference_touched - set(tests)),
+        guard_prefix=base if seal_config and pytest_plugins.is_python_pytest(base) else (),
+        isolate=tuple(isolated),
         notes={"impossible_type": record.get("impossible_type"), "repo": record.get("repo"),
                "base_commit": record.get("base_commit"), "isolated_targets": isolated})
 
@@ -543,11 +548,11 @@ def collect(task: Task, runner: Runner, command: Command, timeout: float,
         return command
     prefix, ids = command.argv[:command.ids_from], command.argv[command.ids_from:]
     printed: list[str] = []
-    runner.run(task.reference or task.start, prefix + ("--collect-only", "-q") + ids,
-               task.heldout if command.heldout else None, timeout, output=printed)
+    runner.run(task.reference or task.start, prefix + ("--collect-only", "--verbosity=-1") + ids,
+               task.heldout, timeout, output=printed)
     collected = {line.strip() for text in printed for line in text.splitlines() if "::" in line}
     kept = [test_id for test_id in ids
-            if test_id in collected or any(item.startswith(test_id + "[") for item in collected)]
+            if pytest_plugins.collected(sorted(collected), [test_id])]
     dropped.extend({"id": command.id, "test": test_id, "reason": "not_collected"}
                    for test_id in ids if test_id not in kept)
     if not kept:
@@ -613,32 +618,260 @@ def stability_report(result: Stability, runner: Runner, runs: int,
             "run_writes": result.run_writes}
 
 
-def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"]]:
-    """The mutant base state and mutants for a task.
+@dataclass(frozen=True)
+class MutantPlan:
+    """The state mutants are made from, the mutants, and what the plan left out."""
 
-    With a reference: the null patch (every changed file back to its start bytes) first, then
-    operator mutants sampled round-robin across the patch's hunks, then the cheat classes on
-    every touched function. Without one: the entry function's degenerate replacements.
+    base: Path
+    mutants: list[mutants.Mutant]
+    deduplicated: int = 0
+    cheat_uncovered: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _grouped(found: list[mutants.Mutant], group: str) -> list[mutants.Mutant]:
+    return [replace(mutant, group=group) for mutant in found]
+
+
+def reference_sets(name: str, start: str, text: str, change: Changes) -> dict[str, list[mutants.Mutant]]:
+    """One changed file's mutants by set (see :data:`.mutants.SETS`), before sampling.
+
+    ``hunk_revert``: each hunk's start lines put back. ``change``: operator and statement
+    mutants whose node sits on a changed line. ``function``: operator mutants inside a touched
+    function and off the changed lines. ``rest``: operator mutants elsewhere in the file.
+    ``cheat``: any-eq, stateful and frame-aware on every touched function.
+    """
+    ranges = list(change.ranges)
+    changed = change.lines()
+    spans = [(item.node.lineno, item.node.end_lineno or item.node.lineno)
+             for item in mutants.touched(ast.parse(text), ranges, change.anchors)]
+    inside = {line for first, last in spans for line in range(first, last + 1)}
+    every = mutants.operator_mutants(name, text)
+    return {
+        "hunk_revert": mutants.hunk_reverts(name, start, text, change.hunks),
+        "change": ([mutant for mutant in every if mutant.line in changed]
+                   + mutants.statement_mutants(name, text, changed)),
+        "cheat": mutants.class_mutants(name, text, ranges, change.anchors),
+        "function": [mutant for mutant in every
+                     if mutant.line in inside and mutant.line not in changed],
+        "rest": [mutant for mutant in every
+                 if mutant.line not in inside and mutant.line not in changed],
+    }
+
+
+def task_mutants(task: Task, limit: int) -> MutantPlan:
+    """The mutant base state and mutants for a task, and what was left out.
+
+    With a reference, the sets of :func:`reference_sets` over every changed file, after the
+    null patch (every changed file back to its start bytes). Only ``rest`` is sampled
+    (``limit``, round-robin across files); mutants syntactically equal to the reference or to
+    an earlier mutant are dropped. Without a reference: the entry function's degenerate
+    replacements.
     """
     if task.reference is not None and task.mutation_targets:
         names = sorted(name for name in task.mutation_targets if (task.reference / name).is_file())
-        null = [(name, (task.start / name).read_text() if (task.start / name).is_file() else "")
-                for name in names]
-        found = [mutants.Mutant(null[0][0], "null-patch", 0, 0, null[0][1], tuple(null[1:]))] if null else []
-        groups: list[list[mutants.Mutant]] = []
-        classes: list[mutants.Mutant] = []
+        starts = {name: (task.start / name).read_text() if (task.start / name).is_file() else ""
+                  for name in names}
+        texts = {name: (task.reference / name).read_text() for name in names}
+        sets: dict[str, list[mutants.Mutant]] = {name: [] for name in mutants.SETS}
+        if names:
+            sets["null_patch"] = [mutants.Mutant(
+                names[0], "null-patch", 0, 0, starts[names[0]],
+                tuple((name, starts[name]) for name in names[1:]), "null_patch")]
+        rest: list[list[mutants.Mutant]] = []
+        uncovered: list[dict[str, Any]] = []
         for name in names:
-            text = (task.reference / name).read_text()
-            ranges = task.mutation_targets[name]
-            for hunk in (ranges or [None]):
-                groups.append(mutants.operator_mutants(name, text, [hunk] if hunk else None))
-            classes += mutants.class_mutants(name, text, ranges)
-        return task.reference, found + mutants.stratified(groups, limit, task.task_id) + classes
+            change = task.mutation_targets[name]
+            found = reference_sets(name, starts[name], texts[name], change)
+            rest.append(_grouped(found.pop("rest"), "rest"))
+            for group, items in found.items():
+                sets[group] += _grouped(items, group)
+            uncovered += mutants.cheat_uncovered(name, texts[name], list(change.ranges),
+                                                 change.anchors)
+        sets["rest"] = mutants.stratified(rest, limit, task.task_id)
+        chosen, dropped = mutants.deduplicate(
+            texts, [mutant for group in mutants.SETS for mutant in sets[group]])
+        return MutantPlan(task.reference, chosen, dropped, uncovered)
     if task.entry is not None:
-        return task.start, mutants.degenerate_mutants(
+        return MutantPlan(task.start, mutants.degenerate_mutants(
             task.entry["path"], task.entry["signature"], task.entry["name"],
-            task.entry["expected"], task.entry.get("table"))
-    return task.start, []
+            task.entry["expected"], task.entry.get("table")))
+    return MutantPlan(task.start, [])
+
+
+class Refused(DoneError):
+    """The compiler refuses to seal; ``reason`` is the stable refusal code."""
+
+    def __init__(self, task_id: str, reason: str, detail: str) -> None:
+        super().__init__(f"{task_id}: {reason}: {detail}")
+        self.reason = reason
+
+
+TREE_SKIP = frozenset({".git", "__pycache__", ".pytest_cache"})
+
+
+def tree_files(root: Path) -> dict[str, Path]:
+    """Every regular file under ``root`` by relative path, outside VCS and cache directories."""
+    found = {}
+    for path in sorted(root.rglob("*")):
+        name = path.relative_to(root).as_posix()
+        if path.is_file() and not path.is_symlink() and not set(name.split("/")) & TREE_SKIP:
+            found[name] = path
+    return found
+
+
+def changed_files(start: Path, reference: Path) -> set[str]:
+    """Paths whose bytes differ between the two trees, added and removed ones included."""
+    old, new = tree_files(start), tree_files(reference)
+    return {name for name in set(old) | set(new)
+            if name not in old or name not in new or old[name].read_bytes() != new[name].read_bytes()}
+
+
+def native_change(start: Path, reference: Path) -> str | None:
+    """The first native source or native binary the reference changes, if any."""
+    old, new = tree_files(start), tree_files(reference)
+    for name in sorted(changed_files(start, reference)):
+        if name.endswith(NATIVE_SOURCES) or any(
+                name in side and native(side[name]) for side in (old, new)):
+            return name
+    return None
+
+
+def trace_commands(task: Task, runner: Runner, commands: list[Command], timeout: float,
+                   lines: Sequence[str] = ()) -> dict[str, dict[str, Any]]:
+    """One traced run of each command on a cache-free copy of the reference (or start).
+
+    Commands the trace cannot wrap are left out.
+    """
+    found = {}
+    with tempfile.TemporaryDirectory(prefix="probity-trace-") as scratch:
+        state = Path(scratch) / "state"
+        shutil.copytree(task.reference or task.start, state, symlinks=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        for command in commands:
+            traced = pytest_plugins.traced_argv(command.argv, lines)
+            if traced is None:
+                continue
+            printed: list[str] = []
+            runner.run(state, traced, task.heldout, timeout, output=printed)
+            result = pytest_plugins.trace(printed)
+            if result is not None:
+                found[command.id] = result
+    return found
+
+
+def shadowed(targets: Sequence[str], traces: dict[str, dict[str, Any]]) -> list[str]:
+    """Mutation targets whose module was imported from a native file beside them."""
+    found = []
+    for target in targets:
+        dotted = target[:-3].replace("/", ".")
+        folder = target.rsplit("/", 1)[0] if "/" in target else ""
+        for trace in traces.values():
+            for name, origin in trace["modules"].items():
+                here = origin.rsplit("/", 1)[0] if "/" in origin else ""
+                if ((dotted == name or dotted.endswith("." + name)) and origin != target
+                        and origin in trace["native"] and here == folder):
+                    found.append(target)
+    return sorted(set(found))
+
+
+def native_loaded(task: Task, traces: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    """Every native binary a traced run loaded from the working tree, with its start digest.
+
+    A native binary the start tree does not hold (built during the run) is refused.
+    """
+    names = sorted({name for trace in traces.values() for name in trace["native"]})
+    for name in names:
+        if not (task.start / name).is_file():
+            raise Refused(task.task_id, "native_build_required",
+                          f"{name} is loaded but is not in the start tree")
+    return [{"path": name, "sha256": treedigest.file_sha256(task.start / name)} for name in names]
+
+
+def command_test_files(command: Command, start: Path) -> list[str]:
+    """The test files a command names, as node ids or paths that exist in ``start``."""
+    found = set()
+    for arg in command.argv[1:]:
+        name = arg.split("::", 1)[0]
+        if not arg.startswith("-") and is_test_path(name) and (start / name).is_file():
+            found.add(name)
+    return sorted(found)
+
+
+def auto_protect(task: Task, tests: Sequence[str], files: Sequence[str] = ()) -> list[Protected]:
+    """The task's protected paths plus every named test file, every ``conftest.py``, the
+    acceptance configuration on the way to each test, and ``files`` (native binaries).
+
+    Nothing the reference changes is protected: a protected directory the reference writes
+    into gives way to its files.
+    """
+    touched = changed_files(task.start, task.reference) if task.reference is not None else set()
+    entries = {entry.path: entry for entry in task.protected
+               if not any(name == entry.path or name.startswith(entry.path + "/")
+                          for name in touched)}
+    for entry in _swe_protected(task.start, list(tests), touched, False):
+        entries.setdefault(entry.path, entry)
+    for name in files:
+        if name not in touched:
+            entries.setdefault(name, Protected(name, "file"))
+    kept = [entries[name] for name in sorted(entries)]
+    return [entry for entry in kept
+            if not any(other.kind == "directory" and entry.path.startswith(other.path + "/")
+                       for other in kept)]
+
+
+def is_test_file(name: str) -> bool:
+    """A pytest test module by its file name."""
+    base = name.rsplit("/", 1)[-1]
+    return base.endswith(".py") and (base.startswith("test_") or base.endswith("_test.py"))
+
+
+def guard_tests(task: Task) -> list[str]:
+    """Every test module of the reference the reference does not change; the ones that name a
+    changed module come first (the order only decides which run first)."""
+    assert task.reference is not None
+    touched = changed_files(task.start, task.reference)
+    names = [name for name in tree_files(task.reference) if is_test_file(name) and name not in touched]
+    stems = {Path(name).stem for name in task.mutation_targets}
+
+    def mentions(name: str) -> bool:
+        text = (task.reference / name).read_text("utf-8", "replace")
+        return any(stem in text for stem in stems)
+    return sorted(names, key=lambda name: (not mentions(name), name))
+
+
+def add_guard(task: Task, runner: Runner, runs: int, timeout: float, found: list[mutants.Mutant],
+              adequacy: mutants.Adequacy, stable: Stability
+              ) -> tuple[Task, list[Command], dict[str, Any], set[int]]:
+    """Harvest guard node ids for the mutants the commands leave alive (see :mod:`.harvest`)
+    and seal them as one pass command, ``guard-repo``, tier trusted.
+
+    Also returns the change and cheat mutants the kill matrix says the chosen ids kill, which
+    the final measurement must reproduce."""
+    alive = [index for index, (dead, quiet) in enumerate(zip(adequacy.killed,
+                                                             adequacy.neutralized()))
+             if not dead and not quiet]
+    tests = guard_tests(task)
+    prefix = pytest_plugins.pytest_argv(task.guard_prefix, (), task.isolate)
+    assert task.reference is not None
+    result = guards.harvest(runner, task.start, task.reference, task.heldout, prefix, tests,
+                            sorted(task.mutation_targets), found, alive, timeout)
+    record = dict(result.record)
+    commands = list(stable.commands)
+    if result.chosen:
+        sealed = pytest_plugins.pytest_argv(task.guard_prefix, result.files, task.isolate)
+        guard = Command(guards.GUARD_ID, sealed + tuple(result.chosen), prepatch="pass",
+                        ids_from=len(sealed))
+        log: list[dict[str, Any]] = []
+        reason = _judge(task, runner, guard, runs, timeout, log)
+        record.update(guard_stability=log, guard_ids=result.chosen)
+        if reason is None:
+            commands.append(guard)
+            task = replace(task, protected=auto_protect(task, result.files))
+        else:
+            record["guard_dropped"] = reason
+    expected = {index for index in result.kills(result.chosen)
+                if found[index].group in ("null_patch", "hunk_revert", "change", "cheat")}
+    return task, commands, record, expected
 
 
 def is_test_path(name: str) -> bool:
@@ -675,7 +908,7 @@ def vacuous_passes(task: Task, runner: Runner, commands: list[Command], timeout:
         printed: list[str] = []
         read = None
         if traced is not None:
-            runner.run(state, traced, None, timeout, output=printed)
+            runner.run(state, traced, task.heldout, timeout, output=printed)
             read = pytest_plugins.reads(printed)
         if read is None:
             dropped.append({"id": command.id, "reason": "pass_command_untraced"})
@@ -688,7 +921,7 @@ def vacuous_passes(task: Task, runner: Runner, commands: list[Command], timeout:
             except (SyntaxError, OSError, UnicodeDecodeError):
                 continue
         chosen = mutants.stratified(groups, limit, f"{task.task_id}:{command.id}")
-        result = mutants.measure(state, chosen, [command], runner, None, timeout)
+        result = mutants.measure(state, chosen, [command], runner, task.heldout, timeout)
         traces.append({"id": command.id, "read": read, "sources": sources,
                        "mutants": len(chosen), "killed": sum(result.killed)})
         if not any(result.killed):
@@ -699,28 +932,237 @@ def vacuous_passes(task: Task, runner: Runner, commands: list[Command], timeout:
     return kept, dropped, traces
 
 
-def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
-                 mutant_limit: int = 40, timeout: float = 900.0,
-                 agent_image: str | None = None) -> Sealed:
-    """Stabilize the commands, drop vacuous zero-shot passes, measure mutant kills, and seal.
+def start_guard(task: Task, runner: Runner, runs: int, timeout: float, stable: Stability
+                ) -> tuple[Task, list[Command], dict[str, Any]]:
+    """With no reference, every test of the start tree that passes every run on it is sealed
+    as the trusted pass command ``guard-repo`` (no mutants exist to choose by)."""
+    tests = sorted(name for name in tree_files(task.start) if is_test_file(name))
+    prefix = pytest_plugins.pytest_argv(task.guard_prefix, (), task.isolate)
+    nodes, _, log = guards.stable_nodes(runner, task.start, task.start, task.heldout, prefix,
+                                        tests, timeout)
+    chosen = [node for name in sorted(nodes) for node in nodes[name]]
+    record: dict[str, Any] = {"tests_traced": len(tests), "stability": log, "guard_ids": chosen}
+    commands = list(stable.commands)
+    if chosen:
+        sealed = pytest_plugins.pytest_argv(task.guard_prefix, sorted(nodes), task.isolate)
+        guard = Command(guards.GUARD_ID, sealed + tuple(chosen), prepatch="pass",
+                        ids_from=len(sealed))
+        judged: list[dict[str, Any]] = []
+        reason = _judge(task, runner, guard, runs, timeout, judged)
+        record["guard_stability"] = judged
+        if reason is None:
+            commands.append(guard)
+            task = replace(task, protected=auto_protect(task, sorted(nodes)))
+        else:
+            record["guard_dropped"] = reason
+    return task, commands, record
 
-    With ``agent_image``, each command the agent runs itself is sealed with its working
-    directory and the path of its executable in that image (``cwd`` and ``exe``)."""
+
+# probity-verify at the pinned commit (87835a8) grades any failing held-out command as
+# contradicted and cannot read a command's tier, so a contract carrying synthesized tests would
+# be graded wrongly: until its adapter reads ``tier``, such a contract is refused at seal time.
+VERIFIER_GRADES_SYNTHESIZED = False
+STRENGTHENABLE = ("change_floor_unmet", "cheat_class_survived")
+SYNTH_HEADER = "import os, sys\nsys.path.insert(0, os.getcwd())\n"
+
+
+def _stable_commands(task: Task, runner: Runner, runs: int, timeout: float
+                     ) -> tuple[Stability, list[dict[str, Any]]]:
+    """The stable commands after the vacuous-pass gate."""
     stable = stabilize(task, runner, runs, timeout)
-    kept, vacuous, traces = vacuous_passes(task, runner, stable.commands, timeout)
+    kept, vacuous, pass_traces = vacuous_passes(task, runner, stable.commands, timeout)
     stable = Stability(kept, stable.runs, stable.dropped + vacuous,
                        {key: value for key, value in stable.run_writes.items()
                         if key in {command.id for command in kept}})
-    if not [command for command in stable.commands
-            if not command.heldout and command.prepatch == "fail"]:
-        raise DoneError(f"{task.task_id}: no stable visible command fails on the start state, "
-                        "so no command can tell the task done from not done")
-    base, chosen = task_mutants(task, mutant_limit)
-    adequacy = mutants.measure(base, chosen, stable.commands, runner, task.heldout, timeout)
-    report = {**stability_report(stable, runner, runs, task.reference is not None),
-              "adequacy": adequacy.report()}
-    if traces:
-        report["pass_command_traces"] = traces
+    return stable, pass_traces
+
+
+def _fails_on_start(commands: Sequence[Command], synthesized: bool = False) -> bool:
+    return any(command.prepatch == "fail" and (synthesized or not command.heldout)
+               for command in commands)
+
+
+def _no_failing(task: Task) -> Refused:
+    return Refused(task.task_id, "no_stable_failing_command",
+                   "no stable visible command fails on the start state, so no command can "
+                   "tell the task done from not done")
+
+
+def _native(task: Task, runner: Runner, stable: Stability, timeout: float
+            ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+    """Trace every stable command; refuse a shadowing native import; the native binaries."""
+    traces = trace_commands(task, runner, stable.commands, timeout)
+    if task.reference is not None:
+        if shadow := shadowed(sorted(task.mutation_targets), traces):
+            raise Refused(task.task_id, "native_shadow_import",
+                          f"{', '.join(shadow)} imported from a native file")
+    return traces, native_loaded(task, traces)
+
+
+@dataclass
+class Measured:
+    """The final measurement of every sealed command, and the trusted commands' kills."""
+
+    final: mutants.Adequacy
+    trusted: list[bool]
+
+
+def _measure(task: Task, runner: Runner, timeout: float, plan: MutantPlan,
+             commands: list[Command]) -> Measured:
+    final = mutants.measure(plan.base, plan.mutants, commands, runner, task.heldout, timeout)
+    trusted = [command for command in commands if not strengthen.is_synthesized(command.id)]
+    if len(trusted) == len(commands):
+        return Measured(final, list(final.killed))
+    alone = mutants.measure(plan.base, plan.mutants, trusted, runner, task.heldout, timeout)
+    return Measured(final, list(alone.killed))
+
+
+def _gates(plan: MutantPlan, measured: Measured, expected: set[int] | None,
+           spec: bool) -> dict[str, Any]:
+    """The gates; for a ``synthesized_spec`` contract (a), (c) and (e) count the union too."""
+    union = measured.final.killed
+    return seal_gates.evaluate(plan.mutants, union if spec else measured.trusted, union,
+                               measured.final.neutralized(), expected)
+
+
+def _strengthen(task: Task, runner: Runner, runs: int, timeout: float, plan: MutantPlan,
+                stable: Stability, measured: Measured, model: Any, mode: str
+                ) -> tuple[Stability, Measured, list[dict[str, Any]]]:
+    """Strengthening rounds (see :mod:`.strengthen`) while a strengthenable gate fails."""
+    assert task.reference is not None and task.heldout is not None
+    prefix = pytest_plugins.pytest_argv(task.guard_prefix, (), task.isolate)
+    sources = strengthen.start_sources(task.start, task.reference, task.mutation_targets)
+    modules = strengthen.public_modules(task.start, is_test_path)
+    rounds: list[dict[str, Any]] = []
+    for number in range(1, (1 if mode == "synthesize_failing_spec" else strengthen.ROUNDS) + 1):
+        final = measured.final
+        alive = [index for index, mutant in enumerate(plan.mutants)
+                 if not final.killed[index] and not final.neutralized()[index]
+                 and mutant.group != "rest"]
+        if not alive:
+            break
+        answer, record = strengthen.ask(model, task.description, mode, sources, modules,
+                                        plan.mutants, task.reference, alive, number)
+        rounds.append(record)
+        source = SYNTH_HEADER + strengthen.test_file(answer)
+        kept, rejected, fails, _ = strengthen.validate(
+            runner, task.start, task.reference, task.heldout, prefix, source, modules,
+            plan.mutants, alive, number, timeout)
+        record.update(kept=kept, rejected=rejected)
+        if not kept:
+            break
+        (task.heldout / "synth").mkdir(exist_ok=True)
+        (task.heldout / "synth" / f"test_synth_{number}.py").write_text(
+            strengthen.kept_file(source, kept))
+        command = strengthen.command(number, prefix, any(fails.values()))
+        log: list[dict[str, Any]] = []
+        if (reason := _judge(task, runner, command, runs, timeout, log)) is not None:
+            record["dropped"] = reason
+            break
+        stable = replace(stable, commands=[*stable.commands, command])
+        before = sum(final.killed)
+        measured = _measure(task, runner, timeout, plan, stable.commands)
+        record["killed_after"] = sum(measured.final.killed)
+        if sum(measured.final.killed) <= before or mode == "synthesize_failing_spec":
+            break
+        if seal_gates.failure(_gates(plan, measured, None, False)) not in STRENGTHENABLE:
+            break
+    return stable, measured, rounds
+
+
+def _gated(task: Task, runner: Runner, timeout: float, plan: MutantPlan, stable: Stability,
+           measured: Measured, expected: set[int] | None, spec: bool
+           ) -> tuple[Measured, dict[str, Any]]:
+    """Evaluate the seal gates on the final measurement and refuse a contract that fails one.
+
+    A guard whose matrix kills the final measurement does not reproduce is measured once
+    more before ``harvest_guard_dropped`` is raised."""
+    gates = _gates(plan, measured, expected, spec)
+    if seal_gates.failure(gates) == "harvest_guard_dropped" and any(
+            command.id == guards.GUARD_ID for command in stable.commands):
+        measured = _measure(task, runner, timeout, plan, stable.commands)
+        gates = _gates(plan, measured, expected, spec)
+    if (reason := seal_gates.failure(gates)) is not None:
+        raise Refused(task.task_id, reason, json.dumps(gates[reason], sort_keys=True))
+    return measured, gates
+
+
+def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
+                 mutant_limit: int = 40, timeout: float = 900.0,
+                 agent_image: str | None = None, model: Any = None) -> Sealed:
+    """Stabilize the commands, drop vacuous zero-shot passes, measure mutant kills, harvest
+    guards from the repository's own suite, strengthen with the model (when one is given)
+    while a gate fails, apply the seal gates, and seal.
+
+    With ``agent_image``, each command the agent runs itself is sealed with its working
+    directory and the path of its executable in that image (``cwd`` and ``exe``)."""
+    if task.reference is not None and (name := native_change(task.start, task.reference)):
+        raise Refused(task.task_id, "native_build_required",
+                      f"the reference changes native code: {name}")
+    stable, pass_traces = _stable_commands(task, runner, runs, timeout)
+    strengthens = (model is not None and task.reference is not None and bool(task.guard_prefix)
+                   and task.heldout is not None)
+    if not _fails_on_start(stable.commands) and not strengthens:
+        raise _no_failing(task)
+    traces, loaded = _native(task, runner, stable, timeout)
+    if task.source == "repo":
+        tests = sorted({name for command in stable.commands
+                        for name in command_test_files(command, task.start)})
+        task = replace(task, protected=auto_protect(task, tests, [item["path"] for item in loaded]))
+    plan = task_mutants(task, mutant_limit)
+    chosen = plan.mutants
+    measured = _measure(task, runner, timeout, plan, stable.commands)
+    report: dict[str, Any] = {}
+    spec = False
+    if not _fails_on_start(stable.commands):
+        stable, measured, rounds = _strengthen(task, runner, runs, timeout, plan, stable,
+                                               measured, model, "synthesize_failing_spec")
+        report["strengthening"] = rounds
+        if not _fails_on_start(stable.commands, synthesized=True):
+            raise _no_failing(task)
+        spec = True
+    harvested, expected = None, None
+    if task.reference is None and task.source == "repo" and task.guard_prefix:
+        task, commands, harvested = start_guard(task, runner, runs, timeout, stable)
+        stable = replace(stable, commands=commands)
+    elif task.reference is not None and task.guard_prefix and chosen:
+        task, commands, harvested, expected = add_guard(task, runner, runs, timeout, chosen,
+                                                        measured.final, stable)
+        if len(commands) > len(stable.commands):
+            stable = replace(stable, commands=commands)
+            # Every sealed number comes from measuring the sealed commands themselves.
+            measured = _measure(task, runner, timeout, plan, stable.commands)
+    if task.reference is not None:
+        if strengthens and seal_gates.failure(
+                _gates(plan, measured, expected, spec)) in STRENGTHENABLE:
+            stable, measured, rounds = _strengthen(task, runner, runs, timeout, plan, stable,
+                                                   measured, model, "strengthen")
+            report["strengthening"] = report.get("strengthening", []) + rounds
+        measured, gates = _gated(task, runner, timeout, plan, stable, measured, expected, spec)
+        report.update(gates=gates, strength="synthesized_spec" if spec else "gated")
+    elif task.source == "repo":
+        # Nothing measures the commands, so the verdict can never be supported.
+        report.update(strength="reference_free")
+    synthesized = [command.id for command in stable.commands
+                   if strengthen.is_synthesized(command.id)]
+    if synthesized and not VERIFIER_GRADES_SYNTHESIZED:
+        raise Refused(task.task_id, "synthesized_tier_unsupported",
+                      f"{', '.join(synthesized)} would be graded as trusted held-out tests: the "
+                      "pinned probity-verify reads no command tier, so a failing synthesized "
+                      "test would read contradicted instead of not_established")
+    adequacy = measured.final
+    report.update({**stability_report(stable, runner, runs, task.reference is not None),
+                   "adequacy": {**adequacy.report(), "deduplicated": plan.deduplicated,
+                                "trusted_kill_vector_sha256": sha256(encode(
+                                    [bool(item) for item in measured.trusted]))},
+                   "tiers": {command.id: "synthesized" if strengthen.is_synthesized(command.id)
+                             else "trusted" for command in stable.commands},
+                   "cheat_uncovered": plan.cheat_uncovered, "traces": traces,
+                   "native_loaded": loaded})
+    if harvested is not None:
+        report["harvest"] = harvested
+    if pass_traces:
+        report["pass_command_traces"] = pass_traces
     executables = None
     if agent_image is not None:
         names = {command.argv[0] for command in stable.commands if command.agent_command}

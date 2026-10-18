@@ -23,6 +23,8 @@ jobs:
       - name: Install the package with the done extra (builds jcs-admit from its pinned commit)
         run: python -m pip install -e '.[test,done,witness,cover]'
       - name: Contract, held-out, mutant, grading, receipt, policy and command-line tests
-        run: python -m coverage run --source=probity_observer.done -m pytest -q -p no:cacheprovider tests/done
+        run: python -m coverage run --parallel-mode --source=probity_observer.done -m pytest -q -p no:cacheprovider tests/done
+      - name: Combine the suite's data with the data of the test runs it started
+        run: python -m coverage combine
       - name: Every done module is at least 80 percent covered
         run: python -m coverage report --show-missing && python scripts/check-done-coverage.py

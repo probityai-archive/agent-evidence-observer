@@ -20,13 +20,15 @@ from __future__ import annotations
 
 import ast
 import copy
+import os
 import random
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
+from . import pytest_plugins
 from .formats import encode, sha256
 from .runner import Command, Runner
 
@@ -49,6 +51,10 @@ class Mutant:
     column: int
     source: str
     also: tuple[tuple[str, str], ...] = ()
+    # The adequacy set of a reference task's mutant (see SETS); empty for other tasks.
+    group: str = ""
+    # The qualified name of the function a cheat-class mutant wraps.
+    function: str = ""
 
     @property
     def kind(self) -> str:
@@ -63,9 +69,12 @@ class Mutant:
         return ((self.path, self.source),) + self.also
 
     def binding(self) -> dict[str, Any]:
-        return {"path": self.path, "operator": self.operator, "line": self.line,
-                "column": self.column,
-                "sha256": sha256(encode([[name, sha256(text.encode())] for name, text in self.files()]))}
+        entry = {"path": self.path, "operator": self.operator, "line": self.line,
+                 "column": self.column,
+                 "sha256": sha256(encode([[name, sha256(text.encode())] for name, text in self.files()]))}
+        if self.group:
+            entry["set"] = self.group
+        return entry
 
 
 def _compare(node: ast.AST) -> ast.AST | None:
@@ -205,6 +214,150 @@ def operator_mutants(path: str, source: str,
     return found
 
 
+def _stmt_delete(statements: list[ast.stmt], index: int, part: int) -> bool:
+    if isinstance(statements[index], ast.Pass):
+        return False
+    statements[index] = ast.Pass()
+    return True
+
+
+def _if_body(statements: list[ast.stmt], index: int, part: int) -> bool:
+    node = statements[index]
+    if not isinstance(node, ast.If):
+        return False
+    statements[index:index + 1] = node.body
+    return True
+
+
+def _if_else(statements: list[ast.stmt], index: int, part: int) -> bool:
+    node = statements[index]
+    if not isinstance(node, ast.If) or not node.orelse:
+        return False
+    statements[index:index + 1] = node.orelse
+    return True
+
+
+def _try_unwrap(statements: list[ast.stmt], index: int, part: int) -> bool:
+    node = statements[index]
+    if not isinstance(node, (ast.Try, ast.TryStar)) or not node.handlers:
+        return False
+    statements[index:index + 1] = node.body + node.orelse + node.finalbody
+    return True
+
+
+def _handler_delete(statements: list[ast.stmt], index: int, part: int) -> bool:
+    node = statements[index]
+    if not isinstance(node, (ast.Try, ast.TryStar)) or len(node.handlers) < 2:
+        return False
+    del node.handlers[part]
+    return True
+
+
+STATEMENT_OPERATORS: dict[str, Callable[[list[ast.stmt], int, int], bool]] = {
+    "stmt-delete": _stmt_delete, "if-unwrap-body": _if_body, "if-unwrap-else": _if_else,
+    "try-unwrap": _try_unwrap, "handler-delete": _handler_delete,
+}
+
+
+def _statement_sites(tree: ast.AST, lines: set[int]) -> Iterator[tuple[int, str, int, int, int]]:
+    """``(parent index, field, statement index, part, operator)`` sites on ``lines``.
+
+    Docstrings and logging-call statements are never sites; ``handler-delete`` has one part
+    per handler and needs two or more handlers.
+    """
+    skip = excluded(tree)
+    for parent_index, parent in enumerate(ast.walk(tree)):
+        for name, value in ast.iter_fields(parent):
+            if not isinstance(value, list):
+                continue
+            for index, node in enumerate(value):
+                if (not isinstance(node, ast.stmt) or node.lineno not in lines or id(node) in skip
+                        or (isinstance(node, ast.Expr) and id(node.value) in skip)):
+                    continue
+                for operator in STATEMENT_OPERATORS:
+                    parts = (range(len(node.handlers)) if operator == "handler-delete"
+                             and isinstance(node, (ast.Try, ast.TryStar)) else range(1))
+                    for part in parts:
+                        trial = copy.deepcopy(value)
+                        if STATEMENT_OPERATORS[operator](trial, index, part):
+                            yield parent_index, name, index, part, operator
+
+
+def statement_mutants(path: str, source: str, lines: set[int]) -> list[Mutant]:
+    """Statement-level mutants on ``lines``: a statement deleted, an ``if`` or ``try`` unwrapped,
+    one ``except`` handler removed."""
+    tree = ast.parse(source)
+    original = ast.unparse(tree)
+    found = []
+    for parent_index, name, index, part, operator in _statement_sites(tree, lines):
+        mutated = copy.deepcopy(tree)
+        statements = getattr(list(ast.walk(mutated))[parent_index], name)
+        node = statements[index]
+        STATEMENT_OPERATORS[operator](statements, index, part)
+        text = ast.unparse(ast.fix_missing_locations(mutated))
+        if text != original:
+            found.append(Mutant(path, operator, node.lineno, node.col_offset, text + "\n"))
+    return found
+
+
+def strip_docstrings(tree: ast.AST) -> ast.AST:
+    """``tree`` without its module, class and function docstrings."""
+    tree = copy.deepcopy(tree)
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)):
+            node.body = body[1:] or [ast.Pass()]
+    return tree
+
+
+def hunk_reverts(path: str, start: str, reference: str, hunks) -> list[Mutant]:
+    """One mutant per hunk: that hunk's start lines spliced back into the reference.
+
+    A revert that does not parse, or that changes only docstrings, is not made.
+    """
+    old, new = start.splitlines(), reference.splitlines()
+    plain = ast.unparse(strip_docstrings(ast.parse(reference)))
+    found = []
+    for hunk in hunks:
+        lines = new[:hunk.new[0]] + old[hunk.start[0]:hunk.start[1]] + new[hunk.new[1]:]
+        text = "\n".join(lines) + "\n"
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        if ast.unparse(strip_docstrings(tree)) == plain:
+            continue
+        found.append(Mutant(path, "hunk-revert", hunk.new[0] + 1, 0, text))
+    return found
+
+
+def _normal(text: str) -> str:
+    try:
+        return ast.unparse(ast.parse(text))
+    except SyntaxError:
+        return text
+
+
+def deduplicate(reference: dict[str, str], found: list[Mutant]) -> tuple[list[Mutant], int]:
+    """Drop mutants syntactically equal (``ast.unparse``) to the reference or an earlier mutant.
+
+    The null patch is never dropped: a change that is syntactically empty must leave it alive.
+    Returns the kept mutants and how many were dropped.
+    """
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    kept = []
+    for mutant in found:
+        key = tuple(sorted((name, _normal(text)) for name, text in mutant.files()))
+        same = all(_normal(reference.get(name, "")) == text for name, text in key)
+        if mutant.operator != "null-patch" and (same or key in seen):
+            continue
+        seen.add(key)
+        kept.append(mutant)
+    return kept, len(found) - len(kept)
+
+
 def degenerate_mutants(path: str, signature: str, name: str, expected: list[str],
                        table: list[tuple[str, str]] | None = None) -> list[Mutant]:
     """Whole-function replacements a suite must reject.
@@ -235,7 +388,8 @@ def degenerate_mutants(path: str, signature: str, name: str, expected: list[str]
     return found
 
 
-ANY_EQ = """
+CHEATS = ("any-eq", "stateful", "frame-aware")
+CHEAT_PRELUDE = """
 class _ProbityAnyEq:
     def __eq__(self, other):
         return True
@@ -244,59 +398,173 @@ class _ProbityAnyEq:
         return False
 
     __hash__ = object.__hash__
+
+
+_PROBITY_CALLS = {}
+
+
+def _probity_count(key):
+    # The count lives in a file beside the module when there is one, so a call made in a
+    # fresh interpreter (the sealed isolation plugin) still sees the earlier calls.
+    import hashlib
+    import os
+    origin = globals().get("__file__")
+    if not origin:
+        _PROBITY_CALLS[key] = _PROBITY_CALLS.get(key, 0) + 1
+        return _PROBITY_CALLS[key]
+    name = ".probity-calls-" + hashlib.sha256(key.encode()).hexdigest()[:16]
+    path = os.path.join(os.path.dirname(os.path.abspath(origin)), name)
+    try:
+        with open(path) as handle:
+            count = int(handle.read() or 0)
+    except (OSError, ValueError):
+        count = 0
+    try:
+        with open(path, "w") as handle:
+            handle.write(str(count + 1))
+    except OSError:
+        pass
+    return count + 1
+
+
+def _probity_cheat(kind, key, original):
+    import functools
+    import inspect
+    import sys
+    if isinstance(original, (staticmethod, classmethod)):
+        return type(original)(_probity_cheat(kind, key, original.__func__))
+
+    def decide(depth):
+        if kind == "any-eq":
+            return True, _ProbityAnyEq()
+        if kind == "frame-aware":
+            caller = sys._getframe(depth).f_code.co_name
+            if not (caller.startswith("test") or caller == "check"):
+                return False, None
+        return _probity_count(key) > 1, None
+
+    if inspect.iscoroutinefunction(original):
+        async def wrapper(*args, **kwargs):
+            cheat, value = decide(2)
+            if cheat:
+                return value
+            return await original(*args, **kwargs)
+    else:
+        def wrapper(*args, **kwargs):
+            cheat, value = decide(2)
+            if cheat:
+                return value
+            return original(*args, **kwargs)
+    try:
+        functools.update_wrapper(wrapper, original)
+    except (AttributeError, TypeError):
+        pass
+    return wrapper
 """
-WRAPPERS = {
-    "any-eq": "def {name}(*args, **kwargs):\n    return _ProbityAnyEq()\n",
-    "stateful": ("def {name}(*args, **kwargs):\n"
-                 "    _PROBITY_CALLS[{key!r}] = _PROBITY_CALLS.get({key!r}, 0) + 1\n"
-                 "    if _PROBITY_CALLS[{key!r}] > 1:\n        return None\n"
-                 "    return {call}(*args, **kwargs)\n"),
-    "frame-aware": ("def {name}(*args, **kwargs):\n"
-                    "    import sys\n"
-                    "    caller = sys._getframe(1).f_code.co_name\n"
-                    "    if caller.startswith('test') or caller == 'check':\n"
-                    "        _PROBITY_CALLS[{key!r}] = _PROBITY_CALLS.get({key!r}, 0) + 1\n"
-                    "        if _PROBITY_CALLS[{key!r}] > 1:\n            return None\n"
-                    "    return {call}(*args, **kwargs)\n"),
-}
+UNWRAPPABLE = frozenset({"property", "cached_property", "setter", "getter", "deleter"})
 
 
-def _touched_functions(tree: ast.Module, ranges: list[tuple[int, int]] | None):
-    """Undecorated functions and instance methods whose lines meet ``ranges``."""
-    for parent in [tree] + [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]:
-        for node in parent.body:
-            if not isinstance(node, ast.FunctionDef) or node.decorator_list:
+@dataclass(frozen=True)
+class Function:
+    """A ``def`` or ``async def`` at any depth: where it sits and its qualified name."""
+
+    statements: list
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    qualname: str
+
+
+def functions(tree: ast.AST) -> list[Function]:
+    """Every function definition in ``tree``, with the statement list that holds it."""
+    found: list[Function] = []
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        for _, value in ast.iter_fields(node):
+            if not isinstance(value, list):
                 continue
-            last = getattr(node, "end_lineno", node.lineno) or node.lineno
-            if ranges is None or any(first <= last and node.lineno <= end for first, end in ranges):
-                method = parent is not tree
-                if method and not (node.args.args and node.args.args[0].arg == "self"):
-                    continue
-                yield parent, node, method
+            for child in value:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    found.append(Function(value, child, prefix + child.name))
+                    visit(child, f"{prefix}{child.name}.<locals>.")
+                elif isinstance(child, ast.ClassDef):
+                    visit(child, f"{prefix}{child.name}.")
+                elif isinstance(child, ast.AST):
+                    visit(child, prefix)
+
+    visit(tree, "")
+    return found
 
 
-def class_mutants(path: str, source: str,
-                  ranges: list[tuple[int, int]] | None = None) -> list[Mutant]:
-    """The cheat classes, on every touched function: any-eq, stateful and frame-aware."""
+def _decorator_name(node: ast.expr) -> str:
+    node = node.func if isinstance(node, ast.Call) else node
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else ""
+
+
+def wrappable(function: Function) -> bool:
+    """A property-like descriptor cannot be rebound as a plain callable."""
+    return not any(_decorator_name(item) in UNWRAPPABLE for item in function.node.decorator_list)
+
+
+def touched(tree: ast.AST, ranges: list[tuple[int, int]] | None,
+            anchors: tuple[int, ...] = ()) -> list[Function]:
+    """The functions whose span meets ``ranges`` or a deletion anchor (all when ``None``)."""
+    found = []
+    for function in functions(tree):
+        first, last = function.node.lineno, function.node.end_lineno or function.node.lineno
+        if (ranges is None or any(start <= last and first <= end for start, end in ranges)
+                or any(first <= anchor <= last for anchor in anchors)):
+            found.append(function)
+    return found
+
+
+def _prelude_index(tree: ast.Module) -> int:
+    """After the module docstring and every ``from __future__`` import."""
+    index = 0
+    body = tree.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        index = 1
+    while index < len(body) and isinstance(body[index], ast.ImportFrom) \
+            and body[index].module == "__future__":
+        index += 1
+    return index
+
+
+def class_mutants(path: str, source: str, ranges: list[tuple[int, int]] | None = None,
+                  anchors: tuple[int, ...] = ()) -> list[Mutant]:
+    """The cheat classes on every touched function: any-eq, stateful and frame-aware.
+
+    Each wrapper rebinds the name right after the definition (``f = _probity_cheat(..., f)``),
+    so decorated, async and nested functions, static and class methods are covered; the call
+    counter is keyed by path, qualified name and line. Property-like functions are left out
+    (see :func:`cheat_uncovered`).
+    """
     found = []
     tree = ast.parse(source)
-    for kind, template in WRAPPERS.items():
-        for index, (_, function, method) in enumerate(list(_touched_functions(tree, ranges))):
+    targets = [function for function in touched(tree, ranges, anchors) if wrappable(function)]
+    for kind in CHEATS:
+        for index, function in enumerate(targets):
             mutated = copy.deepcopy(tree)
-            parent, target, _ = list(_touched_functions(mutated, ranges))[index]
-            original = target.name
-            target.name = f"_probity_orig_{original}"
-            call = f"args[0]._probity_orig_{original}" if method else target.name
-            arguments = "*args[1:], **kwargs" if method else "*args, **kwargs"
-            text = template.format(name=original, key=f"{path}:{original}", call=call)
-            text = text.replace(f"{call}(*args, **kwargs)", f"{call}({arguments})")
-            wrapper = ast.parse(text).body[0]
-            parent.body.insert(parent.body.index(target) + 1, wrapper)
-            prelude = ast.parse(ANY_EQ + "\n_PROBITY_CALLS = {}\n").body
-            mutated.body = prelude + mutated.body
-            found.append(Mutant(path, kind, function.lineno, function.col_offset,
-                                ast.unparse(ast.fix_missing_locations(mutated)) + "\n"))
+            target = [item for item in touched(mutated, ranges, anchors) if wrappable(item)][index]
+            key = repr((path, target.qualname, target.node.lineno))
+            name = target.node.name
+            rebind = ast.parse(f"{name} = _probity_cheat({kind!r}, {key!r}, {name})").body[0]
+            target.statements.insert(target.statements.index(target.node) + 1, rebind)
+            at = _prelude_index(mutated)
+            mutated.body[at:at] = ast.parse(CHEAT_PRELUDE).body
+            found.append(Mutant(path, kind, function.node.lineno, function.node.col_offset,
+                                ast.unparse(ast.fix_missing_locations(mutated)) + "\n",
+                                function=function.qualname))
     return found
+
+
+def cheat_uncovered(path: str, source: str, ranges: list[tuple[int, int]] | None = None,
+                    anchors: tuple[int, ...] = ()) -> list[dict[str, Any]]:
+    """Touched functions the cheat wrappers cannot rebind, by path, qualified name and line."""
+    return [{"path": path, "function": function.qualname, "line": function.node.lineno}
+            for function in touched(ast.parse(source), ranges, anchors)
+            if not wrappable(function)]
 
 
 def by_class(mutants: list[Mutant], killed: list[bool]) -> dict[str, dict[str, int]]:
@@ -327,6 +595,20 @@ def stratified(groups: list[list[Mutant]], limit: int, seed: str) -> list[Mutant
     return chosen
 
 
+SETS = ("null_patch", "hunk_revert", "change", "cheat", "function", "rest")
+
+
+def by_set(mutants: list[Mutant], killed: list[bool]) -> dict[str, dict[str, Any]]:
+    """Each adequacy set's count, kills and kill-vector digest, in :data:`SETS` order."""
+    found: dict[str, dict[str, Any]] = {}
+    for name in SETS:
+        vector = [bool(dead) for mutant, dead in zip(mutants, killed) if mutant.group == name]
+        if vector:
+            found[name] = {"mutants": len(vector), "killed": sum(vector),
+                           "kill_vector_sha256": sha256(encode(vector))}
+    return found
+
+
 def mutant_set_sha256(mutants: list[Mutant]) -> str:
     return sha256(encode([mutant.binding() for mutant in mutants]))
 
@@ -337,37 +619,97 @@ class Adequacy:
     killed: list[bool]
     runs: list[dict[str, Any]]
 
-    def field(self) -> dict[str, int]:
-        return {"mutants": len(self.mutants), "killed": sum(self.killed)}
+    def neutralized(self) -> list[bool]:
+        """Per mutant: a surviving frame-aware wrapper whose every call ran isolated (no test
+        frame), so the sealed isolation plugin, not the tests, answered it."""
+        return [bool(run.get("neutralized")) for run in self.runs]
+
+    def field(self) -> dict[str, Any]:
+        """The contract's ``adequacy``: the totals, and for a reference task each set's
+        counts (``by_class``, which sums to the totals) and the whole kill-vector digest."""
+        field: dict[str, Any] = {"mutants": len(self.mutants), "killed": sum(self.killed)}
+        sets = by_set(self.mutants, self.killed)
+        if sets:
+            field["by_class"] = {name: {"mutants": entry["mutants"], "killed": entry["killed"]}
+                                 for name, entry in sets.items()}
+            field["kill_vector_sha256"] = sha256(encode([bool(item) for item in self.killed]))
+        return field
 
     def report(self) -> dict[str, Any]:
         vector = [bool(item) for item in self.killed]
         classes = by_class(self.mutants, vector)
         return {"kill_vector": vector, "kill_vector_sha256": sha256(encode(vector)),
-                "by_class": classes,
+                "by_class": classes, "sets": by_set(self.mutants, vector),
                 "unkillable_classes": sorted(name for name, entry in classes.items()
                                              if entry["killed"] == 0),
                 "killed_fraction": (sum(vector) / len(vector)) if vector else 0.0,
-                "mutants": [{**mutant.binding(), "killed": killed, "exits": run["exits"]}
+                "neutralized": sum(self.neutralized()),
+                "mutants": [{**mutant.binding(), "killed": killed, **run}
                             for mutant, killed, run in zip(self.mutants, self.killed, self.runs)]}
+
+
+def isolate_targets(argv: Sequence[str]) -> list[str]:
+    """The ``path::name`` targets a sealed argv isolates."""
+    return [argv[index + 1] for index, item in enumerate(argv[:-1]) if item == "--probity-isolate"]
+
+
+def _calls(target: str, report: dict[str, Any] | None) -> tuple[int, int]:
+    """(isolated, inline) calls of ``path::name`` in a worker report's isolation summary."""
+    path, _, name = target.partition("::")
+    parts = path[:-3].split("/") if path.endswith(".py") else path.split("/")
+    modules = {".".join(parts[index:]) for index in range(len(parts))}
+    targets = ((report or {}).get("isolated") or {}).get("targets", {})
+    isolated = inline = 0
+    for key, counts in targets.items():
+        module, _, function = key.rpartition(":")
+        if module in modules and function == name:
+            isolated += counts.get("isolated", 0)
+            inline += counts.get("inline", 0)
+    return isolated, inline
+
+
+def _run(runner: Runner, state: Path, command: Command, heldout: Path | None, timeout: float,
+         target: str | None) -> tuple[int, tuple[int, int]]:
+    """Run one command; for an isolated target, also count its isolated and inline calls."""
+    if target is None or target not in isolate_targets(command.argv):
+        return runner.run(state, command.argv, heldout, timeout), (0, 0)
+    key = os.urandom(32).hex().encode()
+    printed: list[str] = []
+    code = runner.run(state, command.argv, heldout, timeout, output=printed, stdin=key + b"\n")
+    return code, _calls(target, pytest_plugins.report(printed, key))
 
 
 def measure(base: Path, mutants: list[Mutant], commands: list[Command], runner: Runner,
             heldout: Path | None, timeout: float = 900.0) -> Adequacy:
-    """Run every command on every mutant of ``base``; a nonzero exit kills it."""
+    """Run every command on every mutant of ``base``; a nonzero exit kills it.
+
+    A frame-aware mutant of a function the commands isolate also counts that function's
+    isolated and inline calls: one that survives with only isolated calls is ``neutralized``.
+    """
     killed, runs = [], []
     with tempfile.TemporaryDirectory(prefix="probity-mutant-") as scratch:
         for index, mutant in enumerate(mutants):
             state = Path(scratch) / f"m{index}"
-            shutil.copytree(base, state, symlinks=True)
+            # No bytecode cache: a .pyc kept from the base would hide the mutated source.
+            shutil.copytree(base, state, symlinks=True,
+                            ignore=shutil.ignore_patterns("__pycache__"))
             for name, text in mutant.files():
                 (state / name).write_text(text)
-            exits = []
+            target = (f"{mutant.path}::{mutant.function}"
+                      if mutant.kind == "frame-aware" and mutant.function else None)
+            exits, isolated, inline = [], 0, 0
             for command in commands:
-                exits.append(runner.run(state, command.argv, heldout, timeout))
-                if exits[-1] != 0:
+                code, (inside, outside) = _run(runner, state, command, heldout, timeout, target)
+                exits.append(code)
+                isolated, inline = isolated + inside, inline + outside
+                if code != 0:
                     break
-            killed.append(any(code != 0 for code in exits))
-            runs.append({"exits": exits})
+            dead = any(code != 0 for code in exits)
+            run: dict[str, Any] = {"exits": exits}
+            if target is not None and any(target in isolate_targets(c.argv) for c in commands):
+                run["isolated_calls"] = {"isolated": isolated, "inline": inline}
+                run["neutralized"] = not dead and isolated > 0 and inline == 0
+            killed.append(dead)
+            runs.append(run)
             shutil.rmtree(state)
     return Adequacy(mutants, killed, runs)

@@ -1,0 +1,33 @@
+You write the definition of done for one coding task, before any agent works on it.
+
+A separate verifier will run your acceptance commands on the agent's final tree, in a fresh
+container with no network, after restoring every protected path to its starting bytes. Each
+command runs every test twice. The agent never sees this definition's held-out parts.
+
+Task:
+{task}
+
+Repository files (path and size in bytes, at most {listing_limit} entries):
+{listing}
+
+Tests the repository collects now (pytest node ids, at most {node_limit}):
+{nodes}
+
+Write a JSON object and nothing else, with exactly these members:
+
+- "acceptance": a list of 1 to 8 objects {{"id": <short name>, "argv": ["python", "-m",
+  "pytest", <node id or test file>, ...], "expect_on_start": "fail" or "pass"}}. Every argv
+  starts with "python", "-m", "pytest" and names only node ids or test files; it is run as
+  given, with the repository root as the working directory and no shell.
+  fail: the node ids that check the task. They must fail on the repository as it is now and
+  pass once the task is done; a node id may name a test that does not exist yet only if the
+  task is to add it.
+  pass: whole existing test files for the code the task touches. They must pass now and keep
+  passing.
+- "protected_paths": a list of objects {{"path": <repository-relative path>, "kind": "file" or
+  "directory"}}: test files and fixtures the agent must not change to make the commands pass.
+  Test configuration and every conftest.py are protected automatically. Never include a file
+  the task requires the agent to change.
+- "rationale": one or two sentences on why these commands show the task is done.
+
+Do not invent paths: every protected path must appear in the listing above.

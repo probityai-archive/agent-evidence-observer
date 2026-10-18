@@ -2,13 +2,47 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from probity_observer.done import runner
 from probity_observer.witness.checkpoint import signer
+
+SUBPROCESS_COVERAGE = Path(__file__).with_name("coverage-subprocess.toml")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def measure_child_processes():
+    """When the suite runs under coverage, measure the test runs it starts as well.
+
+    The compiler runs every candidate command in a child with the scrubbed environment
+    (:data:`runner.SCRUBBED_ENV`), so coverage's own subprocess start variables never reach
+    it and the plugins that only run inside those children (``probity_outcome``) read 0
+    percent. This adds the two variables to that environment for this session only; coverage's
+    ``.pth`` hook then starts measurement in each child, and ``coverage combine`` maps the
+    plugin copies under ``probity-plugins/`` back to their source (``[tool.coverage.paths]``).
+    """
+    try:
+        import coverage
+    except ImportError:
+        yield
+        return
+    current = coverage.Coverage.current()
+    if current is None:
+        yield
+        return
+    added = {"COVERAGE_PROCESS_START": str(SUBPROCESS_COVERAGE),
+             "COVERAGE_FILE": os.path.abspath(current.config.data_file)}
+    runner.SCRUBBED_ENV.update(added)
+    try:
+        yield
+    finally:
+        for key in added:
+            runner.SCRUBBED_ENV.pop(key, None)
 
 HARNESS_SEED = bytes(range(32))
 GRADER_SEED = bytes(range(32, 64))

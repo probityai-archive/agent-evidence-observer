@@ -11,6 +11,7 @@ example a vLLM server); the verdict itself never calls a model.
 
 from __future__ import annotations
 
+import ast
 import json
 import urllib.request
 from dataclasses import dataclass, field
@@ -18,9 +19,12 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Protocol
 
-from .contract import EXCLUDE, Protected, Task, is_test_path
+from . import mutants, pytest_plugins
+from .changes import Changes
+from .contract import (DEFAULT_TEST_CMD, EXCLUDE, Protected, Task, command_test_files,
+                       is_test_path, sealed_config, source_changes)
 from .formats import DoneError, sha256
-from .runner import Command
+from .runner import Command, Runner
 
 LISTING_LIMIT = 400
 TEST_HEAD_LINES = 12
@@ -28,8 +32,17 @@ TEST_FILE_LIMIT = 20
 SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".tox", ".pytest_cache"}
 
 
-def template() -> str:
-    return resources.files(__package__).joinpath("prompts/contract_v1.txt").read_text("utf-8")
+TEMPLATES = ("contract_v1.txt", "contract_v2.txt")
+DEFAULT_TEMPLATE = "contract_v2.txt"
+NODE_LIMIT = 400
+
+
+def template(name: str = DEFAULT_TEMPLATE) -> str:
+    """A shipped template. ``contract_v2.txt`` is the default; ``contract_v1.txt`` stays so a
+    recorded v1 proposal can be replayed against the prompt it was recorded with."""
+    if name not in TEMPLATES:
+        raise DoneError(f"unknown template {name!r}")
+    return resources.files(__package__).joinpath(f"prompts/{name}").read_text("utf-8")
 
 
 class Model(Protocol):
@@ -77,6 +90,51 @@ class ChatModel:
         return content
 
 
+@dataclass
+class RecordedModel:
+    """A recorded answer replayed byte for byte, so a contract is re-measured without a call.
+
+    ``path`` is either a recorded call (JSON with the ``request`` and ``response`` bodies, as
+    the recording relays keep them) or the bare answer text. A recorded call replays only for
+    the prompt it was recorded with; a bare answer is replayed with ``prompt_matched: False``.
+    """
+
+    path: Path
+    name: str = "recorded"
+
+    def __post_init__(self) -> None:
+        self.path = Path(self.path)
+        data = self.path.read_bytes()
+        self.from_sha256 = sha256(data)
+        self.prompt: str | None = None
+        try:
+            call = json.loads(data)
+        except ValueError:
+            call = None
+        if isinstance(call, dict) and "response" in call:
+            response = call["response"]
+            response = json.loads(response) if isinstance(response, str) else response
+            content = response["choices"][0]["message"].get("content")
+            if not isinstance(content, str):
+                raise DoneError("recorded answer has no content")
+            self.answer = content
+            request = call.get("request")
+            request = json.loads(request) if isinstance(request, str) else request
+            if isinstance(request, dict):
+                self.prompt = request["messages"][-1]["content"]
+                self.name = request.get("model", self.name)
+        else:
+            self.answer = data.decode("utf-8")
+        self.prompt_matched = False
+
+    def complete(self, prompt: str) -> str:
+        if self.prompt is not None:
+            if prompt != self.prompt:
+                raise DoneError("the answer was recorded for a different prompt")
+            self.prompt_matched = True
+        return self.answer
+
+
 def _files(repo: Path) -> list[Path]:
     found = []
     for path in sorted(repo.rglob("*")):
@@ -86,17 +144,32 @@ def _files(repo: Path) -> list[Path]:
     return found
 
 
-def render(repo: Path, task: str) -> str:
-    """The prompt for ``task`` on ``repo``: the template filled with a listing and test heads."""
+def collected_nodes(repo: Path, runner: Runner, timeout: float = 300.0) -> list[str]:
+    """The pytest node ids the start tree collects with its own configuration."""
+    printed: list[str] = []
+    runner.run(repo, DEFAULT_TEST_CMD + ("--collect-only", "--verbosity=-1"), None, timeout,
+               output=printed)
+    return sorted({line.strip() for text in printed for line in text.splitlines()
+                   if "::" in line and not line.startswith((" ", "="))})
+
+
+def render(repo: Path, task: str, name: str = DEFAULT_TEMPLATE,
+           nodes: list[str] | None = None) -> str:
+    """The prompt for ``task`` on ``repo``: the template filled with a listing and, for v1,
+    the first lines of test files or, for v2, the collected node ids."""
     files = _files(repo)
     listing = "\n".join(f"{path.relative_to(repo).as_posix()} {path.stat().st_size}"
                         for path in files[:LISTING_LIMIT])
+    if name == "contract_v2.txt":
+        return template(name).format(task=task, listing=listing or "(empty)",
+                                     listing_limit=LISTING_LIMIT, node_limit=NODE_LIMIT,
+                                     nodes="\n".join((nodes or [])[:NODE_LIMIT]) or "(none)")
     heads = []
     for path in [item for item in files if is_test_path(item.relative_to(repo).as_posix())][:TEST_FILE_LIMIT]:
         lines = path.read_text("utf-8", "replace").splitlines()[:TEST_HEAD_LINES]
         heads.append(f"--- {path.relative_to(repo).as_posix()}\n" + "\n".join(lines))
-    return template().format(task=task, listing=listing or "(empty)",
-                             listing_limit=LISTING_LIMIT, tests="\n".join(heads) or "(none found)")
+    return template(name).format(task=task, listing=listing or "(empty)",
+                                 listing_limit=LISTING_LIMIT, tests="\n".join(heads) or "(none found)")
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -140,6 +213,89 @@ def _commands(items: Any) -> list[Command]:
     return commands
 
 
+# Options the sealed prefix already sets, or that change only how much pytest prints.
+_PREFIX_FLAGS = frozenset({"-q", "-qq", "-v", "-vv", "-x", "-s", "--quiet", "--verbose"})
+
+
+def _runner_args(argv: tuple[str, ...]) -> tuple[str, list[str]]:
+    """``("pytest" | "unittest", the arguments after the runner)``."""
+    if argv[0].rsplit("/", 1)[-1] == "pytest":
+        return "pytest", list(argv[1:])
+    return argv[2], list(argv[3:])
+
+
+def unittest_node(repo: Path, name: str) -> str | None:
+    """The pytest node id of a ``python -m unittest`` name (``a.b.C.t`` to ``a/b.py::C::t``)."""
+    parts = name.split(".")
+    for index in range(len(parts), 0, -1):
+        path = "/".join(parts[:index]) + ".py"
+        if (repo / path).is_file():
+            return "::".join([path, *parts[index:]])
+    return None
+
+
+def sealed_command(repo: Path, command: Command, prefix: tuple[str, ...]) -> Command | None:
+    """``command`` in the sealed pytest form on ``prefix``, or ``None`` when a unittest name
+    resolves to no file. A command whose arguments are all test ids or paths seals them
+    (``ids_from``); one with other options keeps them after the prefix and seals no ids."""
+    runner, args = _runner_args(command.argv)
+    kept: list[str] = []
+    index = 0
+    while index < len(args):
+        if args[index] in _PREFIX_FLAGS:
+            index += 1
+            continue
+        if args[index:index + 2] == ["-p", "no:cacheprovider"]:
+            index += 2
+            continue
+        kept.append(args[index])
+        index += 1
+    if runner == "unittest":
+        names = [arg for arg in kept if not arg.startswith("-")]
+        nodes = [unittest_node(repo, name) for name in names]
+        if not names or any(node is None for node in nodes):
+            return None
+        kept = [node for node in nodes if node is not None]
+    ids = not any(arg.startswith("-") for arg in kept) and bool(kept)
+    return Command(command.id, prefix + tuple(kept), prepatch=command.prepatch,
+                   ids_from=len(prefix) if ids else None)
+
+
+def isolation_targets(reference: Path, changes: dict[str, Changes]) -> list[str]:
+    """``path::name`` of every module-level function the reference change touches."""
+    found = []
+    for name, change in changes.items():
+        tree = ast.parse((reference / name).read_text())
+        for item in mutants.touched(tree, list(change.ranges), change.anchors):
+            if "." not in item.qualname:
+                found.append(f"{name}::{item.qualname}")
+    return sorted(found)
+
+
+def seal_commands(repo: Path, commands: list[Command], held: Path, tests: list[str],
+                  isolate: list[str]
+                  ) -> tuple[list[Command], list[dict[str, Any]], tuple[str, ...]]:
+    """Every proposed command in the sealed pytest form, and the ones that cannot be.
+
+    The start tree's pytest configuration and the sealed plugins are copied under ``held``;
+    each test runs twice (``probity_repeat``) and each touched module-level function runs
+    with no test frame (``probity_isolated_call``). Also returns the prefix before the
+    plugins, which guard tests are sealed on.
+    """
+    base = DEFAULT_TEST_CMD + sealed_config(repo, held)
+    pytest_plugins.install(held / "config")
+    prefix = pytest_plugins.pytest_argv(base, tests, isolate, pytest_plugins.REPEATS)
+    sealed, dropped = [], []
+    for command in commands:
+        found = sealed_command(repo, command, prefix)
+        if found is None:
+            dropped.append({"id": command.id, "argv": list(command.argv),
+                            "reason": "unittest_unresolved"})
+        else:
+            sealed.append(found)
+    return sealed, dropped, base
+
+
 def _protected(repo: Path, items: Any) -> list[Protected]:
     if not isinstance(items, list):
         raise DoneError("protected_paths must be a list")
@@ -163,36 +319,55 @@ class Proposal:
     record: dict[str, Any]
 
 
-def changed_sources(start: Path, reference: Path) -> dict[str, list[tuple[int, int]] | None]:
-    """Python files the reference solution changes, as whole-file mutation targets."""
-    targets: dict[str, list[tuple[int, int]] | None] = {}
-    for path in _files(reference):
-        name = path.relative_to(reference).as_posix()
-        if name.endswith(".py") and not is_test_path(name):
-            before = start / name
-            if not before.is_file() or before.read_bytes() != path.read_bytes():
-                targets[name] = None
-    return targets
+def changed_sources(start: Path, reference: Path) -> dict[str, Changes]:
+    """The changed lines of each Python source file the reference solution changes."""
+    names = [path.relative_to(reference).as_posix() for path in _files(reference)]
+    return source_changes(start, reference, [
+        name for name in names if name.endswith(".py") and not is_test_path(name)
+        and (not (start / name).is_file()
+             or (start / name).read_bytes() != (reference / name).read_bytes())])
 
 
 def propose(repo: Path, task_id: str, description: str, model: Model,
-            reference: Path | None = None) -> Proposal:
+            reference: Path | None = None, work: Path | None = None,
+            template_name: str = DEFAULT_TEMPLATE, runner: Runner | None = None) -> Proposal:
     """One model call; the answer becomes an unsealed task with its provenance.
 
-    Without a ``reference`` (a known-good solution) the contract has no mutants to measure
-    and is sealed with ``adequacy`` zero, which cannot support a verdict of done.
+    Every proposed command is rewritten into the sealed pytest form, whose configuration and
+    plugins go to ``work/heldout`` (``work`` is required). Without a ``reference`` (a
+    known-good solution) the contract has no mutants to measure.
     """
-    prompt = render(repo, description)
+    if work is None:
+        raise DoneError("a repo task needs a work directory for its sealed configuration")
+    if template_name == "contract_v2.txt" and runner is None:
+        raise DoneError("the v2 template lists collected tests, so it needs a runner")
+    nodes = collected_nodes(repo, runner) if template_name == "contract_v2.txt" and runner else None
+    prompt = render(repo, description, template_name, nodes)
     answer = model.complete(prompt)
     value = _json_object(answer)
+    proposed = _commands(value["acceptance"])
+    targets = changed_sources(repo, reference) if reference else {}
+    tests = sorted({name for command in proposed for name in command_test_files(command, repo)})
+    held = work / "heldout"
+    held.mkdir(parents=True, exist_ok=True)
+    isolate = isolation_targets(reference, targets) if reference else []
+    commands, dropped, base = seal_commands(repo, proposed, held, tests, isolate)
+    if not commands:
+        raise DoneError("no proposed command has a sealed pytest form")
     task = Task(task_id=task_id, source="repo", description=description, start=repo,
-                commands=_commands(value["acceptance"]),
-                protected=_protected(repo, value["protected_paths"]), reference=reference,
-                mutation_targets=changed_sources(repo, reference) if reference else {})
+                commands=commands, protected=_protected(repo, value["protected_paths"]),
+                heldout=held, reference=reference, mutation_targets=targets,
+                guard_prefix=base, isolate=tuple(isolate))
     record = {"model_calls": 1, "model": model.name,
-              "template": "contract_v1.txt", "template_sha256": sha256(template().encode()),
+              "template": template_name,
+              "template_sha256": sha256(template(template_name).encode()),
               "prompt_sha256": sha256(prompt.encode()), "response_sha256": sha256(answer.encode()),
               "finish_reason": getattr(model, "finish_reason", None),
-              "rationale": value["rationale"]}
+              "rationale": value["rationale"],
+              "proposed": [{"id": command.id, "argv": list(command.argv)} for command in proposed],
+              "dropped": dropped, "isolated_targets": isolate}
+    if isinstance(model, RecordedModel):
+        record["replay"] = {"from_sha256": model.from_sha256,
+                            "prompt_matched": model.prompt_matched}
     task.notes = {"proposal": record}
     return Proposal(task, record)

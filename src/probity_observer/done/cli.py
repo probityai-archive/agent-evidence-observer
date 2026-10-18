@@ -30,18 +30,29 @@ def _runner(args: argparse.Namespace):
     return SubprocessRunner(args.python)
 
 
-def _task(args: argparse.Namespace) -> contract.Task:
-    work = Path(args.work)
+def _task(args: argparse.Namespace) -> tuple[contract.Task, zeroshot.Model | None]:
+    """The task, and the model a repository task's strengthening rounds may call (a live
+    endpoint only: a recorded answer cannot answer a new prompt)."""
     if args.dataset == "repo":
-        model = zeroshot.ChatModel(args.model_url, args.model, max_tokens=args.max_tokens,
-                                   tag=args.model_tag)
-        return zeroshot.propose(Path(args.repo), args.task_id, args.task, model,
-                                Path(args.reference) if args.reference else None).task
+        if args.model_replay:
+            model: zeroshot.Model = zeroshot.RecordedModel(Path(args.model_replay))
+        elif args.model_url and args.model:
+            model = zeroshot.ChatModel(args.model_url, args.model, max_tokens=args.max_tokens,
+                                        tag=args.model_tag)
+        else:
+            raise DoneError("a repo task needs --model-url and --model, or --model-replay")
+        if not args.work:
+            raise DoneError("a repo task needs --work for its sealed configuration")
+        task = zeroshot.propose(Path(args.repo), args.task_id, args.task, model,
+                                Path(args.reference) if args.reference else None,
+                                Path(args.work), args.template, _runner(args)).task
+        return task, model if isinstance(model, zeroshot.ChatModel) else None
+    work = Path(args.work)
     record = json.loads(Path(args.record).read_text())
     if args.dataset == "lcb":
-        return contract.lcb_task(record, work, args.heldout_fraction)
+        return contract.lcb_task(record, work, args.heldout_fraction), None
     test_cmd = tuple(args.test_cmd) if args.test_cmd else contract.DEFAULT_TEST_CMD
-    return contract.swe_task(record, Path(args.repo), work, test_cmd)
+    return contract.swe_task(record, Path(args.repo), work, test_cmd), None
 
 
 def cmd_keygen(args: argparse.Namespace) -> int:
@@ -50,12 +61,13 @@ def cmd_keygen(args: argparse.Namespace) -> int:
 
 
 def cmd_contract(args: argparse.Namespace) -> int:
-    task = _task(args)
+    task, model = _task(args)
     sealed = contract.compile_task(task, Path(args.out), load_signer(Path(args.harness_key)),
                                    _runner(args), runs=args.runs, mutant_limit=args.mutants,
                                    timeout=args.timeout,
                                    agent_image=args.agent_image or (
-                                       args.image if args.runner == "docker" else None))
+                                       args.image if args.runner == "docker" else None),
+                                   model=model)
     adequacy = sealed.record["adequacy"]
     print(f"Contract: {sealed.out / 'contract.json'}")
     print(f"SHA-256: {sealed.contract_sha256}")
@@ -213,6 +225,10 @@ def add_commands(sub) -> None:
     seal.add_argument("--max-tokens", type=int, default=8192,
                       help="completion budget for the zero-shot call, reasoning included (repo)")
     seal.add_argument("--model-tag", help="sent as X-Probity-Tag with the zero-shot call (repo)")
+    seal.add_argument("--template", choices=zeroshot.TEMPLATES, default=zeroshot.DEFAULT_TEMPLATE,
+                      help="the zero-shot template (repo); v1 replays proposals recorded with it")
+    seal.add_argument("--model-replay",
+                      help="a recorded model call or answer to replay instead of a call (repo)")
     seal.add_argument("--reference", help="a known-good solution tree, for mutants (repo)")
     seal.set_defaults(func=cmd_contract)
 

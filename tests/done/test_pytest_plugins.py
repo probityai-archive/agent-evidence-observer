@@ -1,8 +1,11 @@
 """The sealed pytest plugins: repeated runs, isolated calls, the signed worker report, and the
 zero-shot vacuous-pass gate."""
 
+import hashlib
 import json
 from pathlib import Path
+
+import pytest
 
 from probity_observer.done import contract, verify_run
 from probity_observer.done import pytest_plugins as sealed
@@ -311,3 +314,94 @@ def test_only_a_python_m_pytest_prefix_is_rewritten():
     with pytest.raises(ValueError):
         sealed.pytest_argv(("pytest", "-q"))
     assert not sealed.is_sealed_pytest(("python", "-m", "pytest"))
+
+
+def test_the_trace_sees_imports_from_bytecode_native_loads_execs_and_lines(tmp_path, python_bin):
+    import glob
+    import py_compile
+    test = ("import ctypes, os, subprocess, sys\nsys.path.insert(0, os.getcwd())\n"
+            "from pkg.shapes import area\n\n\ndef test_all():\n    assert area(2, 3) == 6\n"
+            "    ctypes.CDLL('./libprobe.so')\n    subprocess.run(['./tool.sh'], check=True)\n")
+    state, _ = tree(tmp_path, HONEST, test)
+    py_compile.compile(str(state / "pkg" / "shapes.py"), cfile=str(
+        state / "pkg" / "__pycache__" / f"shapes.{sys_tag()}.pyc"))
+    found_libraries = [path for pattern in ("/lib/*/libm.so.6", "/usr/lib/*/libm.so.6",
+                                            "/lib64/libm.so.6", "/usr/lib64/libm.so.6")
+                       for path in glob.glob(pattern)]
+    assert found_libraries, "no libm.so.6 to load"
+    library = found_libraries[0]
+    (state / "libprobe.so").write_bytes(Path(library).read_bytes())
+    (state / "tool.sh").write_text("#!/bin/sh\nexit 0\n")
+    (state / "tool.sh").chmod(0o755)
+    printed: list[str] = []
+    argv = sealed.traced_argv(PREFIX + ("tests/test_shapes.py",), lines=["pkg/shapes.py"])
+    assert "-B" in argv
+    assert SubprocessRunner(python_bin).run(state, argv, None, 120, output=printed) == 0
+    found = sealed.trace(printed)
+    assert found["modules"]["pkg.shapes"] == "pkg/shapes.py"
+    assert {"pkg/shapes.py", "libprobe.so", "tool.sh"} <= set(found["reads"])
+    assert found["native"] == ["libprobe.so"] and found["executed"] == ["tool.sh"]
+    assert 2 in found["lines"]["pkg/shapes.py"]
+
+
+def sys_tag():
+    import sys
+    return sys.implementation.cache_tag
+
+
+def test_a_native_change_or_shadow_import_is_refused_and_loaded_binaries_are_sealed(tmp_path):
+    start, reference = tmp_path / "start", tmp_path / "reference"
+    for root in (start, reference):
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "fast.py").write_text("x = 1\n")
+        (root / "pkg" / "ext.c").write_text("int x;\n")
+    assert contract.native_change(start, reference) is None
+    (reference / "pkg" / "ext.c").write_text("int y;\n")
+    assert contract.native_change(start, reference) == "pkg/ext.c"
+    traces = {"unit": {"modules": {"pkg.fast": "pkg/fast.cpython-312-x86_64-linux-gnu.so"},
+                       "native": ["pkg/fast.cpython-312-x86_64-linux-gnu.so"]}}
+    assert contract.shadowed(["pkg/fast.py"], traces) == ["pkg/fast.py"]
+    assert contract.shadowed(["other/fast.py"], traces) == []
+    task = contract.Task(task_id="t", source="repo", description="d", start=start, commands=[],
+                         protected=[])
+    with pytest.raises(contract.Refused, match="native_build_required") as caught:
+        contract.native_loaded(task, traces)
+    assert caught.value.reason == "native_build_required"
+    (start / "pkg" / "fast.cpython-312-x86_64-linux-gnu.so").write_bytes(b"\x7fELF")
+    assert contract.native_loaded(task, traces) == [{
+        "path": "pkg/fast.cpython-312-x86_64-linux-gnu.so",
+        "sha256": hashlib.sha256(b"\x7fELF").hexdigest()}]
+
+
+def test_repo_tasks_protect_tests_conftests_configuration_and_native_files(tmp_path):
+    start, reference = tmp_path / "start", tmp_path / "reference"
+    for root in (start, reference):
+        (root / "tests").mkdir(parents=True)
+        (root / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
+        (root / "tests" / "conftest.py").write_text("")
+        (root / "pytest.ini").write_text("[pytest]\n")
+        (root / "app.py").write_text("x = 1\n")
+    (reference / "tests" / "test_new.py").write_text("def test_b():\n    pass\n")
+    task = contract.Task(task_id="t", source="repo", description="d", start=start, commands=[],
+                         protected=[contract.Protected("tests", "directory", contract.EXCLUDE)],
+                         reference=reference)
+    found = {(entry.path, entry.kind) for entry in contract.auto_protect(task, ["tests/test_a.py"],
+                                                                        ["lib.so"])}
+    # The reference writes into tests/, so the directory gives way to its files.
+    assert found == {("tests/test_a.py", "file"), ("tests/conftest.py", "file"),
+                     ("pytest.ini", "file"), ("lib.so", "file")}
+    command = Command("c", ("python", "-m", "pytest", "-q", "tests/test_a.py::test_a", "nope.py"))
+    assert contract.command_test_files(command, start) == ["tests/test_a.py"]
+
+
+def test_mutant_states_carry_no_bytecode_cache(tmp_path, python_bin):
+    from probity_observer.done import mutants
+    base = tmp_path / "base"
+    (base / "pkg" / "__pycache__").mkdir(parents=True)
+    (base / "pkg" / "__pycache__" / "x.pyc").write_bytes(b"stale")
+    (base / "pkg" / "m.py").write_text("x = 1\n")
+    probe = Command("probe", ("python", "-c",
+                              "import os, sys; sys.exit(os.path.isdir('pkg/__pycache__'))"))
+    result = mutants.measure(base, [mutants.Mutant("pkg/m.py", "number-shift", 1, 0, "x = 2\n")],
+                             [probe], SubprocessRunner(python_bin), None, 60)
+    assert result.killed == [False]

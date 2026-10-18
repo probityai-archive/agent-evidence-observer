@@ -1,0 +1,7 @@
+# Coverage settings for the child processes the done tests start (tests/done/conftest.py).
+# A child runs a sealed command in a scratch copy, so the plugins it loads are copies under
+# <scratch>/heldout/config/probity-plugins/; [tool.coverage.paths] in pyproject.toml maps them
+# back to src/probity_observer/done/pytest_plugins/ when the data files are combined.
+[tool.coverage.run]
+parallel = true
+include = ["*/probity_observer/done/*", "*/probity-plugins/*"]
