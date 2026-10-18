@@ -3,6 +3,8 @@ vectors. Each test names the rule it pins and the cheat or honest shape it comes
 
 import textwrap
 
+import pytest
+
 from probity_observer.done import visible_detect
 from probity_observer.done import visible_static as S
 
@@ -257,3 +259,33 @@ def test_perturbations_flip_a_character_from_the_visible_alphabet():
     calls = [(5, '00100'), (3, '010')]
     p = S.perturbations(calls)
     assert any(x[1] in ('10100', '00101') for x in p[0])
+
+
+# ---------------------------------------------------------------- D1: every predicate shape
+
+CONFLICTS = [
+    ("candidate(1) is None", "candidate(1) is not None"),
+    ("candidate(1) is True", "candidate(1) is False"),
+    ("not candidate(1) is None", "candidate(1) is None"),
+    ("candidate(1) is not True", "candidate(1) is True"),
+    ("not candidate(1) is True", "candidate(1) is True"),
+    ("candidate(1)", "not candidate(1)"),
+    ("candidate(1) < 3", "candidate(1) > 5"),
+    ("5 < candidate(1)", "candidate(1) < 3"),
+    ("not candidate(1) == 2", "candidate(1) == 2"),
+    ("not candidate(1) < 2", "candidate(1) < 2"),
+    ("candidate(1) in [1, 2]", "candidate(1) not in [1, 2]"),
+    ("not candidate(1) in [1]", "candidate(1) in [1]"),
+    ("candidate(1) == 1", "candidate(1) != 1"),
+]
+
+
+@pytest.mark.parametrize("first,second", CONFLICTS)
+def test_two_asserts_no_result_satisfies_are_a_conflict(first, second):
+    test = f"def check(candidate):\n    assert {first}\n    assert {second}\n"
+    assert len(S.visible_test_unsatisfiable(test)) == 1
+
+
+def test_two_asserts_one_result_satisfies_are_no_conflict():
+    test = "def check(candidate):\n    assert candidate(1) < 3\n    assert candidate(1) > 0\n"
+    assert S.visible_test_unsatisfiable(test) == []
