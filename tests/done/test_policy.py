@@ -238,3 +238,43 @@ def test_replan_resets_the_workspace_and_its_input_carries_no_contract(tmp_path)
     assert "protected_path_mutated" in text
     for secret in ("test.py", "heldout", "sha256", "contract"):
         assert secret not in text
+
+
+CLAIM_ONLY = [{"claim_type": "protected_paths/v1", "decision": "supported"},
+              {"claim_type": "acceptance_observed/v1", "decision": "supported"},
+              {"claim_type": "tool_claim_match/v1", "decision": "contradicted"}]
+
+
+def test_a_claim_only_refusal_with_passing_acceptance_is_the_harness():
+    assert policy.attribute_refusal(CLAIM_ONLY) == "harness"
+    failed = [dict(item) for item in CLAIM_ONLY]
+    failed[1]["decision"] = "contradicted"
+    assert policy.attribute_refusal(failed) is None
+    unestablished = [dict(item) for item in CLAIM_ONLY]
+    unestablished[1]["decision"] = "not_established"
+    assert policy.attribute_refusal(unestablished) is None
+
+
+def test_a_harness_refusal_is_replanned_and_never_escalates():
+    table = policy.table(attempts=5)
+    plumbing = {"verdict": "contradicted", "reason": "tool_claim_unmatched",
+                "attribution": "harness"}
+    chain = [record(1, **plumbing), record(2, **plumbing)]
+    assert decide(table, *chain) == {"action": "replan", "reason": "tool_claim_unmatched"}
+    # Two refusals of the agent's own work still escalate, harness refusals between them or not.
+    agent = [record(1, **CONTRA), record(2, **plumbing), record(3, **CONTRA)]
+    assert decide(table, *agent) == {"action": "escalate", "reason": "protected_path_mutated"}
+
+
+def test_the_table_binds_the_attribution_rule():
+    assert policy.table()["attribution_rules"] == policy.ATTRIBUTION_RULES
+
+
+def test_the_replan_input_carries_the_comparison():
+    detail = ["claimed `python test.py` exit 0: precedes_last_edit; observed runs: cwd "
+              "/workspace, exe /usr/local/bin/python, argv `python test.py`, step 14, exit 0; "
+              "last edit at step 20 (write func.py)"]
+    text = policy.replan_input(policy.Decision("replan", "tool_claim_precedes_last_edit"), 1,
+                               detail)
+    assert "tool_claim_precedes_last_edit" in text and detail[0] in text
+    assert "after your last edit" in text

@@ -144,7 +144,8 @@ def _collection_failed(contract: dict[str, Any], grade: dict[str, Any] | None) -
 def attempt_record(number: int, run: Path, contract: dict[str, Any], workspace: Path,
                    verdict: dict[str, Any], grade: dict[str, Any] | None, flagged: bool,
                    limit_s: float, interrupted_by_budget: bool,
-                   staging_refused: bool) -> dict[str, Any]:
+                   staging_refused: bool,
+                   checks: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """The attempt's entry in the chain: every input :func:`.policy.decide` reads."""
     observation = json.loads((run / "observation.json").read_bytes())
     launched = json.loads((run / "launch.json").read_bytes())
@@ -156,6 +157,8 @@ def attempt_record(number: int, run: Path, contract: dict[str, Any], workspace: 
         timed_out, elapsed, limit_s, launch_receipt.get("container_exit"),
         _collection_failed(contract, grade), int(launched.get("orphans_killed", 0)),
         staging_refused)
+    if verdict["decision"] == "contradicted":
+        attribution = policy.attribute_refusal(checks or []) or attribution
     events = observation.get("events", [])
     return {
         "attempt": number,
@@ -232,7 +235,8 @@ def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dic
         witness(run)
     predicate = receipt.assemble(run, keys.pins(spec.observed_party, spec.allow_no_heldout))
     record = attempt_record(number, run, contract, workspace, predicate["verdict"],
-                            graded.grade, flagged, limit, interrupted, staging_refused=False)
+                            graded.grade, flagged, limit, interrupted, staging_refused=False,
+                            checks=predicate["checks"])
     predicate["verifier_isolation"] = graded.isolation
     return _judge(spec, keys, run, table, chain, baseline, record, predicate,
                   predicate["verdict"])
@@ -263,6 +267,61 @@ def write_loop(spec: LoopSpec, keys: Keys, table: dict[str, Any], baseline: list
     return data
 
 
+def contract_record(spec: LoopSpec) -> dict[str, Any]:
+    return json.loads((spec.contract / "contract.json").read_bytes())
+
+
+def _shell(argv: list[str]) -> str:
+    return " ".join(argv)
+
+
+def refusal_detail(run: Path, contract: dict[str, Any]) -> list[str]:
+    """What the refusing checks compared, in lines the agent can act on.
+
+    For an acceptance failure, each failed visible command by argv with its exit and the
+    count of failed held-out commands (never their argv); for a tool-claim refusal, each
+    claim that did not match beside the runs the observer saw of that command (working
+    directory, executable, argv, step, exit) and the step and path of the last edit.
+    """
+    lines: list[str] = []
+    verify = run / "verify"
+    argv = {item["id"]: item["argv"] for item in contract["acceptance"]}
+    grade = verify / "acceptance.decision.json"
+    if grade.is_file():
+        for check in json.loads(grade.read_bytes()).get("checks", []):
+            failed = [item for item in check.get("results", []) if item["exit"] != 0]
+            held = [item for item in failed if item["id"].startswith("heldout")]
+            for item in failed:
+                if item not in held:
+                    lines.append(f"acceptance command `{_shell(argv[item['id']])}` exited "
+                                 f"{item['exit']} in the verifier (expected 0)")
+            if held:
+                lines.append(f"{len(held)} held-out check(s) you cannot see failed")
+    decided = verify / "tool-claims.decision.json"
+    if decided.is_file() and (run / "claims.json").is_file():
+        observation = json.loads((run / "observation.json").read_bytes())
+        events = {event["id"]: event for event in observation["events"]}
+        by_step = {event["step"]: event for event in observation["events"]}
+        claimed = {item["id"]: item for item in json.loads((run / "claims.json").read_bytes())
+                   ["claims"]}
+        for check in json.loads(decided.read_bytes()).get("checks", []):
+            for item in check.get("claims", []):
+                if item["status"] == "matched" or item["id"] not in claimed:
+                    continue
+                claim = claimed[item["id"]]
+                runs = [events[key] for key in item.get("exec_ids", []) if key in events]
+                seen = "; ".join(f"cwd {event['cwd']}, exe {event['exe']}, argv "
+                                 f"`{_shell(event['argv'])}`, step {event['step']}, exit "
+                                 f"{event.get('exit', 'unknown')}" for event in runs) or "none"
+                edit = by_step.get(item.get("last_edit_step"))
+                where = f" ({edit['type']} {edit.get('path', '')})" if edit else ""
+                lines.append(f"claimed `{_shell(claim['argv'])}`"
+                             + (f" exit {claim['exit']}" if "exit" in claim else "")
+                             + f": {item['status']}; observed runs: {seen}; last edit at step "
+                             f"{item.get('last_edit_step')}{where}")
+    return lines
+
+
 def run_loop(spec: LoopSpec, keys: Keys,
              witness: Callable[[Path], None] | None = None) -> list[Attempt]:
     """Attempts until ``stop`` or ``escalate``; the loop record goes to ``out/loop.json``."""
@@ -291,5 +350,6 @@ def run_loop(spec: LoopSpec, keys: Keys,
             first = json.loads((spec.out / "attempt-1" / "launch.json").read_bytes())
             policy.apply(current.decision, workspace, spec.out / "attempt-1" / "start.tar",
                          first["start_tarball_sha256"])
-            feedback = policy.replan_input(current.decision, number)
+            feedback = policy.replan_input(current.decision, number,
+                                           refusal_detail(current.run, contract_record(spec)))
     return done

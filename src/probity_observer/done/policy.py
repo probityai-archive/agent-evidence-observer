@@ -26,8 +26,12 @@ A ``not_established`` attempt is first attributed from its records (:func:`attri
 its limit; ``agent`` when the run used its whole limit, a sealed collection failed, the
 launcher killed processes the agent left behind, or staging refused something in the agent's
 tree; else ``unknown``. An ``agent`` attempt counts as ``contradicted`` with reason
-``coverage_sabotaged`` and is replanned; a ``harness`` attempt counts for nothing. The
-``contradicted`` count never decays.
+``coverage_sabotaged`` and is replanned; a ``harness`` attempt counts for nothing. A
+``contradicted`` attempt whose only failed check is the tool-claim match, while the acceptance
+commands passed in the verifier, is attributed ``harness`` too (:func:`attribute_refusal`):
+the record of the work was refused, not the work, so it is replanned with the comparison the
+check made and does not count toward ``escalate_after_contradicted``. Every other
+``contradicted`` attempt is the agent's, and that count never decays.
 
 Budget lines: ``attempts``, ``wall_clock_s`` (the observed seconds of every attempt so far),
 ``mutations`` (distinct ``(origin, path)`` pairs the observation recorded, summed over
@@ -40,7 +44,10 @@ Before the table, the done verdict turns two record facts into ``contradicted``
 (``gap_cause: agent``, ``tracer_terminated_prematurely``).
 
 ``replan`` resets the workspace from the sealed start tarball and gives the next attempt the
-reason code as its only input; ``continue`` keeps the tree. The table is RFC 8785 bytes, and
+refusal as its input: the reason code and what the check compared (which command failed and
+how, or the claimed run beside the runs the observer saw and the last edit), never the
+contract, its digests, the protected list or a held-out command's argv; ``continue`` keeps
+the tree. The table is RFC 8785 bytes, and
 its SHA-256 is the ``policy.table_sha256`` every receipt carries.
 """
 
@@ -68,6 +75,15 @@ VERDICT_RULES = [
 ]
 
 
+# A refusal charged to the harness, not the agent: it is replanned and not counted.
+ATTRIBUTION_RULES = [
+    {"when": "only_tool_claim_match_contradicted_and_acceptance_supported",
+     "attribution": "harness"},
+]
+TOOL_CLAIM = "tool_claim_match/v1"
+ACCEPTANCE = "acceptance_observed/v1"
+
+
 def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablished: int = 2,
           wall_clock_s: float | None = None, mutations: int | None = None,
           tokens: int | None = None, stall_after: int = drift.STALL_AFTER) -> dict[str, Any]:
@@ -86,6 +102,7 @@ def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablish
                   "command_repeats_in_attempt": drift.COMMAND_REPEATS_IN_ATTEMPT,
                   "ast_tree_recurrences": 2},
         "verdict_rules": VERDICT_RULES,
+        "attribution_rules": ATTRIBUTION_RULES,
         "rules": [
             {"when": "verdict_supported", "action": "stop", "reason": "done_checks_supported"},
             {"when": "latch_fired", "action": "escalate", "reason": "loop_detected"},
@@ -141,6 +158,21 @@ def attribute(timed_out: bool, elapsed_s: float, timeout_s: float, container_exi
     return "unknown"
 
 
+def attribute_refusal(checks: list[dict[str, Any]]) -> str | None:
+    """``harness`` for a contradiction that only the tool-claim match found while the
+    acceptance commands passed in the verifier; None otherwise."""
+    contradicted = [item["claim_type"] for item in checks if item["decision"] == "contradicted"]
+    accepted = any(item["claim_type"] == ACCEPTANCE and item["decision"] == "supported"
+                   for item in checks)
+    return "harness" if contradicted == [TOOL_CLAIM] and accepted else None
+
+
+def _counts(record: dict[str, Any]) -> bool:
+    """Whether a contradicted attempt counts toward escalation: only when it is the agent's."""
+    return effective(record)[0] == "contradicted" and not (
+        record["verdict"] == "contradicted" and record["attribution"] == "harness")
+
+
 def effective(record: dict[str, Any]) -> tuple[str, str]:
     """The decision and reason an attempt counts as: agent-charged unestablished is
     ``contradicted / coverage_sabotaged``."""
@@ -174,14 +206,15 @@ def decide(policy: dict[str, Any], chain: list[dict[str, Any]], baseline: list[s
     """The action after the last attempt of ``chain``; a pure function of its arguments."""
     current = chain[-1]
     decision, reason = effective(current)
-    contradicted = sum(1 for item in chain if effective(item)[0] == "contradicted")
-    prior = contradicted - (decision == "contradicted")
+    contradicted = sum(1 for item in chain if _counts(item))
+    prior = contradicted - _counts(current)
     spent = _spent(policy, chain)
     if decision == "supported":
         return Decision("stop", "done_checks_supported")
     if current.get("loop") is not None:
         return Decision("escalate", "loop_detected")
-    if decision == "contradicted" and contradicted >= policy["escalate_after_contradicted"]:
+    if (decision == "contradicted" and _counts(current)
+            and contradicted >= policy["escalate_after_contradicted"]):
         return Decision("escalate", reason)
     if decision == "contradicted" and current["flagged"]:
         return Decision("escalate", "contradicted_while_escalating")
@@ -225,9 +258,12 @@ def apply(decision: Decision, workspace: Path, tarball: Path, start_sha256: str)
         snapshot.reset(workspace, tarball, start_sha256)
 
 
-def replan_input(decision: Decision, attempt: int) -> str:
-    """The next attempt's first input after a refused attempt: the reason code only, never
-    the contract, its digests or the protected list."""
+def replan_input(decision: Decision, attempt: int, detail: list[str] | None = None) -> str:
+    """The next attempt's first input after a refused attempt: the reason code and what the
+    check compared (``detail``, from :func:`.loop.refusal_detail`), never the contract, its
+    digests or the protected list."""
+    lines = "".join(f"- {line}\n" for line in detail or [])
     return (f"Attempt {attempt} was not accepted: an outside verifier found "
-            f"{decision.reason}. The workspace was reset to its starting state. "
-            "Solve the task without changing protected files, and run the tests yourself.\n")
+            f"{decision.reason}.\n{lines}The workspace was reset to its starting state. "
+            "Solve the task without changing protected files, run the tests yourself after "
+            "your last edit, and report the command you ran exactly as you ran it.\n")

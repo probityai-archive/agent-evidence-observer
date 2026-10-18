@@ -305,3 +305,30 @@ def test_probity_done_verify_runs_the_shared_verifier(tmp_path, keys, capsys, mo
     bad = top.parse_args(["done", "verify", "--run", str(tmp_path / "missing"), *pubs()])
     assert bad._probity_handler(bad) == cli.REFUSED
 
+
+def test_the_refusal_detail_names_the_failed_command_and_hides_held_out_ones(tmp_path):
+    from probity_observer.done import loop
+    run = tmp_path / "attempt"
+    (run / "verify").mkdir(parents=True)
+    contract_record = {"acceptance": [{"id": "visible_run", "argv": ["python", "test.py"]},
+                                      {"id": "heldout", "argv": ["secret", "argv"]}]}
+    (run / "verify" / "acceptance.decision.json").write_text(json.dumps({"checks": [
+        {"id": "acceptance", "results": [{"id": "visible_run", "exit": 1},
+                                         {"id": "heldout", "exit": 1}]}]}))
+    (run / "verify" / "tool-claims.decision.json").write_text(json.dumps({"checks": [
+        {"id": "tool_claims", "claims": [{"id": "c1", "status": "precedes_last_edit",
+                                          "exec_ids": ["e2"], "last_edit_step": 3}]}]}))
+    (run / "claims.json").write_text(json.dumps({"claims": [
+        {"id": "c1", "argv": ["python", "test.py"], "exit": 0}]}))
+    (run / "observation.json").write_text(json.dumps({"events": [
+        {"id": "e2", "type": "exec", "step": 2, "argv": ["python", "test.py"], "cwd": "/workspace",
+         "exe": "/usr/local/bin/python", "exit": 0},
+        {"id": "w3", "type": "write", "step": 3, "path": "func.py"}]}))
+    lines = loop.refusal_detail(run, contract_record)
+    assert lines[0] == ("acceptance command `python test.py` exited 1 in the verifier "
+                        "(expected 0)")
+    assert lines[1] == "1 held-out check(s) you cannot see failed"
+    assert "secret" not in " ".join(lines)
+    assert lines[2] == ("claimed `python test.py` exit 0: precedes_last_edit; observed runs: "
+                        "cwd /workspace, exe /usr/local/bin/python, argv `python test.py`, "
+                        "step 2, exit 0; last edit at step 3 (write func.py)")
