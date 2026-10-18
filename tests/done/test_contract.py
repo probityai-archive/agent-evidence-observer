@@ -112,7 +112,10 @@ def test_swe_contract_from_dataset_fields(tmp_path, swe_repo, harness):
     assert (task.heldout / "config/pytest.ini").read_text() == "[pytest]\n"
     assert "w * h" in (task.reference / "pkg/shapes.py").read_text()
     ids = [command.id for command in task.commands]
-    assert ids == ["fail-to-pass", "pass-to-pass", "heldout-fail-to-pass"]
+    assert ids == ["fail-to-pass", "pass-to-pass", "heldout-fail-to-pass", "visible_run"]
+    # The agent's own run of the visible tests, sealed with where it runs and its interpreter.
+    assert task.commands[3].argv == ("python", "-m", "pytest", "tests/test_shapes.py")
+    assert task.commands[3].agent_command and task.module_under_test == ["pkg/shapes.py"]
     assert task.commands[0].argv[-1] == "tests/test_shapes.py::test_area"
     argv = task.commands[0].argv
     config = argv.index("../heldout/config/pytest.ini")
@@ -217,12 +220,13 @@ class Scripted:
 def test_stability_runs_three_times_per_state_and_drops_flaky_or_unexpected(tmp_path, swe_repo):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "work")
-    fail, passing, held = (command.argv for command in task.commands)
+    fail, passing, held, own = (command.argv for command in task.commands)
     runner = Scripted({("reference", fail): [0, 0, 0], ("start", fail): [1, 1, 1],
                        ("reference", passing): [0, 1, 0],
-                       ("reference", held): [0, 0, 0], ("start", held): [0, 0, 0]})
+                       ("reference", held): [0, 0, 0], ("start", held): [0, 0, 0],
+                       ("reference", own): [0, 0, 0], ("start", own): [1, 1, 1]})
     result = contract.stabilize(task, runner)
-    assert [command.id for command in result.commands] == ["fail-to-pass"]
+    assert [command.id for command in result.commands] == ["fail-to-pass", "visible_run"]
     assert result.dropped == [{"id": "pass-to-pass", "reason": "flaky_on_reference"},
                               {"id": "heldout-fail-to-pass", "reason": "prepatch_passed"}]
     assert {(row["id"], row["state"]) for row in result.runs} >= {
@@ -235,13 +239,14 @@ def test_stability_narrows_a_grouped_command_to_its_stable_ids(tmp_path, swe_rep
     record = {**record, "FAIL_TO_PASS": '["tests/test_shapes.py::test_area", "tests/x.py::test_flaky"]',
               "PASS_TO_PASS": "[]"}
     task = contract.swe_task(record, repo, tmp_path / "work")
-    group, held = task.commands
+    group, held, own = task.commands
     prefix = group.argv[:group.ids_from]
     good, flaky = prefix + ("tests/test_shapes.py::test_area",), prefix + ("tests/x.py::test_flaky",)
     runner = Scripted({("reference", group.argv): [0, 1, 0],
                        ("reference", good): [0, 0, 0], ("start", good): [1, 1, 1],
                        ("reference", flaky): [1, 0, 0],
-                       ("reference", held.argv): [0, 0, 0], ("start", held.argv): [1, 1, 1]})
+                       ("reference", held.argv): [0, 0, 0], ("start", held.argv): [1, 1, 1],
+                       ("reference", own.argv): [0, 0, 0], ("start", own.argv): [1, 1, 1]})
     result = contract.stabilize(task, runner)
     assert result.commands[0].argv == good and result.commands[1].id == "heldout-fail-to-pass"
     assert result.dropped == [{"id": "fail-to-pass", "test": "tests/x.py::test_flaky",
@@ -286,10 +291,11 @@ def test_stability_records_what_an_honest_run_writes(tmp_path, python_bin):
 def test_pytest_start_failures_other_than_failing_tests_are_dropped(tmp_path, swe_repo):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "work")
-    fail, passing, held = (command.argv for command in task.commands)
+    fail, passing, held, own = (command.argv for command in task.commands)
     table = {("reference", fail): [0, 0, 0], ("start", fail): [4, 4, 4],
              ("reference", passing): [0, 0, 0], ("start", passing): [0, 0, 0],
-             ("reference", held): [0, 0, 0], ("start", held): [1, 1, 1]}
+             ("reference", held): [0, 0, 0], ("start", held): [1, 1, 1],
+             ("reference", own): [0, 0, 0] * 2, ("start", own): [1, 1, 1] * 2}
     result = contract.stabilize(task, Scripted(table))
     assert {"id": "fail-to-pass", "reason": "prepatch_exit_4"} in result.dropped
     table[("start", fail)] = [2, 2, 2]

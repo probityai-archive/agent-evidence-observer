@@ -240,7 +240,9 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
     (``isolated_targets`` in the compile record); both report as evidence from the worker. The held-out set is the
     task's original test patch, overlaid by the verifier from ``../heldout/tree`` and never in
     the agent's tree. Every acceptance-configuration file from the root to each test file is
-    protected.
+    protected. ``visible_run`` is the agent's own run, ``python -m pytest`` on the test patch's
+    files, sealed with its working directory and interpreter like LiveCodeBench's
+    ``python test.py``.
     """
     fail, passing = _tests(record["FAIL_TO_PASS"]), _tests(record["PASS_TO_PASS"])
     start, reference, held = work / "start", work / "reference", work / "heldout"
@@ -280,6 +282,10 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
                                 ids_from=len(prefix)))
     overlay = "cp -R ../heldout/tree/. . && exec " + shlex.join(prefix + tuple(fail))
     commands.append(Command("heldout-fail-to-pass", ("sh", "-c", overlay), heldout=True))
+    # The run the agent itself makes on the visible tests; the contract seals where it runs
+    # and its interpreter, so a claim of it is matched to the agent's own exec.
+    commands.append(Command("visible_run", ("python", "-m", "pytest", *tests),
+                            agent_command=True))
     return Task(
         task_id=record["instance_id"], source="swe",
         description=f"resolve {record['instance_id']}", start=start, reference=reference,
