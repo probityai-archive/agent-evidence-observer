@@ -574,8 +574,18 @@ def stability_report(result: Stability, runner: Runner, runs: int,
             "run_writes": result.run_writes}
 
 
-def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"], int]:
-    """The mutant base state, the mutants for a task, and how many duplicates were dropped.
+@dataclass(frozen=True)
+class MutantPlan:
+    """The state mutants are made from, the mutants, and what the plan left out."""
+
+    base: Path
+    mutants: list[mutants.Mutant]
+    deduplicated: int = 0
+    cheat_uncovered: list[dict[str, Any]] = field(default_factory=list)
+
+
+def task_mutants(task: Task, limit: int) -> MutantPlan:
+    """The mutant base state and mutants for a task, and what was left out.
 
     With a reference: the null patch (every changed file back to its start bytes) first, then
     one revert per hunk, then operator and statement mutants sampled round-robin across the
@@ -593,6 +603,7 @@ def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"], 
                  if names else [])
         groups: list[list[mutants.Mutant]] = []
         classes: list[mutants.Mutant] = []
+        uncovered: list[dict[str, Any]] = []
         for name in names:
             change = task.mutation_targets[name]
             found += mutants.hunk_reverts(name, starts[name], texts[name], change.hunks)
@@ -600,15 +611,18 @@ def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"], 
                 lines = set(range(hunk[0], hunk[1] + 1))
                 groups.append(mutants.operator_mutants(name, texts[name], [hunk])
                               + mutants.statement_mutants(name, texts[name], lines))
-            classes += mutants.class_mutants(name, texts[name], list(change.ranges))
+            classes += mutants.class_mutants(name, texts[name], list(change.ranges),
+                                             change.anchors)
+            uncovered += mutants.cheat_uncovered(name, texts[name], list(change.ranges),
+                                                 change.anchors)
         chosen, dropped = mutants.deduplicate(
             texts, found + mutants.stratified(groups, limit, task.task_id) + classes)
-        return task.reference, chosen, dropped
+        return MutantPlan(task.reference, chosen, dropped, uncovered)
     if task.entry is not None:
-        return task.start, mutants.degenerate_mutants(
+        return MutantPlan(task.start, mutants.degenerate_mutants(
             task.entry["path"], task.entry["signature"], task.entry["name"],
-            task.entry["expected"], task.entry.get("table")), 0
-    return task.start, [], 0
+            task.entry["expected"], task.entry.get("table")))
+    return MutantPlan(task.start, [])
 
 
 def is_test_path(name: str) -> bool:
@@ -685,10 +699,12 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
             if not command.heldout and command.prepatch == "fail"]:
         raise DoneError(f"{task.task_id}: no stable visible command fails on the start state, "
                         "so no command can tell the task done from not done")
-    base, chosen, deduplicated = task_mutants(task, mutant_limit)
-    adequacy = mutants.measure(base, chosen, stable.commands, runner, task.heldout, timeout)
+    plan = task_mutants(task, mutant_limit)
+    chosen = plan.mutants
+    adequacy = mutants.measure(plan.base, chosen, stable.commands, runner, task.heldout, timeout)
     report = {**stability_report(stable, runner, runs, task.reference is not None),
-              "adequacy": {**adequacy.report(), "deduplicated": deduplicated}}
+              "adequacy": {**adequacy.report(), "deduplicated": plan.deduplicated},
+              "cheat_uncovered": plan.cheat_uncovered}
     if traces:
         report["pass_command_traces"] = traces
     executables = None

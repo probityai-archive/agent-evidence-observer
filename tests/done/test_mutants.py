@@ -64,7 +64,8 @@ def test_a_contract_with_no_failing_visible_command_is_refused(tmp_path, harness
 def test_swe_operator_mutants_come_from_the_reference(tmp_path, swe_repo):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "w")
-    base, found, _ = contract.task_mutants(task, 40)
+    plan = contract.task_mutants(task, 40)
+    base, found = plan.base, plan.mutants
     assert base == task.reference and found
     assert {mutant.path for mutant in found} == {"pkg/shapes.py"}
 
@@ -114,7 +115,8 @@ def test_class_mutants_wrap_every_touched_function_and_method():
 def test_null_patch_is_mutant_zero_and_hunks_are_sampled_in_turn(tmp_path, swe_repo):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "w")
-    base, found, _ = contract.task_mutants(task, 2)
+    plan = contract.task_mutants(task, 2)
+    base, found = plan.base, plan.mutants
     assert found[0].operator == "null-patch" and found[0].source == (task.start / "pkg/shapes.py").read_text()
     assert {mutant.kind for mutant in found} >= {"null-patch", "operator", "any-eq", "stateful", "frame-aware"}
     a = mutants.operator_mutants("a.py", SOURCE, [(3, 3)])
@@ -125,7 +127,8 @@ def test_null_patch_is_mutant_zero_and_hunks_are_sampled_in_turn(tmp_path, swe_r
 
 def test_adequacy_reports_each_class_and_names_the_unkillable(tmp_path, python_bin):
     task = contract.lcb_task(LCB_ORIGINAL, tmp_path / "w")
-    base, found, _ = contract.task_mutants(task, 40)
+    plan = contract.task_mutants(task, 40)
+    base, found = plan.base, plan.mutants
     assert {mutant.operator for mutant in found} >= {"null-patch", "lookup-table"}
     result = mutants.measure(base, found, task.commands, SubprocessRunner(python_bin), task.heldout, 60)
     report = result.report()
@@ -189,8 +192,71 @@ def test_syntactic_duplicates_and_reference_equals_are_dropped_but_not_the_null_
 def test_task_mutants_carry_statement_mutants_reverts_and_the_dedup_count(tmp_path, swe_repo):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "w")
-    base, found, dropped = contract.task_mutants(task, 40)
+    plan = contract.task_mutants(task, 40)
+    found, dropped = plan.mutants, plan.deduplicated
     assert "stmt-delete" in {mutant.operator for mutant in found}
     # The patch has one hunk, so its revert is the null patch again and is dropped.
     assert "hunk-revert" not in {mutant.operator for mutant in found} and dropped >= 1
     assert len({mutant.source for mutant in found}) == len(found)
+
+
+WIDE = ('"""Module doc."""\nfrom __future__ import annotations\nimport functools\n\n\n'
+        'def trace(fn):\n    @functools.wraps(fn)\n    def inner(*a, **k):\n        return fn(*a, **k)\n'
+        '    return inner\n\n\n'
+        '@trace\ndef decorated(x):\n    return x + 1\n\n\n'
+        'async def later(x):\n    return x * 3\n\n\n'
+        'def outer(x):\n    def nested(y):\n        return y - 1\n    return nested(x)\n\n\n'
+        'class K:\n    @staticmethod\n    def s(x):\n        return x * 2\n\n'
+        '    @classmethod\n    def c(cls, x):\n        return x * 5\n\n'
+        '    @property\n    def p(self):\n        return 7\n')
+
+
+def test_cheat_wrappers_cover_decorated_async_nested_static_and_class_methods():
+    import asyncio
+    found = mutants.class_mutants("m.py", WIDE)
+    stateful = [mutant for mutant in found if mutant.operator == "stateful"]
+    lines = {mutant.line for mutant in stateful}
+    # trace, inner, decorated, later, outer, nested, s, c: every def except the property.
+    assert len(stateful) == 8 and 38 not in lines and {14, 18, 22, 23, 30, 34} <= lines
+    assert mutants.cheat_uncovered("m.py", WIDE) == [{"path": "m.py", "function": "K.p", "line": 38}]
+    for mutant in stateful:
+        assert mutant.source.index("from __future__") < mutant.source.index("_probity_cheat")
+    by_line = {mutant.line: load(mutant.source) for mutant in stateful}
+    space = by_line[14]
+    assert space["decorated"](1) == 2 and space["decorated"](1) is None
+    space = by_line[18]
+    assert asyncio.run(space["later"](2)) == 6 and asyncio.run(space["later"](2)) is None
+    space = by_line[22]
+    assert space["outer"](3) == 2 and space["outer"](3) is None
+    space = by_line[30]
+    assert space["K"].s(2) == 4 and space["K"]().s(2) is None
+    space = by_line[34]
+    assert space["K"].c(1) == 5 and space["K"].c(1) is None
+    any_eq = load(next(mutant.source for mutant in found
+                       if mutant.operator == "any-eq" and mutant.line == 30))
+    assert any_eq["K"].s(2) == "anything"
+
+
+def test_cheat_counters_are_keyed_by_path_qualname_and_line():
+    source = "class A:\n    def f(self):\n        return 1\n\n\nclass B:\n    def f(self):\n        return 2\n"
+    found = [mutant for mutant in mutants.class_mutants("m.py", source) if mutant.operator == "stateful"]
+    assert "('m.py', 'A.f', 2)" in found[0].source and "('m.py', 'B.f', 7)" in found[1].source
+
+
+def test_touched_functions_meet_changed_lines_or_a_deletion_anchor():
+    tree = __import__("ast").parse(WIDE)
+    assert [item.qualname for item in mutants.touched(tree, [(15, 15)])] == ["decorated"]
+    assert [item.qualname for item in mutants.touched(tree, [], (24,))] == ["outer", "outer.<locals>.nested"]
+    assert [item.qualname for item in mutants.touched(tree, [(23, 23)])] == ["outer", "outer.<locals>.nested"]
+
+
+def test_a_stateful_counter_survives_a_fresh_interpreter(tmp_path):
+    import subprocess
+    import sys
+    source = "def f(x):\n    return x + 1\n"
+    stateful = next(m for m in mutants.class_mutants("mod.py", source) if m.operator == "stateful")
+    (tmp_path / "mod.py").write_text(stateful.source)
+    call = [sys.executable, "-I", "-c", "import sys; sys.path.insert(0, '.'); import mod; print(mod.f(1))"]
+    first = subprocess.run(call, cwd=tmp_path, capture_output=True, text=True, check=True)
+    second = subprocess.run(call, cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert (first.stdout.strip(), second.stdout.strip()) == ("2", "None")
