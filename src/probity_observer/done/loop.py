@@ -79,6 +79,7 @@ class Attempt:
     verdict: dict[str, Any]
     decision: policy.Decision
     record: dict[str, Any]
+    checks: list[dict[str, Any]] | None = None
 
 
 def parse_claims(transcript: str, kind: str, visible: list[str] | None,
@@ -264,7 +265,8 @@ def _judge(spec: LoopSpec, keys: Keys, run: Path, table: dict[str, Any],
         predicate.update(policy={"table_sha256": policy.table_sha256(table)},
                          stop_decision=decision.record())
         receipt.sign_receipt(run, predicate, keys.harness)
-    return Attempt(record["attempt"], run, verdict, decision, record)
+    return Attempt(record["attempt"], run, verdict, decision, record,
+                   predicate["checks"] if predicate is not None else None)
 
 
 def write_loop(spec: LoopSpec, keys: Keys, table: dict[str, Any], baseline: list[str],
@@ -393,6 +395,19 @@ def run_loop(spec: LoopSpec, keys: Keys,
             first = json.loads((spec.out / "attempt-1" / "launch.json").read_bytes())
             policy.apply(current.decision, workspace, spec.out / "attempt-1" / "start.tar",
                          first["start_tarball_sha256"])
-            feedback = policy.replan_input(current.decision, number,
-                                           refusal_detail(current.run, contract_record(spec)))
+        feedback = next_input(current, spec)
     return done
+
+
+def next_input(current: Attempt, spec: LoopSpec) -> str | None:
+    """The next attempt's first input: the refusal after ``replan``; after a ``continue`` on a
+    parser outcome whose acceptance commands passed, a request to run the tests and leave
+    their output; else nothing, so no earlier refusal's text reaches a later attempt."""
+    decision = current.decision
+    if decision.action == "replan":
+        return policy.replan_input(decision, current.number,
+                                   refusal_detail(current.run, contract_record(spec)))
+    if (decision.action == "continue" and decision.reason in policy.PARSER_REASONS
+            and policy.acceptance_supported(current.checks)):
+        return policy.continue_input(decision, current.number)
+    return None
