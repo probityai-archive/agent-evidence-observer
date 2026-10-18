@@ -129,7 +129,7 @@ def test_the_grader_counts_collected_ids_from_the_verified_report(tmp_path, pyth
     argv = sealed.pytest_argv(PREFIX, ["tests/test_shapes.py"]) + (
         "tests/test_shapes.py::test_area",)
     item = {"id": "fail-to-pass", "argv": list(argv), "ids": ["tests/test_shapes.py::test_area"]}
-    code, found = verify_run._plugin_run(SubprocessRunner(python_bin), state, item, held, 120)
+    code, found = verify_run._plugin_run(SubprocessRunner(python_bin), state, item, held, 120, [])
     assert code == 0
     assert sealed.collected(list(found["items"]), item["ids"]) == 1
 
