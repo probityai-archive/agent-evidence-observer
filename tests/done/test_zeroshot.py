@@ -117,3 +117,31 @@ def test_a_reference_gives_the_proposal_mutants(tmp_path, repo, harness, python_
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
     assert sealed.record["adequacy"]["killed"] >= 1
+
+
+@pytest.mark.parametrize("message", [{"content": None}, {"content": "   "}, {}])
+def test_an_empty_model_answer_is_refused_not_a_crash(monkeypatch, message):
+    """gpt-oss-120b on Crusoe at max_tokens 2000: content null, finish_reason length."""
+    seen = {}
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": message,
+                                            "finish_reason": "length"}]}).encode()
+
+    def urlopen(request, timeout):
+        seen["headers"] = dict(request.header_items())
+        return Reply()
+
+    monkeypatch.setattr(zeroshot.urllib.request, "urlopen", urlopen)
+    model = zeroshot.ChatModel("http://h:8000", "gpt-oss-120b", tag="zeroshot")
+    with pytest.raises(DoneError, match="no content .finish_reason length"):
+        model.complete("p")
+    assert model.finish_reason == "length" and model.max_tokens == 8192
+    assert seen["headers"]["X-probity-tag"] == "zeroshot"

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from typing import Any, Protocol
@@ -40,21 +40,41 @@ class Model(Protocol):
 
 @dataclass
 class ChatModel:
-    """One request to an OpenAI-compatible ``/v1/chat/completions`` endpoint."""
+    """One request to an OpenAI-compatible ``/v1/chat/completions`` endpoint.
+
+    A reasoning model that spends ``max_tokens`` before it answers returns ``content: null``
+    (``finish_reason: length``); that is a refused proposal, never a crash. The default
+    budget leaves room for the reasoning (measured on gpt-oss-120b: 2 of 2 compiles at 2000
+    had no content, every call at 8192 had it). ``tag`` is sent as ``X-Probity-Tag`` so a
+    metering proxy books the call to its purpose.
+    """
 
     url: str
     name: str
-    max_tokens: int = 2000
+    max_tokens: int = 8192
     timeout: float = 300.0
+    tag: str | None = None
+    finish_reason: str | None = field(default=None, init=False)
 
     def complete(self, prompt: str) -> str:
         body = json.dumps({"model": self.name, "max_tokens": self.max_tokens, "temperature": 0,
                            "messages": [{"role": "user", "content": prompt}]}).encode()
+        headers = {"Content-Type": "application/json"}
+        if self.tag:
+            headers["X-Probity-Tag"] = self.tag
         request = urllib.request.Request(self.url.rstrip("/") + "/v1/chat/completions", data=body,
-                                         headers={"Content-Type": "application/json"})
+                                         headers=headers)
         with urllib.request.urlopen(request, timeout=self.timeout) as reply:
             answer = json.loads(reply.read())
-        return answer["choices"][0]["message"]["content"]
+        try:
+            choice = answer["choices"][0]
+            content = choice["message"].get("content")
+        except (KeyError, IndexError, TypeError, AttributeError) as error:
+            raise DoneError("model reply has no choices[0].message") from error
+        self.finish_reason = choice.get("finish_reason")
+        if not isinstance(content, str) or not content.strip():
+            raise DoneError(f"model answer has no content (finish_reason {self.finish_reason})")
+        return content
 
 
 def _files(repo: Path) -> list[Path]:
@@ -172,6 +192,7 @@ def propose(repo: Path, task_id: str, description: str, model: Model,
     record = {"model_calls": 1, "model": model.name,
               "template": "contract_v1.txt", "template_sha256": sha256(template().encode()),
               "prompt_sha256": sha256(prompt.encode()), "response_sha256": sha256(answer.encode()),
+              "finish_reason": getattr(model, "finish_reason", None),
               "rationale": value["rationale"]}
     task.notes = {"proposal": record}
     return Proposal(task, record)

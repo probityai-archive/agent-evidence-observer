@@ -33,7 +33,8 @@ def _runner(args: argparse.Namespace):
 def _task(args: argparse.Namespace) -> contract.Task:
     work = Path(args.work)
     if args.dataset == "repo":
-        model = zeroshot.ChatModel(args.model_url, args.model)
+        model = zeroshot.ChatModel(args.model_url, args.model, max_tokens=args.max_tokens,
+                                   tag=args.model_tag)
         return zeroshot.propose(Path(args.repo), args.task_id, args.task, model,
                                 Path(args.reference) if args.reference else None).task
     record = json.loads(Path(args.record).read_text())
@@ -209,6 +210,9 @@ def add_commands(sub) -> None:
     seal.add_argument("--task", help="the task in words (repo)")
     seal.add_argument("--model-url", help="OpenAI-compatible endpoint (repo)")
     seal.add_argument("--model", help="model name at that endpoint (repo)")
+    seal.add_argument("--max-tokens", type=int, default=8192,
+                      help="completion budget for the zero-shot call, reasoning included (repo)")
+    seal.add_argument("--model-tag", help="sent as X-Probity-Tag with the zero-shot call (repo)")
     seal.add_argument("--reference", help="a known-good solution tree, for mutants (repo)")
     seal.set_defaults(func=cmd_contract)
 
