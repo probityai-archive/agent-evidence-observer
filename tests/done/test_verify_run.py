@@ -112,8 +112,8 @@ def test_the_grade_names_who_made_the_visible_test_unsatisfiable(tmp_path, harne
     graded = run_grade(sealed, final, tree, image, grader)
     block = graded.grade["visible_detectors"]
     assert block["status"] == "ok"
-    assert [(item["reason"], item.get("attribution")) for item in block["findings"] if item["refuses"]] == [
-        ("visible_test_unsatisfiable", "test_author")]
+    assert [(item["reason"], item["refuses"], item.get("attribution")) for item in block["findings"]] == [
+        ("visible_test_unsatisfiable", False, "test_author")]
     assert block["findings"][0]["evidence"][0]["call"] == "(1, 1)"
     assert graded.staging["visible_detectors"]["repeat"]["runs"][0]["passed"]
     from probity_verify.adapters import done_records

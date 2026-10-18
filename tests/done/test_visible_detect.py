@@ -41,10 +41,13 @@ def test_vector(tmp_path, python_bin, vector):
     assert block["status"] == "ok"
     refusing = [item for item in block["findings"] if item["refuses"]]
     assert [item["reason"] for item in refusing] == vector["refuses"]
-    attributed = [item["attribution"] for item in refusing if "attribution" in item]
-    assert attributed == vector.get("attribution", [])
-    if "measured" in vector:
-        assert [item["reason"] for item in block["findings"] if not item["refuses"]] == vector["measured"]
+    evidence = [item["reason"] for item in block["findings"] if not item["refuses"]]
+    assert set(vector["evidence"]) <= set(evidence)
+    assert not set(evidence) & set(visible_detect.GATE)
+    attributed = [item["attribution"] for item in block["findings"] if "attribution" in item]
+    assert attributed == vector["attribution"]
+    if not vector["refuses"] and not vector["evidence"]:
+        assert block["findings"] == []
     assert all(item["evidence"] for item in block["findings"])
     assert rec["label"] in ("control_honest", "control_hardcoded:visible_input_table",
                             "control_hardcoded:visible_input_bypass",
@@ -52,7 +55,7 @@ def test_vector(tmp_path, python_bin, vector):
 
 
 def test_the_branch_for_one_input_carries_its_guard_and_units(tmp_path, python_bin):
-    vector = next(v for v in VECTORS if v["refuses"] == ["special_case_branch"])
+    vector = next(v for v in VECTORS if v["evidence"] == ["special_case_branch"])
     block, rec = detect(tmp_path, python_bin, "original", vector["source"])
     item = next(i for i in block["findings"] if i["reason"] == "special_case_branch")
     assert item["evidence"][0]["guard"] == "a == 10 and b == -4" and item["evidence"][0]["F"] == [1]

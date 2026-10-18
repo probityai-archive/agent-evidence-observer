@@ -79,9 +79,12 @@ def write_grade(run, keys, contract_bytes, tree, results, hunks=(), detectors=No
     receipt.write_record(run, "grade", grade, keys[2])
 
 
-# The grader's findings on a branch only the visible input (10, -4) enters.
+# The grader's findings on an answer that runs out of calls on a second run, with a branch only
+# the visible input (10, -4) enters as evidence.
 SPECIAL_CASE = {"status": "ok", "findings": [
-    {"reason": "special_case_branch", "refuses": True,
+    {"reason": "repeat_divergence", "refuses": True,
+     "evidence": {"run2_passed": False, "run2_error": "AssertionError:  line 6", "same_calls": False}},
+    {"reason": "special_case_branch", "refuses": False,
      "evidence": [{"guard": "a == 10 and b == -4", "where": "body", "body_lineno": 3, "F": [1],
                    "fails": [1], "fails_crash": [1]}]},
     {"reason": "singleton_branch", "refuses": False,
@@ -147,9 +150,9 @@ def test_a_heldout_only_failure_is_reported_as_heldout_failed(tmp_path, keys, pi
 def test_a_detector_finding_contradicts_with_its_reason_and_evidence(tmp_path, keys, pins):
     predicate = assembled(tmp_path, keys, pins, "special")
     acceptance = predicate["checks"][1]
-    assert (acceptance["decision"], acceptance["reason"]) == ("contradicted", "special_case_branch")
+    assert (acceptance["decision"], acceptance["reason"]) == ("contradicted", "repeat_divergence")
     assert acceptance["visible_detectors"] == SPECIAL_CASE["findings"]
-    assert predicate["verdict"]["reason"] == "special_case_branch"
+    assert predicate["verdict"]["reason"] == "repeat_divergence"
     assert "visible_detectors" not in predicate["checks"][0]
 
 
