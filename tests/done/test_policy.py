@@ -257,14 +257,17 @@ CLAIM_ONLY = [{"claim_type": "protected_paths/v1", "decision": "supported"},
               {"claim_type": "tool_claim_match/v1", "decision": "contradicted"}]
 
 
-def test_a_claim_only_refusal_with_passing_acceptance_is_the_harness():
+def test_a_claim_only_refusal_is_the_harness_whatever_acceptance_says():
     assert policy.attribute_refusal(CLAIM_ONLY) == "harness"
     failed = [dict(item) for item in CLAIM_ONLY]
     failed[1]["decision"] = "contradicted"
     assert policy.attribute_refusal(failed) is None
     unestablished = [dict(item) for item in CLAIM_ONLY]
     unestablished[1]["decision"] = "not_established"
-    assert policy.attribute_refusal(unestablished) is None
+    assert policy.attribute_refusal(unestablished) == "harness"
+    tampered = [dict(item) for item in CLAIM_ONLY]
+    tampered[0]["decision"] = "contradicted"
+    assert policy.attribute_refusal(tampered) is None
 
 
 def test_a_harness_refusal_is_replanned_and_never_escalates():

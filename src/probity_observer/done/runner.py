@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from typing import Protocol, Sequence
 from ..sensors import treedigest
 from . import pytest_plugins
 from . import replay as replay_harness
+from .formats import DoneError
 
 TIMEOUT_EXIT = 124
 SCRUBBED_ENV = {
@@ -65,14 +67,69 @@ class Runner(Protocol):
 
     When ``writes`` is a list, the runner appends every workspace path the run created,
     changed or removed (regular files, compared by digest). ``stdin`` is written to the run's
-    standard input and closed (a sealed plugin's report key travels this way).
+    standard input and closed (a sealed plugin's report key travels this way). When
+    ``stopped`` is a list, the runner appends ``True`` if it stopped the run, or a replay
+    probe's call inside it, at its time limit: no answer, as opposed to a wrong one.
     """
 
     name: str
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
-            output: list[str] | None = None, stdin: bytes | None = None) -> int: ...
+            output: list[str] | None = None, stdin: bytes | None = None,
+            stopped: list[bool] | None = None) -> int: ...
+
+    def executable(self, name: str) -> str | list[str]:
+        """The absolute path the kernel runs for ``name`` where this runner runs commands (a
+        PATH lookup, which is what the observer records as an exec's ``exe``), or every PATH
+        name of that same file, sorted (``python`` and ``python3``)."""
+        ...
+
+
+def _one_or_all(found: set[str], name: str, where: str, detail: str = "") -> str | list[str]:
+    if not found:
+        raise DoneError(f"cannot resolve {name!r} in {where}{detail}")
+    ordered = sorted(found)
+    return ordered[0] if len(ordered) == 1 else ordered
+
+
+_SAME_FILE = ('p=$(command -v "$1") || exit 3; r=$(readlink -f "$p") || exit 4; echo "$p"; '
+              'IFS=:; for d in $PATH; do for f in "$d"/*; do '
+              '[ -x "$f" ] && [ "$(readlink -f "$f")" = "$r" ] && echo "$f"; done; done')
+
+
+def image_executable(image: str, name: str, docker: str = "docker") -> str | list[str]:
+    """:meth:`Runner.executable` inside ``image``.
+
+    An agent that prints ``python test.py`` and runs ``python3 test.py`` ran the sealed
+    interpreter; a different interpreter is a different file and stays unmatched."""
+    done = subprocess.run([docker, "run", "--rm", "--network", "none", "--entrypoint", "/bin/sh",
+                           image, "-c", _SAME_FILE, "sh", name],
+                          capture_output=True, text=True, timeout=300, check=False)
+    found = {line for line in done.stdout.splitlines()
+             if line.startswith("/") and posixpath.normpath(line) == line}
+    if done.returncode not in (0, 1):
+        found = set()
+    return _one_or_all(found, name, f"the agent image {image}",
+                       f": exit {done.returncode} {done.stderr.strip()[:200]}")
+
+
+def path_executable(name: str, path: str) -> str | list[str]:
+    """:meth:`Runner.executable` on this host, for the search list ``path``."""
+    first = shutil.which(name, path=path)
+    if first is None or not os.path.isabs(first):
+        return _one_or_all(set(), name, f"PATH {path}")
+    target = os.path.realpath(first)
+    found = {os.path.normpath(first)}
+    for directory in path.split(os.pathsep):
+        if not os.path.isabs(directory) or not os.path.isdir(directory):
+            continue
+        for entry in os.scandir(directory):
+            candidate = os.path.join(directory, entry.name)
+            if (os.access(candidate, os.X_OK) and os.path.isfile(candidate)
+                    and os.path.realpath(candidate) == target):
+                found.add(os.path.normpath(candidate))
+    return _one_or_all(found, name, f"PATH {path}")
 
 
 def changed_paths(before: Path, after: Path) -> list[str]:
@@ -107,7 +164,8 @@ def replay_mode(argv: Sequence[str]) -> str | None:
 
 
 def run_replay(scratch: Path, argv: Sequence[str], child_argv, timeout: float,
-               order_seed: str, results: list[dict] | None) -> int:
+               order_seed: str, results: list[dict] | None,
+               stopped: list[bool] | None = None) -> int:
     """Run a parent-compare replay command staged under ``scratch``.
 
     ``argv`` is ``(COMMAND, <sealed test path from the workspace>, <module>, <entry>[, mode])``.
@@ -142,10 +200,15 @@ def run_replay(scratch: Path, argv: Sequence[str], child_argv, timeout: float,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               timeout=limit, check=False)
     except subprocess.TimeoutExpired:
+        if stopped is not None:
+            stopped.append(True)
         return TIMEOUT_EXIT
-    if results is not None and (scratch / "replay.json").is_file():
-        results.append({"argv": list(argv),
-                        **json.loads((scratch / "replay.json").read_text())})
+    if (scratch / "replay.json").is_file():
+        report = json.loads((scratch / "replay.json").read_text())
+        if stopped is not None and report.get("timed_out") is True:
+            stopped.append(True)
+        if results is not None:
+            results.append({"argv": list(argv), **report})
     return done.returncode
 
 
@@ -165,14 +228,18 @@ class SubprocessRunner:
     def child_argv(self, directory: Path, source: str) -> tuple[list[str], str]:
         return [self.python, "-I", "-P", "-c", source], str(directory)
 
+    def executable(self, name: str) -> str | list[str]:
+        return path_executable(name, self.env["PATH"])
+
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
-            output: list[str] | None = None, stdin: bytes | None = None) -> int:
+            output: list[str] | None = None, stdin: bytes | None = None,
+            stopped: list[bool] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-done-") as scratch:
             workspace = stage(Path(state), heldout, Path(scratch))
             if is_replay(argv):
                 return run_replay(Path(scratch), argv, self.child_argv, timeout,
-                                  self.order_seed, self.replays)
+                                  self.order_seed, self.replays, stopped)
             try:
                 done = subprocess.run(list(argv), cwd=workspace, env=self.env,
                                       input=stdin if stdin is not None else b"",
@@ -184,6 +251,8 @@ class SubprocessRunner:
                     output.append(done.stdout.decode("utf-8", "replace"))
             except subprocess.TimeoutExpired:
                 code = TIMEOUT_EXIT
+                if stopped is not None:
+                    stopped.append(True)
             except OSError:
                 code = 127
             if writes is not None:

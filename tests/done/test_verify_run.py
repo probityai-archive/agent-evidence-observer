@@ -31,11 +31,11 @@ def final_tree(sealed, tmp_path, solution, change=None):
                    **scanned.record_fields()}
 
 
-def run_grade(sealed, final, tree, image, grader):
+def run_grade(sealed, final, tree, image, grader, timeout=120):
     runner = verify_run.DockerRunner(image)
     return verify_run.grade((sealed.out / "contract.json").read_bytes(), sealed.out,
                             final, tree, verify_run.GradeContext("c1", "i1"), runner, grader,
-                            timeout=120)
+                            timeout=timeout)
 
 
 def exits(graded):
@@ -98,11 +98,28 @@ def test_a_tree_record_that_omits_an_entry_on_disk_is_refused(tmp_path, harness,
         run_grade(sealed, final, stale, image, grader)
 
 
+SLOW = "import time\ndef add(a, b):\n    time.sleep(30)\n    return a + b\n"
+
+
+def test_a_run_the_verifier_stopped_at_its_limit_is_marked_timed_out(tmp_path, harness, grader,
+                                                                     image):
+    from probity_verify.adapters import done_records
+    sealed = sealed_task(tmp_path, harness, LCB_ORIGINAL)
+    final, tree = final_tree(sealed, tmp_path, SLOW)
+    graded = run_grade(sealed, final, tree, image, grader, timeout=3)
+    failed = [item for item in graded.grade["results"] if item["exit"] != 0]
+    assert failed and all(item.get("timed_out") is True for item in failed)
+    assert not any("timed_out" in item for item in graded.grade["results"] if item["exit"] == 0)
+    assert done_records.grade(graded.grade_bytes)["results"] == graded.grade["results"]
+
+
 def test_a_counter_fails_the_conflicting_task_in_the_container(tmp_path, harness, grader, image):
     sealed = sealed_task(tmp_path, harness, LCB_RECORD)
     final, tree = final_tree(sealed, tmp_path, COUNTER)
     graded = run_grade(sealed, final, tree, image, grader)
     assert exits(graded)["visible"] == 1 and exits(graded)["visible_determinism"] == 1
+    # A wrong answer is an answer: no result says the verifier stopped it.
+    assert not any("timed_out" in item for item in graded.grade["results"])
     assert len(graded.staging["replays"]) == 7 and graded.staging["replay_order_seed"]
 
 

@@ -149,11 +149,16 @@ class CandidateFailed(AssertionError):
     """The candidate raised, timed out or returned something that is not plain data."""
 
 
+STARTED: list["Child"] = []
+
+
 class Child:
     """One isolated candidate process, answering calls in order."""
 
     def __init__(self, argv: list[str], cwd: str | None, timeout: float) -> None:
         self.timeout = timeout
+        self.timed_out = False
+        STARTED.append(self)
         self.process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                         text=True)
@@ -175,10 +180,15 @@ class Child:
             return {"error": "child-pipes"}
         wait = self.timeout if timeout is None else max(0.0, min(timeout, self.timeout))
         ready, _, _ = select.select([self.process.stdout], [], [], wait)
-        line = self.process.stdout.readline() if ready else ""
+        if not ready:
+            # No answer inside the limit: the candidate gave none, which is not a wrong one.
+            self.timed_out = True
+            self.close()
+            return {"error": "child-timeout"}
+        line = self.process.stdout.readline()
         if not line:
             self.close()
-            return {"error": "child-timeout-or-exit"}
+            return {"error": "child-exited"}
         try:
             return json.loads(line)
         except json.JSONDecodeError:
@@ -291,6 +301,10 @@ def _one_run(request: dict[str, Any], calls: list[tuple[Any, Any]], repeat: int,
                     break
                 reply = child.call(args_tagged, kwargs_tagged, left)
                 answers.append(json.dumps(reply, separators=(",", ":"), sort_keys=True))
+                if child.timed_out:
+                    # The child is closed: no later call can be answered or counted.
+                    timed_out = True
+                    break
             if timed_out:
                 break
     finally:
@@ -313,7 +327,7 @@ def determinism(request: dict[str, Any]) -> dict[str, Any]:
     sequences = [first[0::2], first[1::2], fresh]
     identical = sequences[0] == sequences[1] == sequences[2]
     failure = None
-    if first_out or fresh_out:
+    if first_out or fresh_out or any(child.timed_out for child in STARTED):
         failure = "timeout"
     elif not identical:
         failure = "answers differ between runs"
@@ -324,7 +338,9 @@ def determinism(request: dict[str, Any]) -> dict[str, Any]:
         elif any(unplain(reply["ok"]) != value for reply, (_, _, value) in zip(replies, cases)):
             failure = "answer differs from the expected value"
     return {"passed": failure is None, "failure": failure, "mode": "determinism",
-            "calls_intercepted": len(first) + len(fresh), "distinct_calls": len(calls),
+            # Count what was asked: a run cut short reached only its first cases.
+            "calls_intercepted": len(first) + len(fresh),
+            "distinct_calls": max(-(-len(first) // 2), len(fresh)),
             "run_seconds": [first_s, fresh_s], "run_timeout": budget}
 
 
@@ -334,9 +350,11 @@ def type_strict(request: dict[str, Any]) -> dict[str, Any]:
     cases = sealed_cases(Path(request["test"]))
     child = Child(request["child_argv"], request.get("child_cwd"), float(request["call_timeout"]))
     mismatched = 0
+    made = 0
     failure = None
     try:
         for args, kwargs, expected in cases:
+            made += 1
             reply = child.call(*_tagged(args, kwargs))
             if "error" in reply:
                 failure = f"candidate: {reply['error']}"
@@ -348,7 +366,7 @@ def type_strict(request: dict[str, Any]) -> dict[str, Any]:
     if failure is None and mismatched:
         failure = f"{mismatched} result(s) differ in type or value"
     return {"passed": failure is None, "failure": failure, "mode": "type_strict",
-            "calls_intercepted": len(cases), "distinct_calls": len(cases)}
+            "calls_intercepted": made, "distinct_calls": made}
 
 
 def import_side_effects(request: dict[str, Any]) -> dict[str, Any]:
@@ -414,7 +432,11 @@ def replay(request: dict[str, Any]) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     request = json.loads(Path(args[0]).read_text())
+    STARTED.clear()
     result = replay(request)
+    if not result["passed"] and (result.get("failure") == "timeout"
+                                 or any(child.timed_out for child in STARTED)):
+        result["timed_out"] = True
     Path(request["out"]).write_text(json.dumps(result, sort_keys=True))
     return 0 if result["passed"] else 1
 

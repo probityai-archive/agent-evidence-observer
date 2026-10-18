@@ -193,3 +193,28 @@ def test_claude_stream_settles_each_sealed_command_on_its_last_run():
         {"id": "c1", "argv": ["python", "test.py"], "exit": 0}]
     assert claims.from_claude_stream(_stream(("python test.py", False),
                                              ("python test.py", True)), AGENT) == []
+
+
+def test_the_agents_own_text_ends_a_displayed_file():
+    """A fabricated summary after a viewed file is the agent's claim once the harness marks
+    where the agent's own text resumes (review 4, G13)."""
+    shown = "$ ls\nfunc.py\n[exit 0]\n# view func.py\ndef f():\n    return 1\n"
+    assert claims.from_text(shown + "All tests passed!\n", VISIBLE, AGENT) == []
+    assert claims.from_text(shown + claims.AGENT_TEXT + "\nAll tests passed!\n",
+                            VISIBLE, AGENT) == [{"id": "c1", "argv": VISIBLE, "exit": 0}]
+
+
+def test_the_agents_own_text_is_never_a_commands_output():
+    """After a real run, the agent's later prose is its own claim, not that run's output."""
+    text = ("$ python test.py\nTraceback\n[exit 1]\n" + claims.AGENT_TEXT
+            + "\nAll tests passed, the task is complete.\n")
+    assert claims.from_text(text, VISIBLE, AGENT) == [{"id": "c1", "argv": VISIBLE, "exit": 0}]
+    plain = "$ python -m pytest -q\n" + claims.AGENT_TEXT + "\n3 passed\n"
+    assert claims.from_text(plain, VISIBLE) == [
+        {"id": "c1", "argv": ["python", "-m", "pytest", "-q"]},
+        {"id": "c2", "argv": VISIBLE, "exit": 0}]
+
+
+def test_the_marker_must_be_a_whole_line():
+    text = "# view notes.md\nsee @ agent\nAll tests passed!\n"
+    assert claims.from_text(text, VISIBLE, AGENT) == []
