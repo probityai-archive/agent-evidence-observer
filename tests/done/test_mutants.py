@@ -64,7 +64,7 @@ def test_a_contract_with_no_failing_visible_command_is_refused(tmp_path, harness
 def test_swe_operator_mutants_come_from_the_reference(tmp_path, swe_repo):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "w")
-    base, found = contract.task_mutants(task, 40)
+    base, found, _ = contract.task_mutants(task, 40)
     assert base == task.reference and found
     assert {mutant.path for mutant in found} == {"pkg/shapes.py"}
 
@@ -114,7 +114,7 @@ def test_class_mutants_wrap_every_touched_function_and_method():
 def test_null_patch_is_mutant_zero_and_hunks_are_sampled_in_turn(tmp_path, swe_repo):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "w")
-    base, found = contract.task_mutants(task, 2)
+    base, found, _ = contract.task_mutants(task, 2)
     assert found[0].operator == "null-patch" and found[0].source == (task.start / "pkg/shapes.py").read_text()
     assert {mutant.kind for mutant in found} >= {"null-patch", "operator", "any-eq", "stateful", "frame-aware"}
     a = mutants.operator_mutants("a.py", SOURCE, [(3, 3)])
@@ -125,10 +125,72 @@ def test_null_patch_is_mutant_zero_and_hunks_are_sampled_in_turn(tmp_path, swe_r
 
 def test_adequacy_reports_each_class_and_names_the_unkillable(tmp_path, python_bin):
     task = contract.lcb_task(LCB_ORIGINAL, tmp_path / "w")
-    base, found = contract.task_mutants(task, 40)
+    base, found, _ = contract.task_mutants(task, 40)
     assert {mutant.operator for mutant in found} >= {"null-patch", "lookup-table"}
     result = mutants.measure(base, found, task.commands, SubprocessRunner(python_bin), task.heldout, 60)
     report = result.report()
     assert report["by_class"]["null-patch"] == {"mutants": 1, "killed": 1}
     assert report["by_class"]["lookup-table"]["killed"] == 1
     assert report["unkillable_classes"] == []
+
+
+TRY = ('def g(text):\n    """Parse it."""\n    try:\n        value = int(text)\n'
+       '    except ValueError:\n        return 0\n    except TypeError:\n        return -1\n'
+       '    if value > 9:\n        value = 9\n    else:\n        value = value + 1\n'
+       '    return value\n')
+
+
+def test_statement_operators_delete_unwrap_and_drop_handlers_on_changed_lines_only():
+    found = mutants.statement_mutants("m.py", TRY, set(range(1, 14)))
+    by_operator = {}
+    for mutant in found:
+        by_operator.setdefault(mutant.operator, []).append(mutant)
+    assert set(by_operator) == set(mutants.STATEMENT_OPERATORS)
+    assert len(by_operator["handler-delete"]) == 2
+    assert all(mutant.kind == "operator" for mutant in found)
+    # The docstring is never a site: every mutant but the deleted function keeps it.
+    assert all("Parse it." in mutant.source for mutant in found if mutant.line != 1)
+    assert [mutant.operator for mutant in found if mutant.line == 1] == ["stmt-delete"]
+    unwrapped = load(by_operator["try-unwrap"][0].source)
+    with pytest.raises(ValueError):
+        unwrapped["g"]("x")
+    body = load(by_operator["if-unwrap-body"][0].source)
+    assert body["g"]("3") == 9
+    assert {mutant.line for mutant in mutants.statement_mutants("m.py", TRY, {10})} == {10}
+
+
+def test_one_handler_is_never_deleted():
+    source = "def h():\n    try:\n        return 1\n    except OSError:\n        return 2\n"
+    operators = {mutant.operator for mutant in mutants.statement_mutants("m.py", source, {2})}
+    assert "handler-delete" not in operators and "try-unwrap" in operators
+
+
+def test_a_hunk_revert_puts_the_start_lines_back_unless_only_a_docstring_changed():
+    start = 'def f(x):\n    """Old."""\n    return x\n'
+    reference = 'def f(x):\n    """New."""\n    return x + 1\n'
+    from probity_observer.done import changes
+    found = mutants.hunk_reverts("m.py", start, reference, changes.changed_lines(start, reference).hunks)
+    assert len(found) == 1 and "return x\n" in found[0].source and found[0].kind == "operator"
+    docs_only = 'def f(x):\n    """New."""\n    return x\n'
+    assert mutants.hunk_reverts("m.py", start, docs_only,
+                                changes.changed_lines(start, docs_only).hunks) == []
+
+
+def test_syntactic_duplicates_and_reference_equals_are_dropped_but_not_the_null_patch():
+    reference = "x = 1\n"
+    same = mutants.Mutant("m.py", "number-shift", 1, 0, "x = (1)\n")
+    one = mutants.Mutant("m.py", "number-shift", 1, 0, "x = 2\n")
+    twin = mutants.Mutant("m.py", "compare-swap", 1, 0, "x  =  2\n")
+    null = mutants.Mutant("m.py", "null-patch", 0, 0, "x = 1\n")
+    kept, dropped = mutants.deduplicate({"m.py": reference}, [null, same, one, twin])
+    assert kept == [null, one] and dropped == 2
+
+
+def test_task_mutants_carry_statement_mutants_reverts_and_the_dedup_count(tmp_path, swe_repo):
+    repo, record = swe_repo
+    task = contract.swe_task(record, repo, tmp_path / "w")
+    base, found, dropped = contract.task_mutants(task, 40)
+    assert "stmt-delete" in {mutant.operator for mutant in found}
+    # The patch has one hunk, so its revert is the null patch again and is dropped.
+    assert "hunk-revert" not in {mutant.operator for mutant in found} and dropped >= 1
+    assert len({mutant.source for mutant in found}) == len(found)

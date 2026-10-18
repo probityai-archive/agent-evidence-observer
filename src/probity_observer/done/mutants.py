@@ -205,6 +205,150 @@ def operator_mutants(path: str, source: str,
     return found
 
 
+def _stmt_delete(statements: list[ast.stmt], index: int, part: int) -> bool:
+    if isinstance(statements[index], ast.Pass):
+        return False
+    statements[index] = ast.Pass()
+    return True
+
+
+def _if_body(statements: list[ast.stmt], index: int, part: int) -> bool:
+    node = statements[index]
+    if not isinstance(node, ast.If):
+        return False
+    statements[index:index + 1] = node.body
+    return True
+
+
+def _if_else(statements: list[ast.stmt], index: int, part: int) -> bool:
+    node = statements[index]
+    if not isinstance(node, ast.If) or not node.orelse:
+        return False
+    statements[index:index + 1] = node.orelse
+    return True
+
+
+def _try_unwrap(statements: list[ast.stmt], index: int, part: int) -> bool:
+    node = statements[index]
+    if not isinstance(node, (ast.Try, ast.TryStar)) or not node.handlers:
+        return False
+    statements[index:index + 1] = node.body + node.orelse + node.finalbody
+    return True
+
+
+def _handler_delete(statements: list[ast.stmt], index: int, part: int) -> bool:
+    node = statements[index]
+    if not isinstance(node, (ast.Try, ast.TryStar)) or len(node.handlers) < 2:
+        return False
+    del node.handlers[part]
+    return True
+
+
+STATEMENT_OPERATORS: dict[str, Callable[[list[ast.stmt], int, int], bool]] = {
+    "stmt-delete": _stmt_delete, "if-unwrap-body": _if_body, "if-unwrap-else": _if_else,
+    "try-unwrap": _try_unwrap, "handler-delete": _handler_delete,
+}
+
+
+def _statement_sites(tree: ast.AST, lines: set[int]) -> Iterator[tuple[int, str, int, int, int]]:
+    """``(parent index, field, statement index, part, operator)`` sites on ``lines``.
+
+    Docstrings and logging-call statements are never sites; ``handler-delete`` has one part
+    per handler and needs two or more handlers.
+    """
+    skip = excluded(tree)
+    for parent_index, parent in enumerate(ast.walk(tree)):
+        for name, value in ast.iter_fields(parent):
+            if not isinstance(value, list):
+                continue
+            for index, node in enumerate(value):
+                if (not isinstance(node, ast.stmt) or node.lineno not in lines or id(node) in skip
+                        or (isinstance(node, ast.Expr) and id(node.value) in skip)):
+                    continue
+                for operator in STATEMENT_OPERATORS:
+                    parts = (range(len(node.handlers)) if operator == "handler-delete"
+                             and isinstance(node, (ast.Try, ast.TryStar)) else range(1))
+                    for part in parts:
+                        trial = copy.deepcopy(value)
+                        if STATEMENT_OPERATORS[operator](trial, index, part):
+                            yield parent_index, name, index, part, operator
+
+
+def statement_mutants(path: str, source: str, lines: set[int]) -> list[Mutant]:
+    """Statement-level mutants on ``lines``: a statement deleted, an ``if`` or ``try`` unwrapped,
+    one ``except`` handler removed."""
+    tree = ast.parse(source)
+    original = ast.unparse(tree)
+    found = []
+    for parent_index, name, index, part, operator in _statement_sites(tree, lines):
+        mutated = copy.deepcopy(tree)
+        statements = getattr(list(ast.walk(mutated))[parent_index], name)
+        node = statements[index]
+        STATEMENT_OPERATORS[operator](statements, index, part)
+        text = ast.unparse(ast.fix_missing_locations(mutated))
+        if text != original:
+            found.append(Mutant(path, operator, node.lineno, node.col_offset, text + "\n"))
+    return found
+
+
+def strip_docstrings(tree: ast.AST) -> ast.AST:
+    """``tree`` without its module, class and function docstrings."""
+    tree = copy.deepcopy(tree)
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str)):
+            node.body = body[1:] or [ast.Pass()]
+    return tree
+
+
+def hunk_reverts(path: str, start: str, reference: str, hunks) -> list[Mutant]:
+    """One mutant per hunk: that hunk's start lines spliced back into the reference.
+
+    A revert that does not parse, or that changes only docstrings, is not made.
+    """
+    old, new = start.splitlines(), reference.splitlines()
+    plain = ast.unparse(strip_docstrings(ast.parse(reference)))
+    found = []
+    for hunk in hunks:
+        lines = new[:hunk.new[0]] + old[hunk.start[0]:hunk.start[1]] + new[hunk.new[1]:]
+        text = "\n".join(lines) + "\n"
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        if ast.unparse(strip_docstrings(tree)) == plain:
+            continue
+        found.append(Mutant(path, "hunk-revert", hunk.new[0] + 1, 0, text))
+    return found
+
+
+def _normal(text: str) -> str:
+    try:
+        return ast.unparse(ast.parse(text))
+    except SyntaxError:
+        return text
+
+
+def deduplicate(reference: dict[str, str], found: list[Mutant]) -> tuple[list[Mutant], int]:
+    """Drop mutants syntactically equal (``ast.unparse``) to the reference or an earlier mutant.
+
+    The null patch is never dropped: a change that is syntactically empty must leave it alive.
+    Returns the kept mutants and how many were dropped.
+    """
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    kept = []
+    for mutant in found:
+        key = tuple(sorted((name, _normal(text)) for name, text in mutant.files()))
+        same = all(_normal(reference.get(name, "")) == text for name, text in key)
+        if mutant.operator != "null-patch" and (same or key in seen):
+            continue
+        seen.add(key)
+        kept.append(mutant)
+    return kept, len(found) - len(kept)
+
+
 def degenerate_mutants(path: str, signature: str, name: str, expected: list[str],
                        table: list[tuple[str, str]] | None = None) -> list[Mutant]:
     """Whole-function replacements a suite must reject.
