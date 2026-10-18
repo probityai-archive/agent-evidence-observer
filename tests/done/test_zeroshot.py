@@ -117,9 +117,11 @@ def test_a_reference_gives_the_proposal_mutants(tmp_path, repo, harness, python_
                                 tmp_path / "w")
     assert {name: change.ranges for name, change in proposal.task.mutation_targets.items()} == {
         "app.py": ((2, 2),)}
-    sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
-                                   SubprocessRunner(python_bin), timeout=60)
-    assert sealed.record["adequacy"]["killed"] >= 1
+    # The only test compares with ==, so an any-eq result passes it: the contract is refused.
+    with pytest.raises(contract.Refused, match="cheat_class_survived") as caught:
+        contract.compile_task(proposal.task, tmp_path / "out", harness,
+                              SubprocessRunner(python_bin), timeout=60)
+    assert caught.value.reason == "cheat_class_survived"
 
 
 @pytest.mark.parametrize("message", [{"content": None}, {"content": "   "}, {}])
@@ -247,3 +249,27 @@ def test_guards_are_harvested_from_the_suite_by_the_mutants_they_kill(tmp_path, 
     assert sets["cheat"]["killed"] + compiled["adequacy"]["neutralized"] == sets["cheat"]["mutants"]
     protected = {item["path"] for item in sealed.record["protected_paths"]}
     assert {"tests/test_more.py", "tests/test_other.py", "tests/test_app.py"} <= protected
+
+
+def test_a_strong_contract_seals_with_its_gates_and_strength(tmp_path, harness, python_bin):
+    repo, reference, answer = _guard_repo(tmp_path)
+    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), reference, tmp_path / "w")
+    sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
+                                   SubprocessRunner(python_bin), timeout=60)
+    compiled = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
+    assert compiled["strength"] == "gated"
+    assert all(entry["pass"] for entry in compiled["gates"].values())
+    assert set(compiled["gates"]) == set(contract.seal_gates.ORDER)
+
+
+def test_without_a_reference_the_start_suite_guards_and_the_strength_says_so(tmp_path, harness,
+                                                                           python_bin):
+    repo, _, answer = _guard_repo(tmp_path)
+    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), work=tmp_path / "w")
+    sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
+                                   SubprocessRunner(python_bin), timeout=60)
+    compiled = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
+    assert compiled["strength"] == "reference_free" and "gates" not in compiled
+    guard = next(item for item in sealed.record["acceptance"] if item["id"] == "guard-repo")
+    assert guard["ids"] == ["tests/test_more.py::test_zero", "tests/test_other.py::test_triple"]
+    assert sealed.record["adequacy"] == {"mutants": 0, "killed": 0}

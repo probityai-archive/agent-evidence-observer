@@ -56,9 +56,10 @@ def test_adequacy_counts_kills_and_is_sealed(tmp_path, harness, python_bin):
 def test_a_contract_with_no_failing_visible_command_is_refused(tmp_path, harness, python_bin):
     task = contract.lcb_task(LCB_RECORD, tmp_path / "w")
     task.commands = [contract.Command("visible", ("python", "-c", "pass"), prepatch="pass")]
-    with pytest.raises(DoneError, match="fails on the start state"):
+    with pytest.raises(DoneError, match="fails on the start state") as caught:
         contract.compile_task(task, tmp_path / "out", harness, SubprocessRunner(python_bin),
                               timeout=60)
+    assert caught.value.reason == "no_stable_failing_command"
 
 
 def test_swe_operator_mutants_come_from_the_reference(tmp_path, swe_repo):

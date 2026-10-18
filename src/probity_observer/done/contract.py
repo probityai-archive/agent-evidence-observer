@@ -35,6 +35,7 @@ from ..sensors import treedigest
 from . import heldout as heldout_cases
 from .changes import Changes, changed_lines
 from .native import NATIVE_SOURCES, native
+from . import gates as seal_gates
 from . import harvest as guards
 from . import mutants, pytest_plugins
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
@@ -840,9 +841,12 @@ def guard_tests(task: Task) -> list[str]:
 
 def add_guard(task: Task, runner: Runner, runs: int, timeout: float, found: list[mutants.Mutant],
               adequacy: mutants.Adequacy, stable: Stability
-              ) -> tuple[Task, list[Command], dict[str, Any]]:
+              ) -> tuple[Task, list[Command], dict[str, Any], set[int]]:
     """Harvest guard node ids for the mutants the commands leave alive (see :mod:`.harvest`)
-    and seal them as one pass command, ``guard-repo``, tier trusted."""
+    and seal them as one pass command, ``guard-repo``, tier trusted.
+
+    Also returns the change and cheat mutants the kill matrix says the chosen ids kill, which
+    the final measurement must reproduce."""
     alive = [index for index, (dead, quiet) in enumerate(zip(adequacy.killed,
                                                              adequacy.neutralized()))
              if not dead and not quiet]
@@ -865,7 +869,9 @@ def add_guard(task: Task, runner: Runner, runs: int, timeout: float, found: list
             task = replace(task, protected=auto_protect(task, result.files))
         else:
             record["guard_dropped"] = reason
-    return task, commands, record
+    expected = {index for index in result.kills(result.chosen)
+                if found[index].group in ("null_patch", "hunk_revert", "change", "cheat")}
+    return task, commands, record, expected
 
 
 def is_test_path(name: str) -> bool:
@@ -926,16 +932,35 @@ def vacuous_passes(task: Task, runner: Runner, commands: list[Command], timeout:
     return kept, dropped, traces
 
 
-def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
-                 mutant_limit: int = 40, timeout: float = 900.0,
-                 agent_image: str | None = None) -> Sealed:
-    """Stabilize the commands, drop vacuous zero-shot passes, measure mutant kills, and seal.
+def start_guard(task: Task, runner: Runner, runs: int, timeout: float, stable: Stability
+                ) -> tuple[Task, list[Command], dict[str, Any]]:
+    """With no reference, every test of the start tree that passes every run on it is sealed
+    as the trusted pass command ``guard-repo`` (no mutants exist to choose by)."""
+    tests = sorted(name for name in tree_files(task.start) if is_test_file(name))
+    prefix = pytest_plugins.pytest_argv(task.guard_prefix, (), task.isolate)
+    nodes, _, log = guards.stable_nodes(runner, task.start, task.start, task.heldout, prefix,
+                                        tests, timeout)
+    chosen = [node for name in sorted(nodes) for node in nodes[name]]
+    record: dict[str, Any] = {"tests_traced": len(tests), "stability": log, "guard_ids": chosen}
+    commands = list(stable.commands)
+    if chosen:
+        sealed = pytest_plugins.pytest_argv(task.guard_prefix, sorted(nodes), task.isolate)
+        guard = Command(guards.GUARD_ID, sealed + tuple(chosen), prepatch="pass",
+                        ids_from=len(sealed))
+        judged: list[dict[str, Any]] = []
+        reason = _judge(task, runner, guard, runs, timeout, judged)
+        record["guard_stability"] = judged
+        if reason is None:
+            commands.append(guard)
+            task = replace(task, protected=auto_protect(task, sorted(nodes)))
+        else:
+            record["guard_dropped"] = reason
+    return task, commands, record
 
-    With ``agent_image``, each command the agent runs itself is sealed with its working
-    directory and the path of its executable in that image (``cwd`` and ``exe``)."""
-    if task.reference is not None and (name := native_change(task.start, task.reference)):
-        raise Refused(task.task_id, "native_build_required",
-                      f"the reference changes native code: {name}")
+
+def _stable_commands(task: Task, runner: Runner, runs: int, timeout: float
+                     ) -> tuple[Stability, list[dict[str, Any]]]:
+    """The stable commands after the vacuous-pass gate; refuses when none fails on start."""
     stable = stabilize(task, runner, runs, timeout)
     kept, vacuous, pass_traces = vacuous_passes(task, runner, stable.commands, timeout)
     stable = Stability(kept, stable.runs, stable.dropped + vacuous,
@@ -943,14 +968,57 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
                         if key in {command.id for command in kept}})
     if not [command for command in stable.commands
             if not command.heldout and command.prepatch == "fail"]:
-        raise DoneError(f"{task.task_id}: no stable visible command fails on the start state, "
-                        "so no command can tell the task done from not done")
+        raise Refused(task.task_id, "no_stable_failing_command",
+                      "no stable visible command fails on the start state, so no command can "
+                      "tell the task done from not done")
+    return stable, pass_traces
+
+
+def _native(task: Task, runner: Runner, stable: Stability, timeout: float
+            ) -> tuple[dict[str, dict[str, Any]], list[dict[str, str]]]:
+    """Trace every stable command; refuse a shadowing native import; the native binaries."""
     traces = trace_commands(task, runner, stable.commands, timeout)
     if task.reference is not None:
         if shadow := shadowed(sorted(task.mutation_targets), traces):
             raise Refused(task.task_id, "native_shadow_import",
                           f"{', '.join(shadow)} imported from a native file")
-    loaded = native_loaded(task, traces)
+    return traces, native_loaded(task, traces)
+
+
+def _gated(task: Task, runner: Runner, timeout: float, plan: MutantPlan, stable: Stability,
+           adequacy: mutants.Adequacy, expected: set[int] | None
+           ) -> tuple[mutants.Adequacy, dict[str, Any]]:
+    """Evaluate the seal gates on the final measurement and refuse a contract that fails one.
+
+    A guard whose matrix kills the final measurement does not reproduce is measured once
+    more before ``harvest_guard_dropped`` is raised."""
+    def evaluate(result: mutants.Adequacy) -> dict[str, Any]:
+        return seal_gates.evaluate(plan.mutants, result.killed, result.killed,
+                                   result.neutralized(), expected)
+    gates = evaluate(adequacy)
+    if seal_gates.failure(gates) == "harvest_guard_dropped" and any(
+            command.id == guards.GUARD_ID for command in stable.commands):
+        adequacy = mutants.measure(plan.base, plan.mutants, stable.commands, runner,
+                                   task.heldout, timeout)
+        gates = evaluate(adequacy)
+    if (reason := seal_gates.failure(gates)) is not None:
+        raise Refused(task.task_id, reason, json.dumps(gates[reason], sort_keys=True))
+    return adequacy, gates
+
+
+def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
+                 mutant_limit: int = 40, timeout: float = 900.0,
+                 agent_image: str | None = None) -> Sealed:
+    """Stabilize the commands, drop vacuous zero-shot passes, measure mutant kills, harvest
+    guards from the repository's own suite, apply the seal gates, and seal.
+
+    With ``agent_image``, each command the agent runs itself is sealed with its working
+    directory and the path of its executable in that image (``cwd`` and ``exe``)."""
+    if task.reference is not None and (name := native_change(task.start, task.reference)):
+        raise Refused(task.task_id, "native_build_required",
+                      f"the reference changes native code: {name}")
+    stable, pass_traces = _stable_commands(task, runner, runs, timeout)
+    traces, loaded = _native(task, runner, stable, timeout)
     if task.source == "repo":
         tests = sorted({name for command in stable.commands
                         for name in command_test_files(command, task.start)})
@@ -958,19 +1026,29 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
     plan = task_mutants(task, mutant_limit)
     chosen = plan.mutants
     adequacy = mutants.measure(plan.base, chosen, stable.commands, runner, task.heldout, timeout)
-    harvested = None
-    if task.reference is not None and task.guard_prefix and chosen:
-        task, commands, harvested = add_guard(task, runner, runs, timeout, chosen, adequacy,
-                                              stable)
+    harvested, expected = None, None
+    if task.reference is None and task.source == "repo" and task.guard_prefix:
+        task, commands, harvested = start_guard(task, runner, runs, timeout, stable)
+        stable = replace(stable, commands=commands)
+    elif task.reference is not None and task.guard_prefix and chosen:
+        task, commands, harvested, expected = add_guard(task, runner, runs, timeout, chosen,
+                                                        adequacy, stable)
         if len(commands) > len(stable.commands):
             stable = replace(stable, commands=commands)
             # Every sealed number comes from measuring the sealed commands themselves.
             adequacy = mutants.measure(plan.base, chosen, stable.commands, runner, task.heldout,
                                        timeout)
-    report = {**stability_report(stable, runner, runs, task.reference is not None),
-              "adequacy": {**adequacy.report(), "deduplicated": plan.deduplicated},
-              "cheat_uncovered": plan.cheat_uncovered, "traces": traces,
-              "native_loaded": loaded}
+    report: dict[str, Any] = {}
+    if task.reference is not None:
+        adequacy, gates = _gated(task, runner, timeout, plan, stable, adequacy, expected)
+        report.update(gates=gates, strength="gated")
+    elif task.source == "repo" and task.reference is None:
+        # Nothing measures the commands, so the verdict can never be supported.
+        report.update(strength="reference_free")
+    report.update({**stability_report(stable, runner, runs, task.reference is not None),
+                   "adequacy": {**adequacy.report(), "deduplicated": plan.deduplicated},
+                   "cheat_uncovered": plan.cheat_uncovered, "traces": traces,
+                   "native_loaded": loaded})
     if harvested is not None:
         report["harvest"] = harvested
     if pass_traces:
