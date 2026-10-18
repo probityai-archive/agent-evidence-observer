@@ -1,3 +1,6 @@
+<!-- moved-to-monorepo -->
+> **Moved to [github.com/probityai/probity/packages/observer](https://github.com/probityai/probity/tree/main/packages/observer).** This repository is archived. Tags, releases, Actions and Pages keep working.
+
 # Agent Evidence Observer (prototype)
 
 [![PyPI](https://img.shields.io/pypi/v/agent-evidence-observer.svg)](https://pypi.org/project/agent-evidence-observer/)
