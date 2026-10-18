@@ -77,7 +77,18 @@ def cmd_run(args: argparse.Namespace) -> int:
                     network_policy=Path(args.network_policy) if args.network_policy else None,
                     policy_boundary=Path(args.policy_boundary) if args.policy_boundary else None,
                     prover=Path(args.prover) if args.prover else None)
-    attempts = run_loop(spec, keys)
+    witness = None
+    if args.witness_url:
+        from ..witness.client import WitnessClient
+        from .formats import public_key
+        from .witnessing import submitter
+        if not (args.witness_key and args.witness_origin):
+            raise ValueError("--witness-url needs --witness-key and --witness-origin")
+        state = Path(args.witness_state) if args.witness_state else Path(args.out).with_name(
+            Path(args.out).name + ".witness-state.json")
+        client = WitnessClient(args.witness_url, args.witness_key, args.witness_origin, state)
+        witness = submitter(client, public_key(keys.host), public_key(keys.grader))
+    attempts = run_loop(spec, keys, witness)
     for item in attempts:
         print(f"Attempt {item.number}: {receipt.decision_line(item.verdict)}; "
               f"next: {item.decision.action} ({item.decision.reason})")
@@ -211,6 +222,12 @@ def add_commands(sub) -> None:
     loop.add_argument("--prover", help="a pinned openshell-prover (default: fetched by digest)")
     for name in ("harness", "host", "grader"):
         loop.add_argument(f"--{name}-key", required=True)
+    loop.add_argument("--witness-url", help="a separately operated witness to co-sign each "
+                      "attempt's tree, observation and grade records")
+    loop.add_argument("--witness-key", help="the witness public key the reader pins (hex)")
+    loop.add_argument("--witness-origin", help="the witness log's origin name")
+    loop.add_argument("--witness-state", help="file holding the retained witness checkpoint "
+                      "(default: beside --out)")
     loop.add_argument("agent", nargs="+", help="the agent's argv, after --")
     loop.set_defaults(func=cmd_run)
 

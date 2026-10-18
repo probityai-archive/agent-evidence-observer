@@ -317,6 +317,7 @@ def _launch_openshell(spec: LaunchSpec, run_dir: Path, workspace: Path,
             "timeout_seconds": spec.timeout_seconds,
             "identity_gate": backend.IDENTITY_GATE,
             "openshell": {**identity.openshell, **session.record},
+            "tracer_image": identity.tracer,
         }
         declared = network_effects.declare(spec.network_policy, run_dir)
         launch_record["network_policy"] = declared

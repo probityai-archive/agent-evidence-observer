@@ -26,6 +26,13 @@ docker compute driver. The order:
 
 The agent runs under the policy's numeric ``process.run_as_user``; the tracer runs as root in
 another container, so the agent can neither signal it nor read its descriptors.
+
+The tracer container runs the observer's own tracer image (:data:`TRACER_IMAGE_DIGEST`), never
+the agent's image: ``strace`` and ``python3`` come from a file system the agent image cannot
+touch, so an agent image that ships a fake ``strace`` changes nothing. The image is built from
+``tracer_image/Dockerfile``, whose every input is pinned by digest, with file times rewritten to
+``SOURCE_DATE_EPOCH``; the build is reproducible, and a build whose digest differs from the pin
+is refused. The tracer container shares only the sandbox's process namespace.
 """
 
 from __future__ import annotations
@@ -69,6 +76,17 @@ class BackendError(RuntimeError):
     """OpenShell or the docker runtime cannot run a traced agent."""
 
 
+TRACER_CONTEXT = Path(__file__).with_name("tracer_image")
+TRACER_IMAGE_NAME = "probity-observer-tracer:pinned"
+TRACER_IMAGE_DIGEST = "sha256:fb91e838d7b2e557b02e9464e32916281ce0a1f2d60cb1b34931ccc7bc63caac"
+"""The OCI manifest digest of ``tracer_image/Dockerfile`` built by :func:`tracer_image`.
+Built twice with no cache on each of two gate boxes on 2026-10-17 (docker 29.1.3, buildx
+0.30.1), it gave this digest all four times. An edit to the Dockerfile changes the digest, so
+the pin moves with it or the launch is refused."""
+TRACER_DOCKERFILE_SHA256 = "5bd4051bdeefe6f581b0e22568b43ed8f520046586ca68ab7ae3e36748692303"
+"""SHA-256 of the Dockerfile the pin was built from."""
+
+
 @dataclass(frozen=True)
 class Identity:
     image: str
@@ -76,6 +94,7 @@ class Identity:
     strace_version: str
     runtime_version: str
     openshell: dict[str, Any] = field(default_factory=dict)
+    tracer: dict[str, Any] = field(default_factory=dict)
 
 
 def uid_separated(identity: Identity) -> bool:
@@ -117,29 +136,81 @@ def _image_present(reference: str, docker: str) -> bool:
                 check=False).returncode == 0
 
 
+def tracer_build_argv(docker: str, dest: Path) -> list[str]:
+    """The reproducible build of the tracer image into an OCI archive at ``dest``."""
+    return [docker, "buildx", "build", "--no-cache", "--quiet", "--build-arg", "SOURCE_DATE_EPOCH=0",
+            "--output", f"type=oci,dest={dest},name={TRACER_IMAGE_NAME},rewrite-timestamp=true",
+            str(TRACER_CONTEXT)]
+
+
+def tracer_image(docker: str = "docker") -> str:
+    """Return :data:`TRACER_IMAGE_DIGEST` once an image with exactly that digest is loaded.
+
+    An image already present under the digest is used as it is. Otherwise the image is built
+    from :data:`TRACER_CONTEXT` and loaded; a build or load that yields any other digest, or a
+    Dockerfile that is not the one the pin was built from, is refused.
+    """
+    dockerfile = hashlib.sha256((TRACER_CONTEXT / "Dockerfile").read_bytes()).hexdigest()
+    if dockerfile != TRACER_DOCKERFILE_SHA256:
+        raise BackendError("tracer_image/Dockerfile is not the file the tracer digest was pinned from")
+    if _image_present(TRACER_IMAGE_DIGEST, docker):
+        return TRACER_IMAGE_DIGEST
+    with tempfile.TemporaryDirectory(prefix="probity-tracer-") as scratch:
+        archive = Path(scratch) / "tracer.tar"
+        _run(tracer_build_argv(docker, archive), timeout=1800)
+        _run([docker, "load", "--quiet", "--input", str(archive)], timeout=900)
+    found = _run([docker, "image", "inspect", "--format", "{{.Id}}", TRACER_IMAGE_NAME],
+                 check=False).stdout.strip()
+    if found != TRACER_IMAGE_DIGEST or not _image_present(TRACER_IMAGE_DIGEST, docker):
+        raise BackendError(f"the tracer image built as {found or 'nothing'}, "
+                           f"not the pinned {TRACER_IMAGE_DIGEST}")
+    return TRACER_IMAGE_DIGEST
+
+
+TRACER_PROBE = ("strace -V | head -n 1; "
+                "sha256sum \"$(command -v strace)\" \"$(readlink -f \"$(command -v python3)\")\"")
+"""Inside the tracer image: the strace version line, then the digest of each binary the tracer
+and the resolver execute."""
+
+
+def tracer_identity(docker: str = "docker") -> dict[str, Any]:
+    """Pin the tracer image and record what it runs: strace's version and both binaries' digests."""
+    digest = tracer_image(docker)
+    probe = _run([docker, "run", "--rm", "--network", "none", "--entrypoint", "/bin/sh", digest,
+                  "-c", TRACER_PROBE]).stdout.splitlines()
+    if len(probe) != 3 or not probe[0].startswith("strace -- version"):
+        raise BackendError("the tracer image lacks strace or python3")
+    binaries = {}
+    for line in probe[1:]:
+        value, path = line.split(None, 1)
+        binaries[path.strip()] = value
+    return {"image": digest, "dockerfile_sha256": TRACER_DOCKERFILE_SHA256,
+            "strace_version": probe[0], "binaries_sha256": binaries}
+
+
 def preflight(image: str, docker: str = "docker", cache: Path | None = None) -> Identity:
-    """Pin the agent image, the release executables and both runtime images."""
+    """Pin the agent image, the tracer image, the release executables and both runtime images.
+
+    The agent image needs neither ``strace`` nor ``python3``: both run from the tracer image.
+    """
     binaries = {name: release.executable(name, cache) for name in ("openshell", "openshell-gateway")}
     for reference in (pins.SUPERVISOR_IMAGE, pins.SANDBOX_RUNTIME_IMAGE):
         if not _image_present(reference, docker):
             _run([docker, "pull", "--quiet", reference], timeout=900)
     image_id = _run([docker, "image", "inspect", "--format", "{{.Id}}", image]).stdout.strip()
     runtime = _run([docker, "version", "--format", "{{.Server.Version}}"]).stdout.strip()
-    probe = _run([docker, "run", "--rm", "--network", "none", "--entrypoint", "/bin/sh", image_id,
-                  "-c", "strace -V | head -n 1; command -v python3"]).stdout.splitlines()
-    if len(probe) != 2 or not probe[0].startswith("strace -- version"):
-        raise BackendError("image lacks strace or python3 (the attached tracer and the resolver)")
+    tracer = tracer_identity(docker)
     version = _run([str(binaries["openshell"]), "--version"]).stdout.strip()
     if version != f"openshell {pins.OPENSHELL_VERSION}":
         raise BackendError(f"openshell reports {version!r}, not {pins.OPENSHELL_VERSION}")
-    return Identity(image, image_id, probe[0], runtime, {
+    return Identity(image, image_id, tracer["strace_version"], runtime, {
         "version": pins.OPENSHELL_VERSION,
         "binaries": {name: {"path": str(path), "sha256": pins.BINARY_SHA256[name]}
                      for name, path in binaries.items()},
         "supervisor_image": pins.SUPERVISOR_IMAGE,
         "sandbox_runtime_image": pins.SANDBOX_RUNTIME_IMAGE,
         "compute_driver": "docker",
-    })
+    }, tracer)
 
 
 def free_port() -> int:
@@ -332,7 +403,7 @@ class Session:
             argv += ["--cap-add", capability]
         source = Path(tracer_attach.__file__).read_text(encoding="utf-8")
         return [*argv, "--security-opt", "no-new-privileges", "--user", "0:0",
-                "--entrypoint", "python3", self.identity.image_id, "-I", "-c", source,
+                "--entrypoint", "python3", self.identity.tracer["image"], "-I", "-c", source,
                 self.marker, str(ATTACH_WAIT), *tracer_flags()]
 
     def resolver_argv(self) -> list[str]:
