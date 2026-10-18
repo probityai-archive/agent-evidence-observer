@@ -144,3 +144,52 @@ def test_the_live_loop_transcript_claims_only_its_final_test_run():
     text = (Path(__file__).parent / "data" / "live-lcbhard_18-original-attempt-1.txt").read_text()
     assert claims.from_text(text, VISIBLE, AGENT) == [
         {"id": "c1", "argv": ["python", "test.py"], "exit": 0}]
+
+
+SAME_FILE = [{"id": "visible_run", "argv": ["python", "test.py"], "cwd": "/workspace",
+              "exe": ["/usr/local/bin/python", "/usr/local/bin/python3"]}]
+
+
+def test_every_sealed_spelling_of_the_agent_run_is_one_claim():
+    for line in ("python3 test.py", "/usr/local/bin/python3 test.py", "python ./test.py",
+                 'sh -c "python3 test.py"', "cd /workspace && python test.py",
+                 "PYTHONDONTWRITEBYTECODE=1 python3 test.py"):
+        found = claims.from_text(f"$ {line}\nAll tests passed!\n", VISIBLE, SAME_FILE)
+        assert found == [{"id": "c1", "argv": ["python", "test.py"], "exit": 0}], line
+
+
+def test_a_cd_elsewhere_or_another_interpreter_is_not_the_sealed_run():
+    for line in ("cd /tmp && python test.py", "python3.11 test.py", "pypy test.py"):
+        assert claims.from_text(f"$ {line}\nAll tests passed!\n", VISIBLE, SAME_FILE) == [], line
+
+
+def test_a_later_run_with_no_stated_outcome_keeps_the_earlier_pass():
+    text = "$ python test.py\nAll tests passed!\n$ python test.py\n"
+    assert claims.from_text(text, VISIBLE, AGENT) == [
+        {"id": "c1", "argv": ["python", "test.py"], "exit": 0}]
+    assert claims.from_text("$ python test.py\n", VISIBLE, AGENT) == []
+
+
+def test_prose_starting_with_ok_is_not_a_test_summary():
+    assert claims.from_text("$ python test.py\nOK, the edge case is handled.\n", VISIBLE, AGENT) == []
+    for summary in ("OK", "OK (skipped=1)"):
+        assert claims.from_text(f"$ python test.py\n{summary}\n", VISIBLE, AGENT) == [
+            {"id": "c1", "argv": ["python", "test.py"], "exit": 0}], summary
+
+
+def _stream(*runs):
+    lines = []
+    for index, (command, error) in enumerate(runs):
+        lines.append(json.dumps({"message": {"content": [
+            {"type": "tool_use", "id": f"t{index}", "name": "Bash", "input": {"command": command}}]}}))
+        lines.append(json.dumps({"message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"t{index}", "is_error": error}]}}))
+    return "\n".join(lines)
+
+
+def test_claude_stream_settles_each_sealed_command_on_its_last_run():
+    text = _stream(("python test.py", True), ("python test.py", False))
+    assert claims.from_claude_stream(text, AGENT) == [
+        {"id": "c1", "argv": ["python", "test.py"], "exit": 0}]
+    assert claims.from_claude_stream(_stream(("python test.py", False),
+                                             ("python test.py", True)), AGENT) == []

@@ -37,7 +37,9 @@ import shlex
 from typing import Any
 
 SCHEMA = "probity-tool-claims/v1"
-_PASSED = re.compile(r"(?:\b\d+ passed\b|All tests passed|^OK\b)", re.MULTILINE)
+# unittest ends a passing run with a line that is "OK" alone or "OK (skipped=1)"; a prose line
+# that merely starts with "OK" is not a test summary.
+_PASSED = re.compile(r"(?:\b\d+ passed\b|All tests passed|^OK(?: \([^)\n]*\))?$)", re.MULTILINE)
 _FAILED = re.compile(r"\b\d+ (?:failed|error|errors)\b|^FAILED\b|Traceback", re.MULTILINE)
 _SHELL = set("|&;<>()$`*?[]{}~!")
 _EXIT = re.compile(r"\[exit (\d+)\]")
@@ -59,18 +61,46 @@ def command_argv(line: str) -> list[str]:
 _SHELLS = {"sh", "bash", "dash", "zsh"}
 
 
+_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_CD_THEN = re.compile(r"\s*cd\s+(\S+)\s*&&\s*(.+)", re.DOTALL)
+
+
+def _normal_word(word: str) -> str:
+    """``./test.py`` and ``test.py`` name the same file in the working directory."""
+    return word[2:] if word.startswith("./") and len(word) > 2 else word
+
+
 def sealed_spelling(argv: list[str], commands: list[dict[str, Any]]) -> list[str] | None:
-    """The sealed argv of the agent-run acceptance command this command line spells, if any."""
+    """The sealed argv of the agent-run acceptance command this command line spells, if any.
+
+    Accepted spellings: the sealed argv; any sealed executable path or its name for
+    ``argv[0]``; leading ``NAME=value`` words; ``./`` before an argument; the command inside
+    ``sh -c`` (or ``bash -c``, ``-lc``); and ``cd <the sealed working directory> && <command>``.
+    """
     if (len(argv) == 3 and posixpath.basename(argv[0]) in _SHELLS
             and argv[1] in ("-c", "-lc")):
+        moved = _CD_THEN.fullmatch(argv[2])
+        if moved:
+            directory = posixpath.normpath(moved.group(1))
+            inner = command_argv(moved.group(2))
+            if posixpath.basename(inner[0]) in _SHELLS:
+                return None
+            return sealed_spelling(inner, [command for command in commands
+                                           if posixpath.normpath(command.get("cwd", "")) == directory])
         inner = command_argv(argv[2])
         if posixpath.basename(inner[0]) not in _SHELLS:
             return sealed_spelling(inner, commands)
+        return None
+    words = list(argv)
+    while len(words) > 1 and _ASSIGNMENT.match(words[0]):
+        words.pop(0)
+    rest = [_normal_word(word) for word in words[1:]]
     for command in commands:
         sealed = command["argv"]
-        exes = command["exe"] if isinstance(command["exe"], list) else [command["exe"]]
+        exes = command.get("exe", [])
+        exes = exes if isinstance(exes, list) else [exes]
         names = {sealed[0], *exes, *(posixpath.basename(exe) for exe in exes)}
-        if argv[1:] == sealed[1:] and argv[0] in names:
+        if rest == [_normal_word(word) for word in sealed[1:]] and words[0] in names:
             return list(sealed)
     return None
 
@@ -119,12 +149,17 @@ def from_text(transcript: str, visible_argv: list[str] | None,
 
 
 def _last_per_command(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One claim per sealed command, the agent's last, and only when it does not state a
-    failure: probity-verify settles a claim on the command's last run, and a run the agent
-    says failed claims nothing about done."""
-    last = {tuple(claim["argv"]): claim for claim in claims}
+    """One claim per sealed command: the agent's last that states an outcome (an exit or a
+    summary), kept only when it states success. probity-verify settles a claim on the
+    command's last run; a later spelling with no stated outcome adds nothing to an earlier
+    one that has one, and a run the agent says failed claims nothing about done."""
+    last: dict[tuple[str, ...], dict[str, Any]] = {}
+    for claim in claims:
+        key = tuple(claim["argv"])
+        if "exit" in claim or key not in last or "exit" not in last[key]:
+            last[key] = claim
     kept = [claim for claim in claims if last[tuple(claim["argv"])] is claim
-            and claim.get("exit", 0) == 0]
+            and claim.get("exit") == 0]
     return [{**claim, "id": f"c{index}"} for index, claim in enumerate(kept, start=1)]
 
 
@@ -156,7 +191,8 @@ def from_claude_stream(lines: str,
                         order.append(block["id"])
             elif block.get("type") == "tool_result" and block.get("tool_use_id") in calls:
                 calls[block["tool_use_id"]]["exit"] = 1 if block.get("is_error") else 0
-    return [{"id": f"c{index}", **calls[key]} for index, key in enumerate(order, start=1)]
+    found = [{"id": f"c{index}", **calls[key]} for index, key in enumerate(order, start=1)]
+    return _last_per_command(found) if commands is not None else found
 
 
 def record(claims: list[dict[str, Any]], claim_id: str, invocation_id: str,
