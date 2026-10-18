@@ -301,6 +301,10 @@ def _one_run(request: dict[str, Any], calls: list[tuple[Any, Any]], repeat: int,
                     break
                 reply = child.call(args_tagged, kwargs_tagged, left)
                 answers.append(json.dumps(reply, separators=(",", ":"), sort_keys=True))
+                if child.timed_out:
+                    # The child is closed: no later call can be answered or counted.
+                    timed_out = True
+                    break
             if timed_out:
                 break
     finally:
@@ -334,7 +338,9 @@ def determinism(request: dict[str, Any]) -> dict[str, Any]:
         elif any(unplain(reply["ok"]) != value for reply, (_, _, value) in zip(replies, cases)):
             failure = "answer differs from the expected value"
     return {"passed": failure is None, "failure": failure, "mode": "determinism",
-            "calls_intercepted": len(first) + len(fresh), "distinct_calls": len(calls),
+            # Count what was asked: a run cut short reached only its first cases.
+            "calls_intercepted": len(first) + len(fresh),
+            "distinct_calls": max(-(-len(first) // 2), len(fresh)),
             "run_seconds": [first_s, fresh_s], "run_timeout": budget}
 
 
@@ -344,9 +350,11 @@ def type_strict(request: dict[str, Any]) -> dict[str, Any]:
     cases = sealed_cases(Path(request["test"]))
     child = Child(request["child_argv"], request.get("child_cwd"), float(request["call_timeout"]))
     mismatched = 0
+    made = 0
     failure = None
     try:
         for args, kwargs, expected in cases:
+            made += 1
             reply = child.call(*_tagged(args, kwargs))
             if "error" in reply:
                 failure = f"candidate: {reply['error']}"
@@ -358,7 +366,7 @@ def type_strict(request: dict[str, Any]) -> dict[str, Any]:
     if failure is None and mismatched:
         failure = f"{mismatched} result(s) differ in type or value"
     return {"passed": failure is None, "failure": failure, "mode": "type_strict",
-            "calls_intercepted": len(cases), "distinct_calls": len(cases)}
+            "calls_intercepted": made, "distinct_calls": made}
 
 
 def import_side_effects(request: dict[str, Any]) -> dict[str, Any]:

@@ -213,6 +213,23 @@ def test_a_probe_call_that_outruns_its_limit_is_reported_timed_out(tmp_path, loc
     assert json.loads((tmp_path / "o.json").read_text())["timed_out"] is True
 
 
+@pytest.mark.parametrize("mode", ["type_strict", "determinism"])
+def test_a_probe_cut_short_counts_only_the_calls_it_made(tmp_path, local, mode):
+    slow = "import time\ndef add(a, b):\n    time.sleep(5)\n    return a + b\n"
+    request = _probe_request(tmp_path, local, slow, mode)
+    (tmp_path / "t.py").write_text("def check(candidate):\n    assert candidate(1, 1) == 2\n"
+                                   "    assert candidate(2, 2) == 4\n"
+                                   "    assert candidate(3, 3) == 6\n")
+    # A run budget longer than one call's limit: a timed-out child must end its run.
+    body = json.loads(request.read_text())
+    request.write_text(json.dumps({**body, "run_timeout": 5}))
+    assert replay.main([str(request)]) == 1
+    report = json.loads((tmp_path / "o.json").read_text())
+    # The first call outran its limit, so the probe never reached the other two cases.
+    assert report["distinct_calls"] == 1
+    assert report["calls_intercepted"] >= report["distinct_calls"]
+
+
 def test_a_wrong_or_crashing_probe_answer_is_not_timed_out(tmp_path, local):
     wrong = "def add(a, b):\n    return a - b\n"
     assert replay.main([str(_probe_request(tmp_path, local, wrong, "type_strict"))]) == 1
