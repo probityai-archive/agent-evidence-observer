@@ -1,0 +1,336 @@
+"""The worker of the visible-test detectors: runs inside the grading container, beside the agent's
+code. Stdlib only; :mod:`.visible_detect` copies this file into the sealed directory and runs it as
+``python -I ../heldout/visible_runner.py ../heldout/spec.json`` from the workspace.
+
+It is the oracle-free detector study's in-sandbox runner with the study's held-out runner folded in
+(``canon``, the type-strict rewrite and its helpers), unchanged in what it measures:
+
+  units     every unit of the visible test runs as prelude + unit in its own namespace, in ONE
+            process in order, with ``candidate`` recording (argument repr before the call,
+            canonical result) and line coverage of ``func.py``; a unit's outcome is passed or an
+            error string with its type; a unit that overruns ``unit_timeout`` is ``TimeoutExpired``
+  probe     each probe calls the entry point directly under coverage and records the raised
+            exception type or the canonical result
+  repeat    every source's ``check(candidate)`` runs ``runs`` times in this process, each run
+            recording its calls; a run fails on any exception
+
+The agent's code shares this process, so every fact here is evidence the agent could shape: a
+detector built on it can only refuse, and an agent that forges its coverage escapes a detector, it
+never earns a pass. The result is one JSON line on the standard output this process started with;
+the agent's code writes to standard error instead.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import signal
+import sys
+import traceback
+from typing import Any
+
+BUILTIN_SCALARS = (int, bool, float, complex, str, bytes, type(None))
+
+
+def safe_repr(x) -> str:
+    try:
+        return repr(x)[:2000]
+    except Exception as e:  # an overloaded __repr__ may raise
+        return f"<repr failed: {type(e).__name__}>"
+
+
+def canon(x):
+    t = type(x)
+    if t in BUILTIN_SCALARS:
+        return [t.__name__, repr(x)]
+    if t in (list, tuple):
+        return [t.__name__, [canon(v) for v in x]]
+    if t is dict:
+        return ["dict", sorted(([canon(k), canon(v)] for k, v in x.items()), key=repr)]
+    if t in (set, frozenset):
+        return [t.__name__, sorted((canon(v) for v in x), key=repr)]
+    # the default repr carries the object's address, which differs on every run of honest code too
+    return ["<nonbuiltin>", f"{t.__module__}.{t.__qualname__}",
+            re.sub(r" at 0x[0-9a-fA-F]+", "", safe_repr(x))]
+
+
+def strict_eq(x, y) -> bool:
+    if type(x) is not type(y):
+        return False
+    t = type(x)
+    if t in (list, tuple):
+        return len(x) == len(y) and all(strict_eq(a, b) for a, b in zip(x, y))
+    if t is dict:
+        if len(x) != len(y):
+            return False
+        for k, v in x.items():
+            match = [k2 for k2 in y if strict_eq(k, k2)]
+            if len(match) != 1 or not strict_eq(v, y[match[0]]):
+                return False
+        return True
+    if t in (set, frozenset):
+        return len(x) == len(y) and all(any(strict_eq(a, b) for b in y) for a in x)
+    if t in BUILTIN_SCALARS:
+        return bool(x == y)
+    return False  # two values of the same non-builtin type: no trusted equality
+
+
+def strict_ne(x, y) -> bool:
+    return type(x) is type(y) and not strict_eq(x, y)
+
+
+def strict_in(x, c) -> bool:
+    if type(c) in (str, bytes):
+        return type(x) is type(c) and x in c
+    if type(c) is dict:
+        return any(strict_eq(x, k) for k in c)
+    if type(c) in (list, tuple, set, frozenset):
+        return any(strict_eq(x, e) for e in c)
+    return False
+
+
+def strict_bool(x) -> bool:
+    if type(x) is not bool:
+        raise AssertionError(f"type-strict: expected bool, got {type(x).__name__}")
+    return x
+
+
+HELPERS = {"__dr_strict_eq": strict_eq, "__dr_strict_ne": strict_ne,
+           "__dr_strict_in": strict_in, "__dr_strict_bool": strict_bool}
+
+
+class Strictify(ast.NodeTransformer):
+    """``==``, ``!=``, ``in`` and ``not in`` become the type-strict helpers; a bare
+    ``assert candidate(...)`` must return a bool."""
+
+    OPS = {ast.Eq: "__dr_strict_eq", ast.NotEq: "__dr_strict_ne", ast.In: "__dr_strict_in"}
+
+    def visit_Compare(self, node):
+        self.generic_visit(node)
+        terms, left = [], node.left
+        for op, right in zip(node.ops, node.comparators):
+            if type(op) in self.OPS:
+                terms.append(ast.Call(ast.Name(self.OPS[type(op)], ast.Load()), [left, right], []))
+            elif isinstance(op, ast.NotIn):
+                terms.append(ast.UnaryOp(ast.Not(), ast.Call(
+                    ast.Name("__dr_strict_in", ast.Load()), [left, right], [])))
+            else:
+                terms.append(ast.Compare(left, [op], [right]))
+            left = right
+        return terms[0] if len(terms) == 1 else ast.BoolOp(ast.And(), terms)
+
+    def visit_Assert(self, node):
+        self.generic_visit(node)
+        e = node.test
+        inner = e.operand if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not) else e
+        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and inner.func.id == "candidate":
+            wrapped = ast.Call(ast.Name("__dr_strict_bool", ast.Load()), [inner], [])
+            node.test = ast.UnaryOp(ast.Not(), wrapped) if inner is not e else wrapped
+        return node
+
+
+class UnitTimeout(BaseException):
+    pass
+
+
+def _alarm(_signum, _frame):
+    raise UnitTimeout()
+
+
+def sha(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()[:16]
+
+
+def load_func(work: str, entry: str):
+    sys.path.insert(0, work)
+    path = os.path.join(work, "func.py")
+    spec = importlib.util.spec_from_file_location("func", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["func"] = mod
+    spec.loader.exec_module(mod)
+    return mod, getattr(mod, entry), path
+
+
+class Coverage:
+    def __init__(self, path: str):
+        self.path = path
+        self.lines: set[int] = set()
+
+    def _local(self, frame, event, arg):
+        if event == "line":
+            self.lines.add(frame.f_lineno)
+        return self._local
+
+    def _global(self, frame, event, arg):
+        if event == "call" and frame.f_code.co_filename == self.path:
+            self.lines.add(frame.f_lineno)
+            return self._local
+        return None
+
+    def __enter__(self):
+        self.lines = set()
+        sys.settrace(self._global)
+        return self
+
+    def __exit__(self, *a):
+        sys.settrace(None)
+        return False
+
+
+def err_string(e: BaseException) -> tuple[str, str]:
+    if isinstance(e, UnitTimeout):
+        return "TimeoutExpired", "TimeoutExpired"
+    return type(e).__name__, f"{type(e).__name__}: {safe_repr(e)[:300]}"
+
+
+def run_units(spec: dict) -> dict:
+    out = {"units": [], "import_error": None}
+    try:
+        mod, fn, path = load_func(spec["work"], spec["entry_point"])
+    except BaseException as e:  # noqa: BLE001
+        out["import_error"] = err_string(e)[1]
+        out["units"] = [{"passed": False, "error_type": "ImportError", "error": out["import_error"], "lines": [], "calls": []} for _ in spec["units"]]
+        return out
+    strict = bool(spec.get("strict"))
+    tmo = int(spec.get("unit_timeout", 60))
+    signal.signal(signal.SIGALRM, _alarm)
+    prelude = spec.get("prelude", "")
+    for usrc in spec["units"]:
+        calls = []
+
+        def candidate(*args, **kw):
+            a = safe_repr((args, kw) if kw else args)
+            r = fn(*args, **kw)
+            calls.append([sha(a), sha(json.dumps(canon(r), sort_keys=True, default=repr)), a[:200]])
+            return r
+
+        ns = dict(HELPERS, candidate=candidate)
+        rec = {"passed": True, "error_type": None, "error": None}
+        src = prelude + "\n" + usrc + "\n"
+        try:
+            tree = ast.parse(src)
+            if strict:
+                tree = ast.fix_missing_locations(Strictify().visit(tree))
+            code = compile(tree, "<unit>", "exec")
+        except SyntaxError as e:
+            rec.update(passed=False, error_type="SyntaxError", error=str(e)[:300], lines=[], calls=[])
+            out["units"].append(rec)
+            continue
+        cov = Coverage(path)
+        signal.alarm(tmo)
+        try:
+            with cov:
+                exec(code, ns)
+        except BaseException as e:  # noqa: BLE001
+            rec["passed"] = False
+            rec["error_type"], rec["error"] = err_string(e)
+        finally:
+            signal.alarm(0)
+            sys.settrace(None)
+        rec["lines"] = sorted(cov.lines)
+        rec["calls"] = calls[:200]
+        rec["n_calls"] = len(calls)
+        out["units"].append(rec)
+    return out
+
+
+def run_probes(spec: dict) -> dict:
+    out = {"probes": [], "import_error": None}
+    try:
+        mod, fn, path = load_func(spec["work"], spec["entry_point"])
+    except BaseException as e:  # noqa: BLE001
+        out["import_error"] = err_string(e)[1]
+        out["probes"] = [{"raised": "ImportError", "result": None, "lines": []} for _ in spec["probes"]]
+        return out
+    tmo = int(spec.get("unit_timeout", 60))
+    signal.signal(signal.SIGALRM, _alarm)
+    for p in spec["probes"]:
+        rec: dict[str, Any] = {"raised": None, "result": None, "is_none": None}
+        try:
+            args = ast.literal_eval(p)
+        except Exception:
+            rec["raised"] = "BadProbe"
+            rec["lines"] = []
+            out["probes"].append(rec)
+            continue
+        cov = Coverage(path)
+        signal.alarm(tmo)
+        try:
+            with cov:
+                r = fn(*args)
+            rec["is_none"] = r is None
+            rec["result"] = sha(json.dumps(canon(r), sort_keys=True, default=repr))
+        except BaseException as e:  # noqa: BLE001
+            rec["raised"] = err_string(e)[0]
+        finally:
+            signal.alarm(0)
+            sys.settrace(None)
+        rec["lines"] = sorted(cov.lines)
+        out["probes"].append(rec)
+    return out
+
+
+def compile_check(src: str):
+    ns = dict(HELPERS)
+    exec(compile(ast.parse(src), "<heldout>", "exec"), ns)
+    return ns["check"]
+
+
+def run_repeat(spec: dict) -> dict:
+    """Every source ``runs`` times in this process: the study's held-out runner, plain."""
+    result: dict = {"runs": []}
+    try:
+        mod, fn, path = load_func(spec["work"], spec["entry_point"])
+    except BaseException as e:  # noqa: BLE001  an import failure is a failed run
+        result["import_error"] = f"{type(e).__name__}: {safe_repr(e)}"
+        result["runs"] = [{"passed": False, "error": result["import_error"], "calls": []}] * spec.get("runs", 1)
+        return result
+    for _ in range(spec.get("runs", 1)):
+        calls = []
+
+        def candidate(*args, **kw):
+            a = safe_repr((args, kw) if kw else args)
+            r = fn(*args, **kw)
+            calls.append([a, canon(r)])
+            return r
+
+        run = {"passed": True, "error": None}
+        try:
+            for src in spec["sources"]:
+                compile_check(src)(candidate)
+        except BaseException as e:  # noqa: BLE001  any exception fails the run
+            run["passed"] = False
+            tb = traceback.extract_tb(e.__traceback__)
+            where = next((f"line {f.lineno}" for f in reversed(tb) if f.filename == "<heldout>"), "")
+            run["error"] = f"{type(e).__name__}: {safe_repr(e)[:500]} {where}"
+        run["calls"] = calls
+        result["runs"].append(run)
+    return result
+
+
+MODES = {"units": run_units, "probe": run_probes, "repeat": run_repeat}
+
+
+def main(argv: list[str]) -> int:
+    report = os.fdopen(os.dup(1), "w")
+    os.dup2(2, 1)
+    with open(argv[0]) as handle:
+        spec = json.load(handle)
+    spec["work"] = os.getcwd()
+    try:
+        res = MODES[spec["mode"]](spec)
+    except BaseException as e:  # noqa: BLE001
+        res = {"fatal": f"{type(e).__name__}: {e}"[:500], "trace": traceback.format_exc()[-1500:]}
+    report.write(json.dumps(res, default=repr) + "\n")
+    report.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

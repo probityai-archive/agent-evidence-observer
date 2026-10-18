@@ -4,4 +4,4 @@
 # back to src/probity_observer/done/pytest_plugins/ when the data files are combined.
 [tool.coverage.run]
 parallel = true
-include = ["*/probity_observer/done/*", "*/probity-plugins/*"]
+include = ["*/probity_observer/done/*", "*/probity-plugins/*", "*/probity-visible-worker/*"]
