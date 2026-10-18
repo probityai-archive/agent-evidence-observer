@@ -113,7 +113,8 @@ def test_a_reference_gives_the_proposal_mutants(tmp_path, repo, harness, python_
     shutil.copytree(repo, reference)
     (reference / "app.py").write_text("def double(x):\n    return x * 2\n")
     proposal = zeroshot.propose(repo, "repo-double", "make double double", Fixed(ANSWER), reference)
-    assert proposal.task.mutation_targets == {"app.py": None}
+    assert {name: change.ranges for name, change in proposal.task.mutation_targets.items()} == {
+        "app.py": ((2, 2),)}
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
     assert sealed.record["adequacy"]["killed"] >= 1

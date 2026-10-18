@@ -32,6 +32,7 @@ from typing import Any, Sequence
 
 from ..sensors import treedigest
 from . import heldout as heldout_cases
+from .changes import Changes, changed_lines
 from . import mutants, pytest_plugins
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
@@ -45,7 +46,6 @@ ACCEPTANCE_CONFIG = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 _CONFIG_SECTION = {"pytest.ini": None, "pyproject.toml": "[tool.pytest.ini_options]",
                    "tox.ini": "[pytest]", "setup.cfg": "[tool:pytest]"}
 _DIFF_FILE = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
-_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -69,7 +69,7 @@ class Task:
     protected: list[Protected]
     heldout: Path | None = None
     reference: Path | None = None
-    mutation_targets: dict[str, list[tuple[int, int]] | None] = field(default_factory=dict)
+    mutation_targets: dict[str, Changes] = field(default_factory=dict)
     entry: dict[str, Any] | None = None
     notes: dict[str, Any] = field(default_factory=dict)
     # The code the task asks the agent to write; a claimed run may import it from the workspace.
@@ -83,21 +83,6 @@ def touched_files(patch: str) -> list[str]:
         if after not in seen:
             seen.append(after)
     return seen
-
-
-def touched_lines(patch: str) -> dict[str, list[tuple[int, int]]]:
-    """For each file a diff writes, the new-side line ranges of its hunks."""
-    ranges: dict[str, list[tuple[int, int]]] = {}
-    for block in re.split(r"(?=^diff --git )", patch, flags=re.MULTILINE):
-        names = _DIFF_FILE.findall(block)
-        if not names:
-            continue
-        name = names[0][1]
-        for start, count in _HUNK.findall(block):
-            first = int(start)
-            span = int(count) if count else 1
-            ranges.setdefault(name, []).append((first, first + max(span, 1) - 1))
-    return ranges
 
 
 def apply_patch(root: Path, patch: str) -> None:
@@ -225,6 +210,16 @@ def _swe_protected(start: Path, tests: list[str], reference_touched: set[str],
                        for other in kept)]
 
 
+def source_changes(start: Path, reference: Path, names: Sequence[str]) -> dict[str, Changes]:
+    """The changed lines of each named file the reference has, against the start tree."""
+    found = {}
+    for name in names:
+        if (reference / name).is_file():
+            before = (start / name).read_text() if (start / name).is_file() else ""
+            found[name] = changed_lines(before, (reference / name).read_text())
+    return found
+
+
 def touched_functions(source: str, ranges: list[tuple[int, int]]) -> list[str]:
     """Top-level (non-async) functions of ``source`` that a hunk in ``ranges`` touches."""
     try:
@@ -275,11 +270,11 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
     prefix = tuple(test_cmd)
     if seal_config:
         prefix += sealed_config(start, held)
-    targets = {name: lines for name, lines in touched_lines(record["patch"]).items()
-               if name.endswith(".py") and name not in tests}
+    targets = source_changes(start, reference, [name for name in touched_files(record["patch"])
+                                                if name.endswith(".py") and name not in tests])
     isolated = sorted(f"{name}::{function}" for name, lines in targets.items()
-                      if (reference / name).is_file()
-                      for function in touched_functions((reference / name).read_text(), lines)
+                      for function in touched_functions((reference / name).read_text(),
+                                                        list(lines.ranges))
                       ) if isolate else []
     if seal_config and pytest_plugins.is_python_pytest(prefix):
         pytest_plugins.install(held / "config")
@@ -629,9 +624,9 @@ def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"]]:
         classes: list[mutants.Mutant] = []
         for name in names:
             text = (task.reference / name).read_text()
-            ranges = task.mutation_targets[name]
-            for hunk in (ranges or [None]):
-                groups.append(mutants.operator_mutants(name, text, [hunk] if hunk else None))
+            ranges = list(task.mutation_targets[name].ranges)
+            for hunk in ranges:
+                groups.append(mutants.operator_mutants(name, text, [hunk]))
             classes += mutants.class_mutants(name, text, ranges)
         return task.reference, found + mutants.stratified(groups, limit, task.task_id) + classes
     if task.entry is not None:
