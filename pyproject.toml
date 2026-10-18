@@ -48,6 +48,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "probity_observer.done" = ["prompts/*.txt"]
+"probity_observer.launch" = ["tracer_image/Dockerfile"]
 "probity_observer.openshell" = ["vendor/*/*.json", "vendor/*/*.txt", "vendor/*/*/*.json"]
 
 [tool.pytest.ini_options]
