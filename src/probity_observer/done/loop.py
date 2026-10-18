@@ -275,6 +275,31 @@ def _shell(argv: list[str]) -> str:
     return " ".join(argv)
 
 
+_PROBES = {"heldout": "on inputs you cannot see",
+           "heldout_determinism": "for the same answer on every call",
+           "heldout_type_strict": "for the exact result type"}
+
+
+def _probe(command_id: str) -> str:
+    return _PROBES.get(command_id, command_id)
+
+
+def _replay_failures(run: Path, argv: dict[str, list[str]]) -> dict[str, str]:
+    """Each replayed command's failure as the grader's replay recorded it (``assertion``,
+    ``candidate: IndexError``, ``timeout``, ...): the kind of failure, never an input."""
+    staging = run / "grade-staging.json"
+    if not staging.is_file():
+        return {}
+    by_argv = {tuple(value): key for key, value in argv.items()}
+    found = {}
+    for item in json.loads(staging.read_bytes()).get("replays", []):
+        key = by_argv.get(tuple(item.get("argv", [])))
+        failure = item.get("failure")
+        if key is not None and isinstance(failure, str) and not item.get("passed", False):
+            found[key] = failure
+    return found
+
+
 def refusal_detail(run: Path, contract: dict[str, Any]) -> list[str]:
     """What the refusing checks compared, in lines the agent can act on.
 
@@ -286,6 +311,7 @@ def refusal_detail(run: Path, contract: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     verify = run / "verify"
     argv = {item["id"]: item["argv"] for item in contract["acceptance"]}
+    why = _replay_failures(run, argv)
     grade = verify / "acceptance.decision.json"
     if grade.is_file():
         for check in json.loads(grade.read_bytes()).get("checks", []):
@@ -294,9 +320,12 @@ def refusal_detail(run: Path, contract: dict[str, Any]) -> list[str]:
             for item in failed:
                 if item not in held:
                     lines.append(f"acceptance command `{_shell(argv[item['id']])}` exited "
-                                 f"{item['exit']} in the verifier (expected 0)")
+                                 f"{item['exit']} in the verifier (expected 0)"
+                                 + (f": {why[item['id']]}" if item["id"] in why else ""))
             if held:
                 lines.append(f"{len(held)} held-out check(s) you cannot see failed")
+                lines.extend(f"held-out check {_probe(item['id'])}: {why[item['id']]}"
+                             for item in held if item["id"] in why)
     decided = verify / "tool-claims.decision.json"
     if decided.is_file() and (run / "claims.json").is_file():
         observation = json.loads((run / "observation.json").read_bytes())

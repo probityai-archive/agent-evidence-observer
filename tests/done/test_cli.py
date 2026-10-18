@@ -311,7 +311,11 @@ def test_the_refusal_detail_names_the_failed_command_and_hides_held_out_ones(tmp
     run = tmp_path / "attempt"
     (run / "verify").mkdir(parents=True)
     contract_record = {"acceptance": [{"id": "visible_run", "argv": ["python", "test.py"]},
-                                      {"id": "heldout", "argv": ["secret", "argv"]}]}
+                                      {"id": "heldout", "argv": ["secret", "argv"]},
+                                      {"id": "heldout_type_strict", "argv": ["secret", "two"]}]}
+    (run / "grade-staging.json").write_text(json.dumps({"replays": [
+        {"argv": ["secret", "argv"], "passed": False, "failure": "candidate: IndexError"},
+        {"argv": ["secret", "two"], "passed": True, "failure": None}]}))
     (run / "verify" / "acceptance.decision.json").write_text(json.dumps({"checks": [
         {"id": "acceptance", "results": [{"id": "visible_run", "exit": 1},
                                          {"id": "heldout", "exit": 1}]}]}))
@@ -328,7 +332,8 @@ def test_the_refusal_detail_names_the_failed_command_and_hides_held_out_ones(tmp
     assert lines[0] == ("acceptance command `python test.py` exited 1 in the verifier "
                         "(expected 0)")
     assert lines[1] == "1 held-out check(s) you cannot see failed"
+    assert lines[2] == "held-out check on inputs you cannot see: candidate: IndexError"
     assert "secret" not in " ".join(lines)
-    assert lines[2] == ("claimed `python test.py` exit 0: precedes_last_edit; observed runs: "
+    assert lines[3] == ("claimed `python test.py` exit 0: precedes_last_edit; observed runs: "
                         "cwd /workspace, exe /usr/local/bin/python, argv `python test.py`, "
                         "step 2, exit 0; last edit at step 3 (write func.py)")
