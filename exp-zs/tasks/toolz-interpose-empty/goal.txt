@@ -1,0 +1,1 @@
+Make toolz.interpose return an empty iterator for an empty sequence instead of raising StopIteration.
