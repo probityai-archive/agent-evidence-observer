@@ -67,14 +67,17 @@ class Runner(Protocol):
 
     When ``writes`` is a list, the runner appends every workspace path the run created,
     changed or removed (regular files, compared by digest). ``stdin`` is written to the run's
-    standard input and closed (a sealed plugin's report key travels this way).
+    standard input and closed (a sealed plugin's report key travels this way). When
+    ``stopped`` is a list, the runner appends ``True`` if it stopped the run, or a replay
+    probe's call inside it, at its time limit: no answer, as opposed to a wrong one.
     """
 
     name: str
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
-            output: list[str] | None = None, stdin: bytes | None = None) -> int: ...
+            output: list[str] | None = None, stdin: bytes | None = None,
+            stopped: list[bool] | None = None) -> int: ...
 
     def executable(self, name: str) -> str | list[str]:
         """The absolute path the kernel runs for ``name`` where this runner runs commands (a
@@ -161,7 +164,8 @@ def replay_mode(argv: Sequence[str]) -> str | None:
 
 
 def run_replay(scratch: Path, argv: Sequence[str], child_argv, timeout: float,
-               order_seed: str, results: list[dict] | None) -> int:
+               order_seed: str, results: list[dict] | None,
+               stopped: list[bool] | None = None) -> int:
     """Run a parent-compare replay command staged under ``scratch``.
 
     ``argv`` is ``(COMMAND, <sealed test path from the workspace>, <module>, <entry>[, mode])``.
@@ -196,10 +200,15 @@ def run_replay(scratch: Path, argv: Sequence[str], child_argv, timeout: float,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               timeout=limit, check=False)
     except subprocess.TimeoutExpired:
+        if stopped is not None:
+            stopped.append(True)
         return TIMEOUT_EXIT
-    if results is not None and (scratch / "replay.json").is_file():
-        results.append({"argv": list(argv),
-                        **json.loads((scratch / "replay.json").read_text())})
+    if (scratch / "replay.json").is_file():
+        report = json.loads((scratch / "replay.json").read_text())
+        if stopped is not None and report.get("timed_out") is True:
+            stopped.append(True)
+        if results is not None:
+            results.append({"argv": list(argv), **report})
     return done.returncode
 
 
@@ -224,12 +233,13 @@ class SubprocessRunner:
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
-            output: list[str] | None = None, stdin: bytes | None = None) -> int:
+            output: list[str] | None = None, stdin: bytes | None = None,
+            stopped: list[bool] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-done-") as scratch:
             workspace = stage(Path(state), heldout, Path(scratch))
             if is_replay(argv):
                 return run_replay(Path(scratch), argv, self.child_argv, timeout,
-                                  self.order_seed, self.replays)
+                                  self.order_seed, self.replays, stopped)
             try:
                 done = subprocess.run(list(argv), cwd=workspace, env=self.env,
                                       input=stdin if stdin is not None else b"",
@@ -241,6 +251,8 @@ class SubprocessRunner:
                     output.append(done.stdout.decode("utf-8", "replace"))
             except subprocess.TimeoutExpired:
                 code = TIMEOUT_EXIT
+                if stopped is not None:
+                    stopped.append(True)
             except OSError:
                 code = 127
             if writes is not None:

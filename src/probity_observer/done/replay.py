@@ -149,11 +149,16 @@ class CandidateFailed(AssertionError):
     """The candidate raised, timed out or returned something that is not plain data."""
 
 
+STARTED: list["Child"] = []
+
+
 class Child:
     """One isolated candidate process, answering calls in order."""
 
     def __init__(self, argv: list[str], cwd: str | None, timeout: float) -> None:
         self.timeout = timeout
+        self.timed_out = False
+        STARTED.append(self)
         self.process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                         text=True)
@@ -175,10 +180,15 @@ class Child:
             return {"error": "child-pipes"}
         wait = self.timeout if timeout is None else max(0.0, min(timeout, self.timeout))
         ready, _, _ = select.select([self.process.stdout], [], [], wait)
-        line = self.process.stdout.readline() if ready else ""
+        if not ready:
+            # No answer inside the limit: the candidate gave none, which is not a wrong one.
+            self.timed_out = True
+            self.close()
+            return {"error": "child-timeout"}
+        line = self.process.stdout.readline()
         if not line:
             self.close()
-            return {"error": "child-timeout-or-exit"}
+            return {"error": "child-exited"}
         try:
             return json.loads(line)
         except json.JSONDecodeError:
@@ -313,7 +323,7 @@ def determinism(request: dict[str, Any]) -> dict[str, Any]:
     sequences = [first[0::2], first[1::2], fresh]
     identical = sequences[0] == sequences[1] == sequences[2]
     failure = None
-    if first_out or fresh_out:
+    if first_out or fresh_out or any(child.timed_out for child in STARTED):
         failure = "timeout"
     elif not identical:
         failure = "answers differ between runs"
@@ -414,7 +424,11 @@ def replay(request: dict[str, Any]) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     request = json.loads(Path(args[0]).read_text())
+    STARTED.clear()
     result = replay(request)
+    if not result["passed"] and (result.get("failure") == "timeout"
+                                 or any(child.timed_out for child in STARTED)):
+        result["timed_out"] = True
     Path(request["out"]).write_text(json.dumps(result, sort_keys=True))
     return 0 if result["passed"] else 1
 
