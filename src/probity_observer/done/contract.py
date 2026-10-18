@@ -40,7 +40,7 @@ from . import harvest as guards
 from . import mutants, pytest_plugins, strengthen
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
-from .runner import Command, Runner
+from .runner import Command, Runner, image_executable
 
 SCHEMA = "probity-done-contract/v1"
 EXCLUDE = ("__pycache__", ".pytest_cache")
@@ -334,29 +334,6 @@ def copy_protected(root: Path, entry: Protected, destination: Path) -> None:
         return
     ignore = shutil.ignore_patterns(*entry.exclude) if entry.exclude else None
     shutil.copytree(source, target, symlinks=True, ignore=ignore)
-
-
-_SAME_FILE = ('p=$(command -v "$1") || exit 3; r=$(readlink -f "$p") || exit 4; echo "$p"; '
-              'IFS=:; for d in $PATH; do for f in "$d"/*; do '
-              '[ -x "$f" ] && [ "$(readlink -f "$f")" = "$r" ] && echo "$f"; done; done')
-
-
-def executable_path(image: str, name: str, docker: str = "docker") -> str | list[str]:
-    """The absolute path the kernel runs for ``name`` in ``image`` (its PATH lookup, which is
-    what the observer records as the ``exe`` of an exec of that spelling), or, when other
-    names on PATH are the same file (``python`` and ``python3``), every such path, sorted.
-
-    An agent that prints ``python test.py`` and runs ``python3 test.py`` ran the sealed
-    interpreter; a different interpreter is a different file and stays unmatched."""
-    done = subprocess.run([docker, "run", "--rm", "--network", "none", "--entrypoint", "/bin/sh",
-                           image, "-c", _SAME_FILE, "sh", name],
-                          capture_output=True, text=True, timeout=300, check=False)
-    found = sorted({line for line in done.stdout.splitlines()
-                    if line.startswith("/") and posixpath.normpath(line) == line})
-    if done.returncode not in (0, 1) or not found:
-        raise DoneError(f"cannot resolve {name!r} in the agent image {image}: "
-                        f"exit {done.returncode} {done.stderr.strip()[:200]}")
-    return found[0] if len(found) == 1 else found
 
 
 def contract_record(task: Task, adequacy: dict[str, int], commands: list[Command],
@@ -1094,8 +1071,10 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
     guards from the repository's own suite, strengthen with the model (when one is given)
     while a gate fails, apply the seal gates, and seal.
 
-    With ``agent_image``, each command the agent runs itself is sealed with its working
-    directory and the path of its executable in that image (``cwd`` and ``exe``)."""
+    Each command the agent runs itself is sealed with its working directory and the path
+    of its executable (``cwd`` and ``exe``): in ``agent_image`` when one is given, else where
+    ``runner`` resolves it (:meth:`.runner.Runner.executable`), so no compiled contract
+    leaves an agent command unsealed."""
     if task.reference is not None and (name := native_change(task.start, task.reference)):
         raise Refused(task.task_id, "native_build_required",
                       f"the reference changes native code: {name}")
@@ -1163,10 +1142,10 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
         report["harvest"] = harvested
     if pass_traces:
         report["pass_command_traces"] = pass_traces
-    executables = None
-    if agent_image is not None:
-        names = {command.argv[0] for command in stable.commands if command.agent_command}
-        executables = {name: executable_path(agent_image, name) for name in sorted(names)}
+    names = {command.argv[0] for command in stable.commands if command.agent_command}
+    resolve = runner.executable if agent_image is None else (
+        lambda name: image_executable(agent_image, name))
+    executables = {name: resolve(name) for name in sorted(names)} if names else None
     return seal(task, out, key, adequacy.field(), stable.commands,
                 mutants.mutant_set_sha256(chosen) if chosen else None, report, executables,
                 stable.run_writes)

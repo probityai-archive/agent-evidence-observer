@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from typing import Protocol, Sequence
 from ..sensors import treedigest
 from . import pytest_plugins
 from . import replay as replay_harness
+from .formats import DoneError
 
 TIMEOUT_EXIT = 124
 SCRUBBED_ENV = {
@@ -73,6 +75,58 @@ class Runner(Protocol):
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
             output: list[str] | None = None, stdin: bytes | None = None) -> int: ...
+
+    def executable(self, name: str) -> str | list[str]:
+        """The absolute path the kernel runs for ``name`` where this runner runs commands (a
+        PATH lookup, which is what the observer records as an exec's ``exe``), or every PATH
+        name of that same file, sorted (``python`` and ``python3``)."""
+        ...
+
+
+def _one_or_all(found: set[str], name: str, where: str, detail: str = "") -> str | list[str]:
+    if not found:
+        raise DoneError(f"cannot resolve {name!r} in {where}{detail}")
+    ordered = sorted(found)
+    return ordered[0] if len(ordered) == 1 else ordered
+
+
+_SAME_FILE = ('p=$(command -v "$1") || exit 3; r=$(readlink -f "$p") || exit 4; echo "$p"; '
+              'IFS=:; for d in $PATH; do for f in "$d"/*; do '
+              '[ -x "$f" ] && [ "$(readlink -f "$f")" = "$r" ] && echo "$f"; done; done')
+
+
+def image_executable(image: str, name: str, docker: str = "docker") -> str | list[str]:
+    """:meth:`Runner.executable` inside ``image``.
+
+    An agent that prints ``python test.py`` and runs ``python3 test.py`` ran the sealed
+    interpreter; a different interpreter is a different file and stays unmatched."""
+    done = subprocess.run([docker, "run", "--rm", "--network", "none", "--entrypoint", "/bin/sh",
+                           image, "-c", _SAME_FILE, "sh", name],
+                          capture_output=True, text=True, timeout=300, check=False)
+    found = {line for line in done.stdout.splitlines()
+             if line.startswith("/") and posixpath.normpath(line) == line}
+    if done.returncode not in (0, 1):
+        found = set()
+    return _one_or_all(found, name, f"the agent image {image}",
+                       f": exit {done.returncode} {done.stderr.strip()[:200]}")
+
+
+def path_executable(name: str, path: str) -> str | list[str]:
+    """:meth:`Runner.executable` on this host, for the search list ``path``."""
+    first = shutil.which(name, path=path)
+    if first is None or not os.path.isabs(first):
+        return _one_or_all(set(), name, f"PATH {path}")
+    target = os.path.realpath(first)
+    found = {os.path.normpath(first)}
+    for directory in path.split(os.pathsep):
+        if not os.path.isabs(directory) or not os.path.isdir(directory):
+            continue
+        for entry in os.scandir(directory):
+            candidate = os.path.join(directory, entry.name)
+            if (os.access(candidate, os.X_OK) and os.path.isfile(candidate)
+                    and os.path.realpath(candidate) == target):
+                found.add(os.path.normpath(candidate))
+    return _one_or_all(found, name, f"PATH {path}")
 
 
 def changed_paths(before: Path, after: Path) -> list[str]:
@@ -164,6 +218,9 @@ class SubprocessRunner:
 
     def child_argv(self, directory: Path, source: str) -> tuple[list[str], str]:
         return [self.python, "-I", "-P", "-c", source], str(directory)
+
+    def executable(self, name: str) -> str | list[str]:
+        return path_executable(name, self.env["PATH"])
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,

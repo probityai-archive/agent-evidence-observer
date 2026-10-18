@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from probity_observer.done import contract, heldout, pytest_plugins, replay
+from probity_observer.done import contract, heldout, pytest_plugins, replay, runner
 from probity_observer.done.formats import DoneError, encode, open_record, public_key, sha256
 from probity_observer.sensors import treedigest
 
@@ -97,15 +97,36 @@ def test_an_swe_task_names_the_files_the_reference_patch_changes(tmp_path, swe_r
     assert task.module_under_test == ["pkg/shapes.py"]
 
 
-def test_executable_path_is_the_path_lookup_in_the_image(image):
+def test_image_executable_is_the_path_lookup_in_the_image(image):
     # python and python3 are one file in the image: both paths are sealed.
-    found = contract.executable_path(image, "python")
+    found = runner.image_executable(image, "python")
     assert isinstance(found, list) and found == sorted(found)
     assert {"/usr/local/bin/python", "/usr/local/bin/python3"} <= set(found)
     # sh is a link to dash: every PATH name of that one file is sealed.
-    assert {"/bin/sh", "/bin/dash"} <= set(contract.executable_path(image, "sh"))
+    assert {"/bin/sh", "/bin/dash"} <= set(runner.image_executable(image, "sh"))
     with pytest.raises(DoneError, match="cannot resolve"):
-        contract.executable_path(image, "no-such-tool")
+        runner.image_executable(image, "no-such-tool")
+
+
+def test_the_subprocess_runner_resolves_every_path_name_of_one_file(tmp_path):
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    tool = first / "tool3"
+    tool.write_text("#!/bin/sh\n")
+    tool.chmod(0o755)
+    (first / "tool").symlink_to("tool3")
+    (second / "tool").symlink_to(tool)
+    other = second / "other"
+    other.write_text("#!/bin/sh\n")
+    other.chmod(0o755)
+    local = runner.SubprocessRunner()
+    local.env["PATH"] = f"{first}:{second}"
+    assert local.executable("tool") == sorted(
+        [str(first / "tool"), str(first / "tool3"), str(second / "tool")])
+    assert local.executable("other") == str(other)
+    with pytest.raises(DoneError, match="cannot resolve"):
+        local.executable("no-such-tool")
 
 
 def test_the_contract_parses_under_probity_verify(tmp_path, harness):
