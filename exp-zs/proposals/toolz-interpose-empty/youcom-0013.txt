@@ -1,0 +1,68 @@
+{
+  "acceptance": [
+    {
+      "id": "empty_interpose_fails_now",
+      "argv": [
+        "python",
+        "-c",
+        "from toolz.itertoolz import interpose; list(interpose('a', []))"
+      ],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "empty_interpose_passes_after_fix",
+      "argv": [
+        "python",
+        "-c",
+        "from toolz.itertoolz import interpose; assert list(interpose('a', [])) == []"
+      ],
+      "expect_on_start": "pass"
+    },
+    {
+      "id": "nonempty_interpose_unchanged",
+      "argv": [
+        "python",
+        "-c",
+        "from toolz.itertoolz import interpose; assert list(interpose('a', [1,2,3])) == [1,'a',2,'a',3]"
+      ],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    { "path": "toolz/tests", "kind": "directory" },
+    { "path": "toolz/tests/__init__.py", "kind": "file" },
+    { "path": "toolz/tests/test_compatibility.py", "kind": "file" },
+    { "path": "toolz/tests/test_curried.py", "kind": "file" },
+    { "path": "toolz/tests/test_curried_doctests.py", "kind": "file" },
+    { "path": "toolz/tests/test_dicttoolz.py", "kind": "file" },
+    { "path": "toolz/tests/test_functoolz.py", "kind": "file" },
+    { "path": "toolz/tests/test_inspect_args.py", "kind": "file" },
+    { "path": "toolz/tests/test_itertoolz.py", "kind": "file" },
+    { "path": "toolz/tests/test_package.py", "kind": "file" },
+    { "path": "toolz/tests/test_recipes.py", "kind": "file" },
+    { "path": "toolz/tests/test_serialization.py", "kind": "file" },
+    { "path": "toolz/tests/test_signatures.py", "kind": "file" },
+    { "path": "toolz/tests/test_tlz.py", "kind": "file" },
+    { "path": "toolz/tests/test_utils.py", "kind": "file" },
+    { "path": "bench", "kind": "directory" },
+    { "path": "bench/test_curry.py", "kind": "file" },
+    { "path": "bench/test_curry_baseline.py", "kind": "file" },
+    { "path": "bench/test_first.py", "kind": "file" },
+    { "path": "bench/test_first_iter.py", "kind": "file" },
+    { "path": "bench/test_frequencies.py", "kind": "file" },
+    { "path": "bench/test_get.py", "kind": "file" },
+    { "path": "bench/test_get_list.py", "kind": "file" },
+    { "path": "bench/test_groupby.py", "kind": "file" },
+    { "path": "bench/test_join.py", "kind": "file" },
+    { "path": "bench/test_memoize.py", "kind": "file" },
+    { "path": "bench/test_memoize_kwargs.py", "kind": "file" },
+    { "path": "bench/test_pluck.py", "kind": "file" },
+    { "path": "bench/test_sliding_window.py", "kind": "file" },
+    { "path": "bench/test_wordcount.py", "kind": "file" },
+    { "path": "toolz/sandbox/tests", "kind": "directory" },
+    { "path": "toolz/sandbox/tests/__init__.py", "kind": "file" },
+    { "path": "toolz/sandbox/tests/test_core.py", "kind": "file" },
+    { "path": "toolz/sandbox/tests/test_parallel.py", "kind": "file" }
+  ],
+  "rationale": "The first command demonstrates that the current implementation raises StopIteration for an empty sequence, which must be fixed. The second command confirms that after the change interpose([]) yields an empty iterator, and the third ensures existing non‑empty behavior remains unchanged, guaranteeing the task is correctly implemented without regressions."
+}

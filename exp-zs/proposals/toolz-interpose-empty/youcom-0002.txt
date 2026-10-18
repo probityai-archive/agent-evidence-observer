@@ -1,0 +1,11 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose-empty-fail",
+      "argv": ["pytest", "-q", "-k", "interpose"],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "existing-behaviour-pass",
+      "argv": ["pytest", "-q", "toolz/tests/test_curried.py::test_take"],
+      "

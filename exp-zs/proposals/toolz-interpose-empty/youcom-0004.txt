@@ -1,0 +1,25 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose-empty-fail",
+      "argv": [
+        "python",
+        "-c",
+        "from toolz.itertoolz import interpose; list(interpose('a', []))"
+      ],
+      "expect_on_start": "fail"
+    }
+  ],
+  "protected_paths": [
+    { "path": "toolz/tests", "kind": "directory" },
+    { "path": "toolz/sandbox/tests", "kind": "directory" },
+    { "path": "bench", "kind": "directory" },
+    { "path": ".github/workflows/test.yml", "kind": "file" },
+    { "path": ".github/workflows/pre-commit.yml", "kind": "file" },
+    { "path": ".github/workflows/publish_pypi.yml", "kind": "file" },
+    { "path": ".pre-commit-config.yaml", "kind": "file" },
+    { "path": "tox.ini", "kind": "file" },
+    { "path": "pyproject.toml", "kind": "file" }
+  ],
+  "rationale": "Running interpose on an empty sequence currently raises StopIteration, causing the command to exit with a non‑zero status (fail). After fixing the implementation to return an empty iterator, the same command will succeed (pass), proving the task is completed."
+}

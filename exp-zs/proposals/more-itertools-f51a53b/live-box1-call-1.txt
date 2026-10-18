@@ -1,0 +1,30 @@
+{
+  "acceptance": [
+    {
+      "id": "empty_interleave_evenly",
+      "argv": [
+        "python",
+        "-c",
+        "import sys; from more_itertools import interleave_evenly; sys.exit(0 if list(interleave_evenly()) == [] else 1)"
+      ],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "interleave_evenly_basic",
+      "argv": [
+        "python",
+        "-c",
+        "import sys; from more_itertools import interleave_evenly; sys.exit(0 if list(interleave_evenly([1,2], [3,4])) == [1,3,2,4] else 1)"
+      ],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    { "path": "tests", "kind": "directory" },
+    { "path": "tests/__init__.py", "kind": "file" },
+    { "path": "tests/test_more.py", "kind": "file" },
+    { "path": "tests/test_recipes.py", "kind": "file" },
+    { "path": "tox.ini", "kind": "file" },
+    { "path": "setup.cfg", "kind": "file" }
+  ],
+  "rationale": "The first command verifies that calling interleave_evenly with no iterables returns an

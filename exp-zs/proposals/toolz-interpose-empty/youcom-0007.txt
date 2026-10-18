@@ -1,0 +1,20 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose_empty_fails",
+      "argv": [
+        "python",
+        "-c",
+        "import toolz; list(toolz.interpose('x', []))"
+      ],
+      "expect_on_start": "fail"
+    }
+  ],
+  "protected_paths": [
+    {
+      "path": "toolz/tests",
+      "kind": "directory"
+    }
+  ],
+  "rationale": "Running toolz.interpose on an empty sequence currently raises StopIteration, causing the command to exit with a non‑zero status. After fixing interpose to return an empty iterator, the same command will exit cleanly, demonstrating that the required behavior change is implemented."
+}

@@ -1,0 +1,23 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose_empty_fail",
+      "argv": [
+        "python",
+        "-c",
+        "import toolz, sys; list(toolz.interpose('a', []))"
+      ],
+      "expect_on_start": "fail"
+    }
+  ],
+  "protected_paths": [
+    {
+      "path": "toolz/tests",
+      "kind": "directory"
+    },
+    {
+      "path": "toolz/sandbox/tests",
+      "kind": "directory"
+    }
+  ],
+  "rationale": "

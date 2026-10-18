@@ -1,0 +1,22 @@
+{
+  "acceptance": [
+    {
+      "id": "bucket-falsey-validator",
+      "argv": ["python", "-m", "unittest", "tests.test_more.TestBucket.test_validator_falsey"],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "recipes-tests-pass",
+      "argv": ["python", "-m", "unittest", "tests.test_recipes"],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    { "path": "tests", "kind": "directory" },
+    { "path": "tests/test_more.py", "kind": "file" },
+    { "path": "tests/test_recipes.py", "kind": "file" },
+    { "path": "tox.ini", "kind": "file" },
+    { "path": "setup.cfg", "kind": "file" }
+  ],
+  "rationale": "The first command targets the specific bucket test that should reject items when the validator returns a falsey value; it currently fails, proving the bug. The second command ensures the existing recipe tests continue to pass, guarding against regressions."
+}

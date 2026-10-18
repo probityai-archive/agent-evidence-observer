@@ -1,0 +1,39 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose-empty-fail",
+      "argv": ["python", "-c", "from toolz.itertoolz import interpose; list(interpose([], 0))"],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "interpose-nonempty-pass",
+      "argv": ["python", "-c", "from toolz.itertoolz import interpose; assert list(interpose([1, 2, 3], 0)) == [1, 0, 2, 0, 3]"],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    {"path": "toolz/tests", "kind": "directory"},
+    {"path": "toolz/tests/__init__.py", "kind": "file"},
+    {"path": "toolz/tests/test_compatibility.py", "kind": "file"},
+    {"path": "toolz/tests/test_curried.py", "kind": "file"},
+    {"path": "toolz/tests/test_curried_doctests.py", "kind": "file"},
+    {"path": "toolz/tests/test_dicttoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_functoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_inspect_args.py", "kind": "file"},
+    {"path": "toolz/tests/test_itertoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_package.py", "kind": "file"},
+    {"path": "toolz/tests/test_recipes.py", "kind": "file"},
+    {"path": "toolz/tests/test_serialization.py", "kind": "file"},
+    {"path": "toolz/tests/test_signatures.py", "kind": "file"},
+    {"path": "toolz/tests/test_tlz.py", "kind": "file"},
+    {"path": "toolz/tests/test_utils.py", "kind": "file"},
+    {"path": "toolz/sandbox/tests", "kind": "directory"},
+    {"path": "toolz/sandbox/tests/__init__.py", "kind": "file"},
+    {"path": "toolz/sandbox/tests/test_core.py", "kind": "file"},
+    {"path": "toolz/sandbox/tests/test_parallel.py", "kind": "file"},
+    {"path": "pyproject.toml", "kind": "file"},
+    {"path": "tox.ini", "kind": "file"},
+    {"path": ".pre-commit-config.yaml", "kind": "file"}
+  ],
+  "rationale": "The first command demonstrates the current bug (raising StopIteration on an empty sequence) and must fail before the fix. The second command verifies that interpose still works correctly on a non‑empty sequence, ensuring existing behavior is preserved."
+}

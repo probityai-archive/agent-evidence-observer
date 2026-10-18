@@ -1,0 +1,20 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose-fail",
+      "argv": ["pytest", "-q", "-k", "interpose"],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "noninterpose-pass",
+      "argv": ["pytest", "-q", "-k", "first"],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    {"path": "toolz/tests", "kind": "directory"},
+    {"path": "bench", "kind": "directory"},
+    {"path": "toolz/sandbox/tests", "kind": "directory"}
+  ],
+  "rationale": "Running the interpose‑related tests fails on the current code because interpose([]) raises StopIteration; after fixing it the same command must pass. A separate test (e.g., first) verifies that existing behavior remains correct, ensuring the change only affects the empty‑sequence case."
+}
