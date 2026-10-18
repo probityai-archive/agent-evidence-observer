@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from probity_observer.done import contract, heldout, replay, verify_run
-from probity_observer.done.runner import SubprocessRunner
+from probity_observer.done.runner import TIMEOUT_EXIT, SubprocessRunner
 
 from .conftest import HONEST, LCB_ORIGINAL, LCB_RECORD
 
@@ -190,6 +190,58 @@ def test_main_writes_the_result(tmp_path, local):
                                    "call_timeout": 30, "order_seed": "s", "out": str(tmp_path / "o.json")}))
     assert replay.main([str(request)]) == 1
     assert json.loads((tmp_path / "o.json").read_text())["failure"].startswith("candidate")
+
+
+def _probe_request(tmp_path, local, source, mode):
+    test = tmp_path / "t.py"
+    test.write_text("def check(candidate):\n    assert candidate(1, 1) == 2\n")
+    cand = tmp_path / "cand"
+    cand.mkdir()
+    (cand / "func.py").write_text(source)
+    argv, cwd = local.child_argv(cand, replay.child_source("func", "add"))
+    request = tmp_path / "r.json"
+    request.write_text(json.dumps({"test": str(test), "child_argv": argv, "child_cwd": cwd,
+                                   "call_timeout": 0.5, "run_timeout": 0.5, "order_seed": "s",
+                                   "mode": mode, "out": str(tmp_path / "o.json")}))
+    return request
+
+
+@pytest.mark.parametrize("mode", ["type_strict", "determinism"])
+def test_a_probe_call_that_outruns_its_limit_is_reported_timed_out(tmp_path, local, mode):
+    slow = "import time\ndef add(a, b):\n    time.sleep(5)\n    return a + b\n"
+    assert replay.main([str(_probe_request(tmp_path, local, slow, mode))]) == 1
+    assert json.loads((tmp_path / "o.json").read_text())["timed_out"] is True
+
+
+def test_a_wrong_or_crashing_probe_answer_is_not_timed_out(tmp_path, local):
+    wrong = "def add(a, b):\n    return a - b\n"
+    assert replay.main([str(_probe_request(tmp_path, local, wrong, "type_strict"))]) == 1
+    assert "timed_out" not in json.loads((tmp_path / "o.json").read_text())
+    crash = tmp_path / "crash"
+    crash.mkdir()
+    dying = "import os\ndef add(a, b):\n    os._exit(3)\n"
+    assert replay.main([str(_probe_request(crash, local, dying, "type_strict"))]) == 1
+    report = json.loads((crash / "o.json").read_text())
+    assert "timed_out" not in report and report["failure"] == "candidate: child-exited"
+
+
+def test_the_runner_says_when_it_stopped_a_probe_at_its_limit(tmp_path, local):
+    task = contract.lcb_task(LCB_ORIGINAL, tmp_path / "w")
+    state = tmp_path / "state"
+    shutil.copytree(task.start, state)
+    (state / "func.py").write_text("import time\ndef add(a, b):\n    time.sleep(30)\n")
+    # The determinism probe outlives its children's budget, so the report says it.
+    probe = next(command for command in task.commands if command.id == "heldout_determinism")
+    stopped: list[bool] = []
+    assert local.run(state, probe.argv, task.heldout, 1, stopped=stopped) != 0
+    assert stopped == [True] and local.replays[-1]["timed_out"] is True
+    (state / "func.py").write_text("def add(a, b):\n    return 0\n")
+    stopped = []
+    assert local.run(state, probe.argv, task.heldout, 30, stopped=stopped) != 0
+    assert stopped == []
+    stopped = []
+    assert local.run(state, ["sleep", "30"], None, 1, stopped=stopped) == TIMEOUT_EXIT
+    assert stopped == [True]
 
 
 def test_check_body_accepts_test_func_and_top_level_asserts():

@@ -100,13 +100,14 @@ class DockerRunner:
 
     def run(self, state: Path, argv: Sequence[str], heldout: Path | None,
             timeout: float, writes: list[str] | None = None,
-            output: list[str] | None = None, stdin: bytes | None = None) -> int:
+            output: list[str] | None = None, stdin: bytes | None = None,
+            stopped: list[bool] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="probity-grade-") as scratch:
             root = Path(scratch)
             stage(Path(state), heldout, root)
             if is_replay(argv):
                 return run_replay(root, argv, self.child_argv, timeout, self.order_seed,
-                                  self.replays)
+                                  self.replays, stopped)
             chmod_tree(root / "workspace")
             if heldout is not None:
                 chmod_tree(root / "heldout", 0o755, 0o644)
@@ -123,6 +124,8 @@ class DockerRunner:
                 subprocess.run([self.docker, "kill", name], capture_output=True, check=False)
                 process.communicate()
                 code = TIMEOUT_EXIT
+                if stopped is not None:
+                    stopped.append(True)
             else:
                 if process.returncode == 125:
                     raise GradeError("container runtime failed: "
@@ -334,7 +337,7 @@ def hunks_exercised(report: list[dict[str, Any]]) -> float:
 
 
 def _plugin_run(runner, root: Path, item: dict[str, Any], heldout: Path | None,
-                timeout: float) -> tuple[int, dict[str, Any] | None]:
+                timeout: float, stopped: list[bool]) -> tuple[int, dict[str, Any] | None]:
     """Run a command the sealed pytest plugins load; return its exit and verified report.
 
     A fresh key goes to the run on standard input; only a report line whose HMAC verifies
@@ -342,7 +345,8 @@ def _plugin_run(runner, root: Path, item: dict[str, Any], heldout: Path | None,
     """
     key = os.urandom(32).hex().encode()
     printed: list[str] = []
-    code = runner.run(root, item["argv"], heldout, timeout, output=printed, stdin=key + b"\n")
+    code = runner.run(root, item["argv"], heldout, timeout, output=printed, stdin=key + b"\n",
+                      stopped=stopped)
     return code, pytest_plugins.report(printed, key)
 
 
@@ -493,12 +497,18 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
                 for item in contract["acceptance"]}
         reports: dict[str, Any] = {}
         for item in contract["acceptance"]:
+            stopped: list[bool] = []
             if any(pytest_plugins.BOOT in arg for arg in item["argv"]):
                 exit_code, reports[item["id"]] = _plugin_run(runner, staged.root, item,
-                                                             dirs[item["id"]], timeout)
+                                                             dirs[item["id"]], timeout, stopped)
             else:
-                exit_code = runner.run(staged.root, item["argv"], dirs[item["id"]], timeout)
+                exit_code = runner.run(staged.root, item["argv"], dirs[item["id"]], timeout,
+                                       stopped=stopped)
             result = {"id": item["id"], "argv": item["argv"], "exit": exit_code}
+            # Stopped at its limit, the run gave no answer; the verifier tells that from a
+            # wrong one (probity-verify reads it only on a failed held-out probe).
+            if stopped and exit_code != 0:
+                result["timed_out"] = True
             if "ids" in item:
                 found = reports.get(item["id"])
                 # No verified report means nothing was shown collected.
