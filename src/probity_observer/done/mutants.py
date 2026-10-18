@@ -49,6 +49,8 @@ class Mutant:
     column: int
     source: str
     also: tuple[tuple[str, str], ...] = ()
+    # The adequacy set of a reference task's mutant (see SETS); empty for other tasks.
+    group: str = ""
 
     @property
     def kind(self) -> str:
@@ -63,9 +65,12 @@ class Mutant:
         return ((self.path, self.source),) + self.also
 
     def binding(self) -> dict[str, Any]:
-        return {"path": self.path, "operator": self.operator, "line": self.line,
-                "column": self.column,
-                "sha256": sha256(encode([[name, sha256(text.encode())] for name, text in self.files()]))}
+        entry = {"path": self.path, "operator": self.operator, "line": self.line,
+                 "column": self.column,
+                 "sha256": sha256(encode([[name, sha256(text.encode())] for name, text in self.files()]))}
+        if self.group:
+            entry["set"] = self.group
+        return entry
 
 
 def _compare(node: ast.AST) -> ast.AST | None:
@@ -585,6 +590,20 @@ def stratified(groups: list[list[Mutant]], limit: int, seed: str) -> list[Mutant
     return chosen
 
 
+SETS = ("null_patch", "hunk_revert", "change", "cheat", "function", "rest")
+
+
+def by_set(mutants: list[Mutant], killed: list[bool]) -> dict[str, dict[str, Any]]:
+    """Each adequacy set's count, kills and kill-vector digest, in :data:`SETS` order."""
+    found: dict[str, dict[str, Any]] = {}
+    for name in SETS:
+        vector = [bool(dead) for mutant, dead in zip(mutants, killed) if mutant.group == name]
+        if vector:
+            found[name] = {"mutants": len(vector), "killed": sum(vector),
+                           "kill_vector_sha256": sha256(encode(vector))}
+    return found
+
+
 def mutant_set_sha256(mutants: list[Mutant]) -> str:
     return sha256(encode([mutant.binding() for mutant in mutants]))
 
@@ -595,14 +614,22 @@ class Adequacy:
     killed: list[bool]
     runs: list[dict[str, Any]]
 
-    def field(self) -> dict[str, int]:
-        return {"mutants": len(self.mutants), "killed": sum(self.killed)}
+    def field(self) -> dict[str, Any]:
+        """The contract's ``adequacy``: the totals, and for a reference task each set's
+        counts (``by_class``, which sums to the totals) and the whole kill-vector digest."""
+        field: dict[str, Any] = {"mutants": len(self.mutants), "killed": sum(self.killed)}
+        sets = by_set(self.mutants, self.killed)
+        if sets:
+            field["by_class"] = {name: {"mutants": entry["mutants"], "killed": entry["killed"]}
+                                 for name, entry in sets.items()}
+            field["kill_vector_sha256"] = sha256(encode([bool(item) for item in self.killed]))
+        return field
 
     def report(self) -> dict[str, Any]:
         vector = [bool(item) for item in self.killed]
         classes = by_class(self.mutants, vector)
         return {"kill_vector": vector, "kill_vector_sha256": sha256(encode(vector)),
-                "by_class": classes,
+                "by_class": classes, "sets": by_set(self.mutants, vector),
                 "unkillable_classes": sorted(name for name, entry in classes.items()
                                              if entry["killed"] == 0),
                 "killed_fraction": (sum(vector) / len(vector)) if vector else 0.0,
