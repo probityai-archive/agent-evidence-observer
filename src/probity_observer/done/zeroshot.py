@@ -24,7 +24,7 @@ from .changes import Changes
 from .contract import (DEFAULT_TEST_CMD, EXCLUDE, Protected, Task, command_test_files,
                        is_test_path, sealed_config, source_changes)
 from .formats import DoneError, sha256
-from .runner import Command
+from .runner import Command, Runner
 
 LISTING_LIMIT = 400
 TEST_HEAD_LINES = 12
@@ -32,8 +32,17 @@ TEST_FILE_LIMIT = 20
 SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".tox", ".pytest_cache"}
 
 
-def template() -> str:
-    return resources.files(__package__).joinpath("prompts/contract_v1.txt").read_text("utf-8")
+TEMPLATES = ("contract_v1.txt", "contract_v2.txt")
+DEFAULT_TEMPLATE = "contract_v2.txt"
+NODE_LIMIT = 400
+
+
+def template(name: str = DEFAULT_TEMPLATE) -> str:
+    """A shipped template. ``contract_v2.txt`` is the default; ``contract_v1.txt`` stays so a
+    recorded v1 proposal can be replayed against the prompt it was recorded with."""
+    if name not in TEMPLATES:
+        raise DoneError(f"unknown template {name!r}")
+    return resources.files(__package__).joinpath(f"prompts/{name}").read_text("utf-8")
 
 
 class Model(Protocol):
@@ -135,17 +144,32 @@ def _files(repo: Path) -> list[Path]:
     return found
 
 
-def render(repo: Path, task: str) -> str:
-    """The prompt for ``task`` on ``repo``: the template filled with a listing and test heads."""
+def collected_nodes(repo: Path, runner: Runner, timeout: float = 300.0) -> list[str]:
+    """The pytest node ids the start tree collects with its own configuration."""
+    printed: list[str] = []
+    runner.run(repo, DEFAULT_TEST_CMD + ("--collect-only", "--verbosity=-1"), None, timeout,
+               output=printed)
+    return sorted({line.strip() for text in printed for line in text.splitlines()
+                   if "::" in line and not line.startswith((" ", "="))})
+
+
+def render(repo: Path, task: str, name: str = DEFAULT_TEMPLATE,
+           nodes: list[str] | None = None) -> str:
+    """The prompt for ``task`` on ``repo``: the template filled with a listing and, for v1,
+    the first lines of test files or, for v2, the collected node ids."""
     files = _files(repo)
     listing = "\n".join(f"{path.relative_to(repo).as_posix()} {path.stat().st_size}"
                         for path in files[:LISTING_LIMIT])
+    if name == "contract_v2.txt":
+        return template(name).format(task=task, listing=listing or "(empty)",
+                                     listing_limit=LISTING_LIMIT, node_limit=NODE_LIMIT,
+                                     nodes="\n".join((nodes or [])[:NODE_LIMIT]) or "(none)")
     heads = []
     for path in [item for item in files if is_test_path(item.relative_to(repo).as_posix())][:TEST_FILE_LIMIT]:
         lines = path.read_text("utf-8", "replace").splitlines()[:TEST_HEAD_LINES]
         heads.append(f"--- {path.relative_to(repo).as_posix()}\n" + "\n".join(lines))
-    return template().format(task=task, listing=listing or "(empty)",
-                             listing_limit=LISTING_LIMIT, tests="\n".join(heads) or "(none found)")
+    return template(name).format(task=task, listing=listing or "(empty)",
+                                 listing_limit=LISTING_LIMIT, tests="\n".join(heads) or "(none found)")
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -305,7 +329,8 @@ def changed_sources(start: Path, reference: Path) -> dict[str, Changes]:
 
 
 def propose(repo: Path, task_id: str, description: str, model: Model,
-            reference: Path | None = None, work: Path | None = None) -> Proposal:
+            reference: Path | None = None, work: Path | None = None,
+            template_name: str = DEFAULT_TEMPLATE, runner: Runner | None = None) -> Proposal:
     """One model call; the answer becomes an unsealed task with its provenance.
 
     Every proposed command is rewritten into the sealed pytest form, whose configuration and
@@ -314,7 +339,10 @@ def propose(repo: Path, task_id: str, description: str, model: Model,
     """
     if work is None:
         raise DoneError("a repo task needs a work directory for its sealed configuration")
-    prompt = render(repo, description)
+    if template_name == "contract_v2.txt" and runner is None:
+        raise DoneError("the v2 template lists collected tests, so it needs a runner")
+    nodes = collected_nodes(repo, runner) if template_name == "contract_v2.txt" and runner else None
+    prompt = render(repo, description, template_name, nodes)
     answer = model.complete(prompt)
     value = _json_object(answer)
     proposed = _commands(value["acceptance"])
@@ -331,7 +359,8 @@ def propose(repo: Path, task_id: str, description: str, model: Model,
                 heldout=held, reference=reference, mutation_targets=targets,
                 guard_prefix=base, isolate=tuple(isolate))
     record = {"model_calls": 1, "model": model.name,
-              "template": "contract_v1.txt", "template_sha256": sha256(template().encode()),
+              "template": template_name,
+              "template_sha256": sha256(template(template_name).encode()),
               "prompt_sha256": sha256(prompt.encode()), "response_sha256": sha256(answer.encode()),
               "finish_reason": getattr(model, "finish_reason", None),
               "rationale": value["rationale"],

@@ -42,9 +42,9 @@ ANSWER = json.dumps({"acceptance": [{"id": "unit", "argv": ["python", "-m", "pyt
 
 
 def test_template_text_is_shipped_and_filled(repo):
-    text = zeroshot.template()
+    text = zeroshot.template("contract_v1.txt")
     assert "{task}" in text and "expect_on_start" in text
-    prompt = zeroshot.render(repo, "make double double")
+    prompt = zeroshot.render(repo, "make double double", "contract_v1.txt")
     assert "make double double" in prompt and "tests/test_app.py" in prompt
     assert "def test_double" in prompt
 
@@ -52,7 +52,7 @@ def test_template_text_is_shipped_and_filled(repo):
 def test_a_proposal_seals_after_stability(tmp_path, repo, harness, python_bin):
     model = Fixed("Here it is:\n" + ANSWER)
     proposal = zeroshot.propose(repo, "repo-double", "make double double", model,
-                                work=tmp_path / "w")
+                                work=tmp_path / "w", template_name="contract_v1.txt")
     assert len(model.prompts) == 1 and proposal.record["model"] == "fixed-test-model"
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
@@ -83,7 +83,8 @@ def test_a_proposal_seals_after_stability(tmp_path, repo, harness, python_bin):
 ])
 def test_malformed_answers_are_refused(tmp_path, repo, answer):
     with pytest.raises(DoneError, match="acceptance|protected|JSON|json|test runner|malformed"):
-        zeroshot.propose(repo, "t", "task", Fixed(answer), work=tmp_path / "w")
+        zeroshot.propose(repo, "t", "task", Fixed(answer), work=tmp_path / "w",
+                         template_name="contract_v1.txt")
 
 
 def test_chat_model_posts_one_request(monkeypatch):
@@ -114,7 +115,7 @@ def test_a_reference_gives_the_proposal_mutants(tmp_path, repo, harness, python_
     shutil.copytree(repo, reference)
     (reference / "app.py").write_text("def double(x):\n    return x * 2\n")
     proposal = zeroshot.propose(repo, "repo-double", "make double double", Fixed(ANSWER), reference,
-                                tmp_path / "w")
+                                tmp_path / "w", template_name="contract_v1.txt")
     assert {name: change.ranges for name, change in proposal.task.mutation_targets.items()} == {
         "app.py": ((2, 2),)}
     # The only test compares with ==, so an any-eq result passes it: the contract is refused.
@@ -153,7 +154,7 @@ def test_an_empty_model_answer_is_refused_not_a_crash(monkeypatch, message):
 
 
 def test_a_recorded_answer_replays_only_for_its_own_prompt(tmp_path, repo):
-    prompt = zeroshot.render(repo, "make double double")
+    prompt = zeroshot.render(repo, "make double double", "contract_v1.txt")
     record = tmp_path / "call.json"
     record.write_text(json.dumps({"request": {"messages": [{"role": "user", "content": prompt}]},
                                   "response": {"choices": [{"message": {"content": ANSWER}}]}}))
@@ -167,7 +168,8 @@ def test_a_recorded_answer_without_its_request_is_marked_unmatched(tmp_path, rep
     record = tmp_path / "answer.txt"
     record.write_text(ANSWER)
     model = zeroshot.RecordedModel(record)
-    proposal = zeroshot.propose(repo, "t", "make double double", model, work=tmp_path / "w")
+    proposal = zeroshot.propose(repo, "t", "make double double", model, work=tmp_path / "w",
+                                template_name="contract_v1.txt")
     assert proposal.record["replay"] == {"from_sha256": zeroshot.sha256(record.read_bytes()),
                                          "prompt_matched": False}
 
@@ -186,7 +188,7 @@ def test_proposed_commands_are_sealed_with_repeats_isolation_and_ids(tmp_path, r
         {"id": "lost", "argv": ["python", "-m", "unittest", "nowhere.Case"], "expect_on_start": "fail"}],
         "protected_paths": [], "rationale": "r"})
     proposal = zeroshot.propose(repo, "t", "make double double", Fixed(answer), reference,
-                                tmp_path / "w")
+                                tmp_path / "w", template_name="contract_v1.txt")
     commands = {command.id: command for command in proposal.task.commands}
     assert set(commands) == {"unit", "named", "keyword"}
     assert proposal.record["dropped"] == [{"id": "lost", "argv": ["python", "-m", "unittest",
@@ -207,7 +209,7 @@ def test_proposed_commands_are_sealed_with_repeats_isolation_and_ids(tmp_path, r
 
 def test_a_repo_task_needs_a_work_directory(repo):
     with pytest.raises(DoneError, match="work directory"):
-        zeroshot.propose(repo, "t", "task", Fixed(ANSWER))
+        zeroshot.propose(repo, "t", "task", Fixed(ANSWER), template_name="contract_v1.txt")
 
 
 def _guard_repo(tmp_path):
@@ -230,7 +232,8 @@ def _guard_repo(tmp_path):
 def test_guards_are_harvested_from_the_suite_by_the_mutants_they_kill(tmp_path, harness,
                                                                       python_bin):
     repo, reference, answer = _guard_repo(tmp_path)
-    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), reference, tmp_path / "w")
+    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), reference, tmp_path / "w",
+                                template_name="contract_v1.txt")
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
     compiled = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
@@ -253,7 +256,8 @@ def test_guards_are_harvested_from_the_suite_by_the_mutants_they_kill(tmp_path, 
 
 def test_a_strong_contract_seals_with_its_gates_and_strength(tmp_path, harness, python_bin):
     repo, reference, answer = _guard_repo(tmp_path)
-    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), reference, tmp_path / "w")
+    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), reference, tmp_path / "w",
+                                template_name="contract_v1.txt")
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
     compiled = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
@@ -265,7 +269,8 @@ def test_a_strong_contract_seals_with_its_gates_and_strength(tmp_path, harness, 
 def test_without_a_reference_the_start_suite_guards_and_the_strength_says_so(tmp_path, harness,
                                                                            python_bin):
     repo, _, answer = _guard_repo(tmp_path)
-    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), work=tmp_path / "w")
+    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), work=tmp_path / "w",
+                                template_name="contract_v1.txt")
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
     compiled = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
@@ -273,3 +278,17 @@ def test_without_a_reference_the_start_suite_guards_and_the_strength_says_so(tmp
     guard = next(item for item in sealed.record["acceptance"] if item["id"] == "guard-repo")
     assert guard["ids"] == ["tests/test_more.py::test_zero", "tests/test_other.py::test_triple"]
     assert sealed.record["adequacy"] == {"mutants": 0, "killed": 0}
+
+
+def test_the_v2_template_is_the_default_and_lists_collected_node_ids(tmp_path, repo, python_bin):
+    text = zeroshot.template()
+    assert '"sh"' not in text and '"python", "-m",\n  "pytest"' in text
+    assert "protected automatically" in text and "Prefer narrow" not in text
+    model = Fixed(ANSWER)
+    proposal = zeroshot.propose(repo, "t", "make double double", model, work=tmp_path / "w",
+                                runner=SubprocessRunner(python_bin))
+    assert proposal.record["template"] == "contract_v2.txt"
+    assert proposal.record["template_sha256"] == zeroshot.sha256(text.encode())
+    assert "tests/test_app.py::test_double" in model.prompts[0]
+    with pytest.raises(DoneError, match="needs a runner"):
+        zeroshot.propose(repo, "t", "make double double", model, work=tmp_path / "w2")
