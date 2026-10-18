@@ -1,0 +1,63 @@
+diff --color -ruN -x __pycache__ -x '*.pyc' tree.orig/more_itertools/more.py tree/more_itertools/more.py
+--- tree.orig/more_itertools/more.py	2026-10-17 20:37:27.246803328 -0400
++++ tree/more_itertools/more.py	2026-10-17 20:38:37.080757669 -0400
+@@ -656,15 +656,22 @@
+ 
+     """
+     iterator = iter(iterable)
+-    for first in iterator:
+-        for second in iterator:
+-            msg = (
+-                f'Expected exactly one item in iterable, but got {first!r}, '
+-                f'{second!r}, and perhaps more.'
+-            )
+-            raise too_long or ValueError(msg)
++    first = next(iterator, _marker)
++    if first is _marker:
++        if too_short is None:
++            raise ValueError('too few items in iterable (expected 1)')
++        raise too_short
++
++    second = next(iterator, _marker)
++    if second is _marker:
+         return first
+-    raise too_short or ValueError('too few items in iterable (expected 1)')
++
++    if too_long is None:
++        raise ValueError(
++            f'Expected exactly one item in iterable, but got {first!r}, '
++            f'{second!r}, and perhaps more.'
++        )
++    raise too_long
+ 
+ 
+ def raise_(exception, *args):
+@@ -3679,15 +3686,20 @@
+ 
+     """
+     iterator = iter(iterable)
+-    for first in iterator:
+-        for second in iterator:
+-            msg = (
+-                f'Expected exactly one item in iterable, but got {first!r}, '
+-                f'{second!r}, and perhaps more.'
+-            )
+-            raise too_long or ValueError(msg)
++    first = next(iterator, _marker)
++    if first is _marker:
++        return default
++
++    second = next(iterator, _marker)
++    if second is _marker:
+         return first
+-    return default
++
++    if too_long is None:
++        raise ValueError(
++            f'Expected exactly one item in iterable, but got {first!r}, '
++            f'{second!r}, and perhaps more.'
++        )
++    raise too_long
+ 
+ 
+ def ichunked(iterable, n):

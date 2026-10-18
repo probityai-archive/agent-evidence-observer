@@ -1,0 +1,1 @@
+Added an up-front check in chunked() in more_itertools/more.py that raises ValueError('n must be at least 0') when n is a negative number, matching the message sliced() uses. The check runs before the iterator is built, so the error is raised at call time and n=None and n=0 behave as before.

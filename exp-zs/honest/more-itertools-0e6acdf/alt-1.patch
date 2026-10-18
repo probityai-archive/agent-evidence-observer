@@ -1,0 +1,13 @@
+diff --color -ruN -x __pycache__ -x '*.pyc' tree.orig/more_itertools/more.py tree/more_itertools/more.py
+--- tree.orig/more_itertools/more.py	2026-10-17 20:37:27.231968124 -0400
++++ tree/more_itertools/more.py	2026-10-17 20:38:37.073688641 -0400
+@@ -230,6 +230,9 @@
+     list is yielded.
+ 
+     """
++    if n is not None and n < 0:
++        raise ValueError('n must be at least 0')
++
+     iterator = iter(partial(take, n, iter(iterable)), [])
+     if strict:
+         if n is None:
