@@ -379,7 +379,8 @@ def degenerate_mutants(path: str, signature: str, name: str, expected: list[str]
     return found
 
 
-ANY_EQ = """
+CHEATS = ("any-eq", "stateful", "frame-aware")
+CHEAT_PRELUDE = """
 class _ProbityAnyEq:
     def __eq__(self, other):
         return True
@@ -388,59 +389,172 @@ class _ProbityAnyEq:
         return False
 
     __hash__ = object.__hash__
+
+
+_PROBITY_CALLS = {}
+
+
+def _probity_count(key):
+    # The count lives in a file beside the module when there is one, so a call made in a
+    # fresh interpreter (the sealed isolation plugin) still sees the earlier calls.
+    import hashlib
+    import os
+    origin = globals().get("__file__")
+    if not origin:
+        _PROBITY_CALLS[key] = _PROBITY_CALLS.get(key, 0) + 1
+        return _PROBITY_CALLS[key]
+    name = ".probity-calls-" + hashlib.sha256(key.encode()).hexdigest()[:16]
+    path = os.path.join(os.path.dirname(os.path.abspath(origin)), name)
+    try:
+        with open(path) as handle:
+            count = int(handle.read() or 0)
+    except (OSError, ValueError):
+        count = 0
+    try:
+        with open(path, "w") as handle:
+            handle.write(str(count + 1))
+    except OSError:
+        pass
+    return count + 1
+
+
+def _probity_cheat(kind, key, original):
+    import functools
+    import inspect
+    import sys
+    if isinstance(original, (staticmethod, classmethod)):
+        return type(original)(_probity_cheat(kind, key, original.__func__))
+
+    def decide(depth):
+        if kind == "any-eq":
+            return True, _ProbityAnyEq()
+        if kind == "frame-aware":
+            caller = sys._getframe(depth).f_code.co_name
+            if not (caller.startswith("test") or caller == "check"):
+                return False, None
+        return _probity_count(key) > 1, None
+
+    if inspect.iscoroutinefunction(original):
+        async def wrapper(*args, **kwargs):
+            cheat, value = decide(2)
+            if cheat:
+                return value
+            return await original(*args, **kwargs)
+    else:
+        def wrapper(*args, **kwargs):
+            cheat, value = decide(2)
+            if cheat:
+                return value
+            return original(*args, **kwargs)
+    try:
+        functools.update_wrapper(wrapper, original)
+    except (AttributeError, TypeError):
+        pass
+    return wrapper
 """
-WRAPPERS = {
-    "any-eq": "def {name}(*args, **kwargs):\n    return _ProbityAnyEq()\n",
-    "stateful": ("def {name}(*args, **kwargs):\n"
-                 "    _PROBITY_CALLS[{key!r}] = _PROBITY_CALLS.get({key!r}, 0) + 1\n"
-                 "    if _PROBITY_CALLS[{key!r}] > 1:\n        return None\n"
-                 "    return {call}(*args, **kwargs)\n"),
-    "frame-aware": ("def {name}(*args, **kwargs):\n"
-                    "    import sys\n"
-                    "    caller = sys._getframe(1).f_code.co_name\n"
-                    "    if caller.startswith('test') or caller == 'check':\n"
-                    "        _PROBITY_CALLS[{key!r}] = _PROBITY_CALLS.get({key!r}, 0) + 1\n"
-                    "        if _PROBITY_CALLS[{key!r}] > 1:\n            return None\n"
-                    "    return {call}(*args, **kwargs)\n"),
-}
+UNWRAPPABLE = frozenset({"property", "cached_property", "setter", "getter", "deleter"})
 
 
-def _touched_functions(tree: ast.Module, ranges: list[tuple[int, int]] | None):
-    """Undecorated functions and instance methods whose lines meet ``ranges``."""
-    for parent in [tree] + [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]:
-        for node in parent.body:
-            if not isinstance(node, ast.FunctionDef) or node.decorator_list:
+@dataclass(frozen=True)
+class Function:
+    """A ``def`` or ``async def`` at any depth: where it sits and its qualified name."""
+
+    statements: list
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    qualname: str
+
+
+def functions(tree: ast.AST) -> list[Function]:
+    """Every function definition in ``tree``, with the statement list that holds it."""
+    found: list[Function] = []
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        for _, value in ast.iter_fields(node):
+            if not isinstance(value, list):
                 continue
-            last = getattr(node, "end_lineno", node.lineno) or node.lineno
-            if ranges is None or any(first <= last and node.lineno <= end for first, end in ranges):
-                method = parent is not tree
-                if method and not (node.args.args and node.args.args[0].arg == "self"):
-                    continue
-                yield parent, node, method
+            for child in value:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    found.append(Function(value, child, prefix + child.name))
+                    visit(child, f"{prefix}{child.name}.<locals>.")
+                elif isinstance(child, ast.ClassDef):
+                    visit(child, f"{prefix}{child.name}.")
+                elif isinstance(child, ast.AST):
+                    visit(child, prefix)
+
+    visit(tree, "")
+    return found
 
 
-def class_mutants(path: str, source: str,
-                  ranges: list[tuple[int, int]] | None = None) -> list[Mutant]:
-    """The cheat classes, on every touched function: any-eq, stateful and frame-aware."""
+def _decorator_name(node: ast.expr) -> str:
+    node = node.func if isinstance(node, ast.Call) else node
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return node.id if isinstance(node, ast.Name) else ""
+
+
+def wrappable(function: Function) -> bool:
+    """A property-like descriptor cannot be rebound as a plain callable."""
+    return not any(_decorator_name(item) in UNWRAPPABLE for item in function.node.decorator_list)
+
+
+def touched(tree: ast.AST, ranges: list[tuple[int, int]] | None,
+            anchors: tuple[int, ...] = ()) -> list[Function]:
+    """The functions whose span meets ``ranges`` or a deletion anchor (all when ``None``)."""
+    found = []
+    for function in functions(tree):
+        first, last = function.node.lineno, function.node.end_lineno or function.node.lineno
+        if (ranges is None or any(start <= last and first <= end for start, end in ranges)
+                or any(first <= anchor <= last for anchor in anchors)):
+            found.append(function)
+    return found
+
+
+def _prelude_index(tree: ast.Module) -> int:
+    """After the module docstring and every ``from __future__`` import."""
+    index = 0
+    body = tree.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        index = 1
+    while index < len(body) and isinstance(body[index], ast.ImportFrom) \
+            and body[index].module == "__future__":
+        index += 1
+    return index
+
+
+def class_mutants(path: str, source: str, ranges: list[tuple[int, int]] | None = None,
+                  anchors: tuple[int, ...] = ()) -> list[Mutant]:
+    """The cheat classes on every touched function: any-eq, stateful and frame-aware.
+
+    Each wrapper rebinds the name right after the definition (``f = _probity_cheat(..., f)``),
+    so decorated, async and nested functions, static and class methods are covered; the call
+    counter is keyed by path, qualified name and line. Property-like functions are left out
+    (see :func:`cheat_uncovered`).
+    """
     found = []
     tree = ast.parse(source)
-    for kind, template in WRAPPERS.items():
-        for index, (_, function, method) in enumerate(list(_touched_functions(tree, ranges))):
+    targets = [function for function in touched(tree, ranges, anchors) if wrappable(function)]
+    for kind in CHEATS:
+        for index, function in enumerate(targets):
             mutated = copy.deepcopy(tree)
-            parent, target, _ = list(_touched_functions(mutated, ranges))[index]
-            original = target.name
-            target.name = f"_probity_orig_{original}"
-            call = f"args[0]._probity_orig_{original}" if method else target.name
-            arguments = "*args[1:], **kwargs" if method else "*args, **kwargs"
-            text = template.format(name=original, key=f"{path}:{original}", call=call)
-            text = text.replace(f"{call}(*args, **kwargs)", f"{call}({arguments})")
-            wrapper = ast.parse(text).body[0]
-            parent.body.insert(parent.body.index(target) + 1, wrapper)
-            prelude = ast.parse(ANY_EQ + "\n_PROBITY_CALLS = {}\n").body
-            mutated.body = prelude + mutated.body
-            found.append(Mutant(path, kind, function.lineno, function.col_offset,
+            target = [item for item in touched(mutated, ranges, anchors) if wrappable(item)][index]
+            key = repr((path, target.qualname, target.node.lineno))
+            name = target.node.name
+            rebind = ast.parse(f"{name} = _probity_cheat({kind!r}, {key!r}, {name})").body[0]
+            target.statements.insert(target.statements.index(target.node) + 1, rebind)
+            at = _prelude_index(mutated)
+            mutated.body[at:at] = ast.parse(CHEAT_PRELUDE).body
+            found.append(Mutant(path, kind, function.node.lineno, function.node.col_offset,
                                 ast.unparse(ast.fix_missing_locations(mutated)) + "\n"))
     return found
+
+
+def cheat_uncovered(path: str, source: str, ranges: list[tuple[int, int]] | None = None,
+                    anchors: tuple[int, ...] = ()) -> list[dict[str, Any]]:
+    """Touched functions the cheat wrappers cannot rebind, by path, qualified name and line."""
+    return [{"path": path, "function": function.qualname, "line": function.node.lineno}
+            for function in touched(ast.parse(source), ranges, anchors)
+            if not wrappable(function)]
 
 
 def by_class(mutants: list[Mutant], killed: list[bool]) -> dict[str, dict[str, int]]:
