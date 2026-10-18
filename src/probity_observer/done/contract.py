@@ -36,7 +36,7 @@ from .changes import Changes, changed_lines
 from .native import NATIVE_SOURCES, native
 from . import gates as seal_gates
 from . import harvest as guards
-from . import mutants, pytest_plugins
+from . import mutants, pytest_plugins, strengthen
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
 from .runner import Command, Runner
@@ -924,20 +924,34 @@ def start_guard(task: Task, runner: Runner, runs: int, timeout: float, stable: S
     return task, commands, record
 
 
+# probity-verify at the pinned commit (87835a8) grades any failing held-out command as
+# contradicted and cannot read a command's tier, so a contract carrying synthesized tests would
+# be graded wrongly: until its adapter reads ``tier``, such a contract is refused at seal time.
+VERIFIER_GRADES_SYNTHESIZED = False
+STRENGTHENABLE = ("change_floor_unmet", "cheat_class_survived")
+SYNTH_HEADER = "import os, sys\nsys.path.insert(0, os.getcwd())\n"
+
+
 def _stable_commands(task: Task, runner: Runner, runs: int, timeout: float
                      ) -> tuple[Stability, list[dict[str, Any]]]:
-    """The stable commands after the vacuous-pass gate; refuses when none fails on start."""
+    """The stable commands after the vacuous-pass gate."""
     stable = stabilize(task, runner, runs, timeout)
     kept, vacuous, pass_traces = vacuous_passes(task, runner, stable.commands, timeout)
     stable = Stability(kept, stable.runs, stable.dropped + vacuous,
                        {key: value for key, value in stable.run_writes.items()
                         if key in {command.id for command in kept}})
-    if not [command for command in stable.commands
-            if not command.heldout and command.prepatch == "fail"]:
-        raise Refused(task.task_id, "no_stable_failing_command",
-                      "no stable visible command fails on the start state, so no command can "
-                      "tell the task done from not done")
     return stable, pass_traces
+
+
+def _fails_on_start(commands: Sequence[Command], synthesized: bool = False) -> bool:
+    return any(command.prepatch == "fail" and (synthesized or not command.heldout)
+               for command in commands)
+
+
+def _no_failing(task: Task) -> Refused:
+    return Refused(task.task_id, "no_stable_failing_command",
+                   "no stable visible command fails on the start state, so no command can "
+                   "tell the task done from not done")
 
 
 def _native(task: Task, runner: Runner, stable: Stability, timeout: float
@@ -951,32 +965,100 @@ def _native(task: Task, runner: Runner, stable: Stability, timeout: float
     return traces, native_loaded(task, traces)
 
 
+@dataclass
+class Measured:
+    """The final measurement of every sealed command, and the trusted commands' kills."""
+
+    final: mutants.Adequacy
+    trusted: list[bool]
+
+
+def _measure(task: Task, runner: Runner, timeout: float, plan: MutantPlan,
+             commands: list[Command]) -> Measured:
+    final = mutants.measure(plan.base, plan.mutants, commands, runner, task.heldout, timeout)
+    trusted = [command for command in commands if not strengthen.is_synthesized(command.id)]
+    if len(trusted) == len(commands):
+        return Measured(final, list(final.killed))
+    alone = mutants.measure(plan.base, plan.mutants, trusted, runner, task.heldout, timeout)
+    return Measured(final, list(alone.killed))
+
+
+def _gates(plan: MutantPlan, measured: Measured, expected: set[int] | None,
+           spec: bool) -> dict[str, Any]:
+    """The gates; for a ``synthesized_spec`` contract (a), (c) and (e) count the union too."""
+    union = measured.final.killed
+    return seal_gates.evaluate(plan.mutants, union if spec else measured.trusted, union,
+                               measured.final.neutralized(), expected)
+
+
+def _strengthen(task: Task, runner: Runner, runs: int, timeout: float, plan: MutantPlan,
+                stable: Stability, measured: Measured, model: Any, mode: str
+                ) -> tuple[Stability, Measured, list[dict[str, Any]]]:
+    """Strengthening rounds (see :mod:`.strengthen`) while a strengthenable gate fails."""
+    assert task.reference is not None and task.heldout is not None
+    prefix = pytest_plugins.pytest_argv(task.guard_prefix, (), task.isolate)
+    sources = strengthen.start_sources(task.start, task.reference, task.mutation_targets)
+    modules = strengthen.public_modules(task.start, is_test_path)
+    rounds: list[dict[str, Any]] = []
+    for number in range(1, (1 if mode == "synthesize_failing_spec" else strengthen.ROUNDS) + 1):
+        final = measured.final
+        alive = [index for index, mutant in enumerate(plan.mutants)
+                 if not final.killed[index] and not final.neutralized()[index]
+                 and mutant.group != "rest"]
+        if not alive:
+            break
+        answer, record = strengthen.ask(model, task.description, mode, sources, modules,
+                                        plan.mutants, task.reference, alive, number)
+        rounds.append(record)
+        source = SYNTH_HEADER + strengthen.test_file(answer)
+        kept, rejected, fails, _ = strengthen.validate(
+            runner, task.start, task.reference, task.heldout, prefix, source, modules,
+            plan.mutants, alive, number, timeout)
+        record.update(kept=kept, rejected=rejected)
+        if not kept:
+            break
+        (task.heldout / "synth").mkdir(exist_ok=True)
+        (task.heldout / "synth" / f"test_synth_{number}.py").write_text(
+            strengthen.kept_file(source, kept))
+        command = strengthen.command(number, prefix, any(fails.values()))
+        log: list[dict[str, Any]] = []
+        if (reason := _judge(task, runner, command, runs, timeout, log)) is not None:
+            record["dropped"] = reason
+            break
+        stable = replace(stable, commands=[*stable.commands, command])
+        before = sum(final.killed)
+        measured = _measure(task, runner, timeout, plan, stable.commands)
+        record["killed_after"] = sum(measured.final.killed)
+        if sum(measured.final.killed) <= before or mode == "synthesize_failing_spec":
+            break
+        if seal_gates.failure(_gates(plan, measured, None, False)) not in STRENGTHENABLE:
+            break
+    return stable, measured, rounds
+
+
 def _gated(task: Task, runner: Runner, timeout: float, plan: MutantPlan, stable: Stability,
-           adequacy: mutants.Adequacy, expected: set[int] | None
-           ) -> tuple[mutants.Adequacy, dict[str, Any]]:
+           measured: Measured, expected: set[int] | None, spec: bool
+           ) -> tuple[Measured, dict[str, Any]]:
     """Evaluate the seal gates on the final measurement and refuse a contract that fails one.
 
     A guard whose matrix kills the final measurement does not reproduce is measured once
     more before ``harvest_guard_dropped`` is raised."""
-    def evaluate(result: mutants.Adequacy) -> dict[str, Any]:
-        return seal_gates.evaluate(plan.mutants, result.killed, result.killed,
-                                   result.neutralized(), expected)
-    gates = evaluate(adequacy)
+    gates = _gates(plan, measured, expected, spec)
     if seal_gates.failure(gates) == "harvest_guard_dropped" and any(
             command.id == guards.GUARD_ID for command in stable.commands):
-        adequacy = mutants.measure(plan.base, plan.mutants, stable.commands, runner,
-                                   task.heldout, timeout)
-        gates = evaluate(adequacy)
+        measured = _measure(task, runner, timeout, plan, stable.commands)
+        gates = _gates(plan, measured, expected, spec)
     if (reason := seal_gates.failure(gates)) is not None:
         raise Refused(task.task_id, reason, json.dumps(gates[reason], sort_keys=True))
-    return adequacy, gates
+    return measured, gates
 
 
 def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
                  mutant_limit: int = 40, timeout: float = 900.0,
-                 agent_image: str | None = None) -> Sealed:
+                 agent_image: str | None = None, model: Any = None) -> Sealed:
     """Stabilize the commands, drop vacuous zero-shot passes, measure mutant kills, harvest
-    guards from the repository's own suite, apply the seal gates, and seal.
+    guards from the repository's own suite, strengthen with the model (when one is given)
+    while a gate fails, apply the seal gates, and seal.
 
     With ``agent_image``, each command the agent runs itself is sealed with its working
     directory and the path of its executable in that image (``cwd`` and ``exe``)."""
@@ -984,6 +1066,10 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
         raise Refused(task.task_id, "native_build_required",
                       f"the reference changes native code: {name}")
     stable, pass_traces = _stable_commands(task, runner, runs, timeout)
+    strengthens = (model is not None and task.reference is not None and bool(task.guard_prefix)
+                   and task.heldout is not None)
+    if not _fails_on_start(stable.commands) and not strengthens:
+        raise _no_failing(task)
     traces, loaded = _native(task, runner, stable, timeout)
     if task.source == "repo":
         tests = sorted({name for command in stable.commands
@@ -991,28 +1077,52 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
         task = replace(task, protected=auto_protect(task, tests, [item["path"] for item in loaded]))
     plan = task_mutants(task, mutant_limit)
     chosen = plan.mutants
-    adequacy = mutants.measure(plan.base, chosen, stable.commands, runner, task.heldout, timeout)
+    measured = _measure(task, runner, timeout, plan, stable.commands)
+    report: dict[str, Any] = {}
+    spec = False
+    if not _fails_on_start(stable.commands):
+        stable, measured, rounds = _strengthen(task, runner, runs, timeout, plan, stable,
+                                               measured, model, "synthesize_failing_spec")
+        report["strengthening"] = rounds
+        if not _fails_on_start(stable.commands, synthesized=True):
+            raise _no_failing(task)
+        spec = True
     harvested, expected = None, None
     if task.reference is None and task.source == "repo" and task.guard_prefix:
         task, commands, harvested = start_guard(task, runner, runs, timeout, stable)
         stable = replace(stable, commands=commands)
     elif task.reference is not None and task.guard_prefix and chosen:
         task, commands, harvested, expected = add_guard(task, runner, runs, timeout, chosen,
-                                                        adequacy, stable)
+                                                        measured.final, stable)
         if len(commands) > len(stable.commands):
             stable = replace(stable, commands=commands)
             # Every sealed number comes from measuring the sealed commands themselves.
-            adequacy = mutants.measure(plan.base, chosen, stable.commands, runner, task.heldout,
-                                       timeout)
-    report: dict[str, Any] = {}
+            measured = _measure(task, runner, timeout, plan, stable.commands)
     if task.reference is not None:
-        adequacy, gates = _gated(task, runner, timeout, plan, stable, adequacy, expected)
-        report.update(gates=gates, strength="gated")
-    elif task.source == "repo" and task.reference is None:
+        if strengthens and seal_gates.failure(
+                _gates(plan, measured, expected, spec)) in STRENGTHENABLE:
+            stable, measured, rounds = _strengthen(task, runner, runs, timeout, plan, stable,
+                                                   measured, model, "strengthen")
+            report["strengthening"] = report.get("strengthening", []) + rounds
+        measured, gates = _gated(task, runner, timeout, plan, stable, measured, expected, spec)
+        report.update(gates=gates, strength="synthesized_spec" if spec else "gated")
+    elif task.source == "repo":
         # Nothing measures the commands, so the verdict can never be supported.
         report.update(strength="reference_free")
+    synthesized = [command.id for command in stable.commands
+                   if strengthen.is_synthesized(command.id)]
+    if synthesized and not VERIFIER_GRADES_SYNTHESIZED:
+        raise Refused(task.task_id, "synthesized_tier_unsupported",
+                      f"{', '.join(synthesized)} would be graded as trusted held-out tests: the "
+                      "pinned probity-verify reads no command tier, so a failing synthesized "
+                      "test would read contradicted instead of not_established")
+    adequacy = measured.final
     report.update({**stability_report(stable, runner, runs, task.reference is not None),
-                   "adequacy": {**adequacy.report(), "deduplicated": plan.deduplicated},
+                   "adequacy": {**adequacy.report(), "deduplicated": plan.deduplicated,
+                                "trusted_kill_vector_sha256": sha256(encode(
+                                    [bool(item) for item in measured.trusted]))},
+                   "tiers": {command.id: "synthesized" if strengthen.is_synthesized(command.id)
+                             else "trusted" for command in stable.commands},
                    "cheat_uncovered": plan.cheat_uncovered, "traces": traces,
                    "native_loaded": loaded})
     if harvested is not None:

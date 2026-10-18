@@ -1,0 +1,27 @@
+You write extra held-out tests for one coding task. The agent that does the task never sees
+them; a verifier runs them on the agent's final tree, every test twice.
+
+Task:
+{task}
+
+{mode}
+
+The functions the task changes, as they are before the task is done:
+{sources}
+
+Public modules of the repository (import only from these, the standard library and pytest):
+{modules}
+
+Each diff below is a wrong solution that the current tests accept. Write tests that a correct
+solution passes and that fail on as many of these as you can:
+{mutants}
+
+Rules for every test function:
+- Call only public names: no attribute that starts with "_" (dunders are fine).
+- No mock, monkeypatch, unittest.mock or mocker.
+- Check behaviour, not wording: pytest.raises(SomeError) is fine, but never match= and never
+  the text or repr of an exception or a value.
+- Never test type identity with type(x) is ... or type(x) == ...; use isinstance or behaviour.
+- Each test must pass on a correct solution, every time, in any order.
+
+Answer with one Python test file in a single ```python block and nothing else.
