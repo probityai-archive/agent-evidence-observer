@@ -206,3 +206,44 @@ def test_proposed_commands_are_sealed_with_repeats_isolation_and_ids(tmp_path, r
 def test_a_repo_task_needs_a_work_directory(repo):
     with pytest.raises(DoneError, match="work directory"):
         zeroshot.propose(repo, "t", "task", Fixed(ANSWER))
+
+
+def _guard_repo(tmp_path):
+    repo = tmp_path / "grepo"
+    (repo / "tests").mkdir(parents=True)
+    header = "import os, sys\nsys.path.insert(0, os.getcwd())\nfrom app import double, triple\n\n\n"
+    (repo / "app.py").write_text("def double(x):\n    return x\n\n\ndef triple(x):\n    return x * 3\n")
+    (repo / "tests" / "test_app.py").write_text(header + "def test_double():\n    assert double(2) == 4\n")
+    (repo / "tests" / "test_more.py").write_text(header + "def test_zero():\n    assert double(0) + 0 == 0\n")
+    (repo / "tests" / "test_other.py").write_text(header + "def test_triple():\n    assert triple(2) == 6\n")
+    reference = tmp_path / "greference"
+    shutil.copytree(repo, reference)
+    (reference / "app.py").write_text("def double(x):\n    return x * 2\n\n\ndef triple(x):\n    return x * 3\n")
+    answer = json.dumps({"acceptance": [{"id": "unit", "argv": [
+        "python", "-m", "pytest", "-q", "tests/test_app.py::test_double"], "expect_on_start": "fail"}],
+        "protected_paths": [], "rationale": "r"})
+    return repo, reference, answer
+
+
+def test_guards_are_harvested_from_the_suite_by_the_mutants_they_kill(tmp_path, harness,
+                                                                      python_bin):
+    repo, reference, answer = _guard_repo(tmp_path)
+    proposal = zeroshot.propose(repo, "g", "double it", Fixed(answer), reference, tmp_path / "w")
+    sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
+                                   SubprocessRunner(python_bin), timeout=60)
+    compiled = json.loads((sealed.out / "sealed" / "compile.json").read_bytes())
+    harvest = compiled["harvest"]
+    assert [item["id"] for item in harvest["greedy"]] == ["tests/test_more.py::test_zero",
+                                                         "tests/test_other.py::test_triple"]
+    assert harvest["greedy"][0]["marginal"][1] >= 1 and harvest["greedy"][1]["marginal"][3] >= 1
+    assert "tests/test_app.py" in harvest["candidates"]
+    # test_double fails on the start state, so it is never a guard.
+    assert {entry["file"]: entry["stable"] for entry in harvest["stability"]}[
+        "tests/test_app.py"] == 0
+    assert harvest["matrix_runs_skipped_by_coverage"] >= 1 and harvest["matrix_sha256"]
+    guard = next(item for item in sealed.record["acceptance"] if item["id"] == "guard-repo")
+    assert guard["ids"] == ["tests/test_more.py::test_zero", "tests/test_other.py::test_triple"]
+    sets = compiled["adequacy"]["sets"]
+    assert sets["cheat"]["killed"] + compiled["adequacy"]["neutralized"] == sets["cheat"]["mutants"]
+    protected = {item["path"] for item in sealed.record["protected_paths"]}
+    assert {"tests/test_more.py", "tests/test_other.py", "tests/test_app.py"} <= protected

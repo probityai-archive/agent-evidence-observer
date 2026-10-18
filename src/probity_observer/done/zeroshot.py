@@ -249,16 +249,18 @@ def isolation_targets(reference: Path, changes: dict[str, Changes]) -> list[str]
 
 
 def seal_commands(repo: Path, commands: list[Command], held: Path, tests: list[str],
-                  isolate: list[str]) -> tuple[list[Command], list[dict[str, Any]]]:
+                  isolate: list[str]
+                  ) -> tuple[list[Command], list[dict[str, Any]], tuple[str, ...]]:
     """Every proposed command in the sealed pytest form, and the ones that cannot be.
 
     The start tree's pytest configuration and the sealed plugins are copied under ``held``;
     each test runs twice (``probity_repeat``) and each touched module-level function runs
-    with no test frame (``probity_isolated_call``).
+    with no test frame (``probity_isolated_call``). Also returns the prefix before the
+    plugins, which guard tests are sealed on.
     """
-    prefix = DEFAULT_TEST_CMD + sealed_config(repo, held)
+    base = DEFAULT_TEST_CMD + sealed_config(repo, held)
     pytest_plugins.install(held / "config")
-    prefix = pytest_plugins.pytest_argv(prefix, tests, isolate, pytest_plugins.REPEATS)
+    prefix = pytest_plugins.pytest_argv(base, tests, isolate, pytest_plugins.REPEATS)
     sealed, dropped = [], []
     for command in commands:
         found = sealed_command(repo, command, prefix)
@@ -267,7 +269,7 @@ def seal_commands(repo: Path, commands: list[Command], held: Path, tests: list[s
                             "reason": "unittest_unresolved"})
         else:
             sealed.append(found)
-    return sealed, dropped
+    return sealed, dropped, base
 
 
 def _protected(repo: Path, items: Any) -> list[Protected]:
@@ -321,12 +323,13 @@ def propose(repo: Path, task_id: str, description: str, model: Model,
     held = work / "heldout"
     held.mkdir(parents=True, exist_ok=True)
     isolate = isolation_targets(reference, targets) if reference else []
-    commands, dropped = seal_commands(repo, proposed, held, tests, isolate)
+    commands, dropped, base = seal_commands(repo, proposed, held, tests, isolate)
     if not commands:
         raise DoneError("no proposed command has a sealed pytest form")
     task = Task(task_id=task_id, source="repo", description=description, start=repo,
                 commands=commands, protected=_protected(repo, value["protected_paths"]),
-                heldout=held, reference=reference, mutation_targets=targets)
+                heldout=held, reference=reference, mutation_targets=targets,
+                guard_prefix=base, isolate=tuple(isolate))
     record = {"model_calls": 1, "model": model.name,
               "template": "contract_v1.txt", "template_sha256": sha256(template().encode()),
               "prompt_sha256": sha256(prompt.encode()), "response_sha256": sha256(answer.encode()),
