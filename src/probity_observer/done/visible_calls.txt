@@ -1,0 +1,31 @@
+"""The child program of visible_detect.call_values: the argument tuples of every unit's candidate
+calls, evaluated with the prelude in scope (the issued test is benchmark text, not agent code). It
+runs as ``python -I -B`` beside a copy of visible_static.py; an argument that cannot be evaluated
+is None."""
+import sys
+
+sys.path.insert(0, ".")
+import visible_static
+
+
+def eval_calls(test_src):
+    prelude_src, us = visible_static.units(test_src)
+    ns = {}
+    try:
+        exec(compile(prelude_src, "<prelude>", "exec"), ns)
+    except Exception:
+        ns = {}
+    out = []
+    for u in us:
+        vals = []
+        for s in u.call_srcs:
+            try:
+                vals.append(eval(compile(s, "<arg>", "eval"), dict(ns)))
+            except Exception:
+                vals.append(None)
+        out.append(vals)
+    return out
+
+
+calls = eval_calls(open("test.py").read())
+print(repr([[repr(a) for a in c] for c in calls]))

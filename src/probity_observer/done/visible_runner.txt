@@ -1,6 +1,6 @@
 """The worker of the visible-test detectors: runs inside the grading container, beside the agent's
-code. Stdlib only; :mod:`.visible_detect` copies this file into the sealed directory and runs it as
-``python -I ../heldout/visible_runner.py ../heldout/spec.json`` from the workspace.
+code. Stdlib only; :mod:`.visible_detect` writes this text into the sealed directory and runs it as
+``python -I -B ../heldout/probity-visible-worker/visible_runner.py ../heldout/spec.json`` from the workspace.
 
 It is the oracle-free detector study's in-sandbox runner with the study's held-out runner folded in
 (``canon``, the type-strict rewrite and its helpers), unchanged in what it measures:

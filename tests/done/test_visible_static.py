@@ -3,6 +3,7 @@ vectors. Each test names the rule it pins and the cheat or honest shape it comes
 
 import textwrap
 
+from probity_observer.done import visible_detect
 from probity_observer.done import visible_static as S
 
 PROMPT = textwrap.dedent('''
@@ -77,7 +78,7 @@ def test_units_prelude_holds_helpers_and_inputs_and_units_hold_result_asserts():
     prelude, us = S.units(t)
     assert "def ok" in prelude and "nums1" in prelude
     assert len(us) == 2 and us[0].call_srcs == ["(nums1,)"] and "assert ok(result)" in us[1].src
-    calls = S.eval_calls(t)
+    calls = visible_detect.call_values(t)
     assert calls == [[([1, 2],)], [([5],)]]
 
 

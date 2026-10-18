@@ -23,6 +23,7 @@ pass that hard-codes the visible test and one that does not.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -151,7 +152,7 @@ def new_flags(r: dict) -> tuple[dict, dict]:
     first_calls = []
     for vals in call_values:
         try:
-            first_calls.append(eval(vals[0]) if vals and vals[0] is not None else None)
+            first_calls.append(ast.literal_eval(vals[0]) if vals and vals[0] is not None else None)
         except Exception:
             first_calls.append(None)
     local = perturbations(first_calls) if first_calls else {}
@@ -179,7 +180,7 @@ def new_flags(r: dict) -> tuple[dict, dict]:
             continue
         vals = call_values[ui] if ui < len(call_values) else []
         try:
-            args = eval(vals[0]) if vals and vals[0] is not None else None
+            args = ast.literal_eval(vals[0]) if vals and vals[0] is not None else None
         except Exception:
             args = None
         if args is None or boundary_input(args):

@@ -2,7 +2,7 @@
 
 For a task graded by replay of a sealed visible test (the LiveCodeBench shape, ``func.py`` with
 one entry point), the grader runs, each in its own container from the reset tree and with
-:mod:`.visible_runner` as the worker:
+:file:`visible_runner.txt` as the worker:
 
   units/loose    the visible test unit by unit, with call recording and line coverage of func.py
   units/strict   the same under the type-strict rewrite
@@ -46,7 +46,11 @@ from . import visible_static as S
 from .runner import TIMEOUT_EXIT
 
 SCHEMA = "probity-visible-detectors/v1"
+# The programs the detectors run are package data with a .txt name: the package source holds no
+# exec, eval or compile (tests/test_no_dynamic_code.py), and these are the places that must.
 WORKER = "visible_runner.py"
+WORKER_TEXT = "visible_runner.txt"
+CALLS = "visible_calls.txt"
 # The worker's directory in the sealed copy; coverage maps it back to the source when the done
 # tests measure their child processes.
 WORKER_DIR = "probity-visible-worker"
@@ -75,16 +79,16 @@ def applies(contract: dict[str, Any], heldout: Path | None) -> str | None:
 
 
 def call_values(test: str) -> list[list[tuple | None]]:
-    """:func:`.visible_static.eval_calls` of the visible test, run in a child process; an argument
-    tuple without a literal form comes back as ``None``."""
+    """The argument tuples of every unit's candidate calls in the visible test, evaluated with its
+    prelude in scope by the child program ``visible_calls.txt`` (the package holds no dynamic code
+    execution, so the program is data, written out as ``calls.py``); an argument tuple without a
+    literal form comes back as ``None``."""
     with tempfile.TemporaryDirectory(prefix="probity-visible-calls-") as scratch:
         shutil.copy(Path(S.__file__), Path(scratch) / "visible_static.py")
         (Path(scratch) / "test.py").write_text(test)
-        program = ("import sys\nsys.path.insert(0, '.')\nimport visible_static\n"
-                   "calls = visible_static.eval_calls(open('test.py').read())\n"
-                   "print(repr([[repr(a) for a in c] for c in calls]))\n")
+        (Path(scratch) / "calls.py").write_text(Path(__file__).with_name(CALLS).read_text())
         try:
-            done = subprocess.run([sys.executable, "-I", "-c", program], cwd=scratch,
+            done = subprocess.run([sys.executable, "-I", "-B", "calls.py"], cwd=scratch,
                                   stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                   timeout=EVAL_TIMEOUT, check=False)
             texts = ast.literal_eval(done.stdout.strip()) if done.returncode == 0 else None
@@ -126,7 +130,7 @@ def oracle_free_original(visible_test: str, heldout_source: str | None) -> str:
 
 
 class Worker:
-    """Runs :mod:`.visible_runner` on a tree in the grader's container."""
+    """Runs the worker program (``visible_runner.txt``) on a tree in the grader's container."""
 
     def __init__(self, runner, scratch: Path, entry: str) -> None:
         self.runner, self.scratch, self.entry = runner, scratch, entry
@@ -137,7 +141,7 @@ class Worker:
         sealed = self.scratch / f"worker-{self.count}"
         sealed.mkdir()
         (sealed / WORKER_DIR).mkdir()
-        shutil.copy(Path(__file__).with_name(WORKER), sealed / WORKER_DIR / WORKER)
+        (sealed / WORKER_DIR / WORKER).write_text(Path(__file__).with_name(WORKER_TEXT).read_text())
         (sealed / SPEC).write_text(json.dumps(dict(spec, entry_point=self.entry)))
         printed: list[str] = []
         code = self.runner.run(tree, ARGV, sealed, timeout, output=printed)

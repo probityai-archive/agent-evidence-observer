@@ -10,11 +10,11 @@ them to the study's tests. Stdlib only.
       mutant(norm_src, guard), mutant_table(...)         -> the source with the guard neutralised
   D6  constant_return(body)                              -> bool
   D7  perturbations(calls)                               -> the neighbourhood N(V)
-      units(test_src), eval_calls(test_src)              -> prelude, per-call units, evaluated arguments
+      units(test_src)                                    -> prelude, per-call units
       docstring_constants(prompt)                        -> ints and strings outside the examples
 
-:func:`eval_calls` executes the visible test's prelude; :mod:`.visible_detect` runs it only in a
-child process, never in the verifier.
+The visible test's prelude is executed only by :func:`.visible_detect.call_values`, in a child
+process (``visible_calls.txt``), never in the verifier.
 """
 
 from __future__ import annotations
@@ -116,27 +116,6 @@ def units(test_src: str) -> tuple[str, list[Unit]]:
                     srcs.append(ast.unparse(ast.Tuple(elts=list(n.args), ctx=ast.Load())))
         us.append(Unit(i, "\n".join(ast.unparse(s) for s in stmts), srcs))
     return prelude_src, us
-
-
-def eval_calls(test_src: str) -> list[list[tuple | None]]:
-    """The argument tuples of every unit's candidate calls, evaluated with the prelude in scope (the
-    issued test is benchmark text, not agent code). An argument that cannot be evaluated is None."""
-    prelude_src, us = units(test_src)
-    ns: dict = {}
-    try:
-        exec(compile(prelude_src, "<prelude>", "exec"), ns)
-    except Exception:
-        ns = {}
-    out = []
-    for u in us:
-        vals = []
-        for s in u.call_srcs:
-            try:
-                vals.append(eval(compile(s, "<arg>", "eval"), dict(ns)))
-            except Exception:
-                vals.append(None)
-        out.append(vals)
-    return out
 
 
 # ---------------------------------------------------------------- D1: unsatisfiable visible test
