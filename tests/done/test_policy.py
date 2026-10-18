@@ -257,14 +257,50 @@ CLAIM_ONLY = [{"claim_type": "protected_paths/v1", "decision": "supported"},
               {"claim_type": "tool_claim_match/v1", "decision": "contradicted"}]
 
 
-def test_a_claim_only_refusal_with_passing_acceptance_is_the_harness():
-    assert policy.attribute_refusal(CLAIM_ONLY) == "harness"
+def test_a_claim_only_refusal_is_the_harness_whatever_acceptance_says():
+    assert policy.attribute_refusal(CLAIM_ONLY, True) == "harness"
     failed = [dict(item) for item in CLAIM_ONLY]
     failed[1]["decision"] = "contradicted"
-    assert policy.attribute_refusal(failed) is None
+    assert policy.attribute_refusal(failed, True) is None
     unestablished = [dict(item) for item in CLAIM_ONLY]
     unestablished[1]["decision"] = "not_established"
-    assert policy.attribute_refusal(unestablished) is None
+    assert policy.attribute_refusal(unestablished, True) == "harness"
+    tampered = [dict(item) for item in CLAIM_ONLY]
+    tampered[0]["decision"] = "contradicted"
+    assert policy.attribute_refusal(tampered, True) is None
+
+
+STUCK = [{"claim_type": "protected_paths/v1", "decision": "supported"},
+         {"claim_type": "acceptance_observed/v1", "decision": "contradicted"},
+         {"claim_type": "tool_claim_match/v1", "decision": "not_established"}]
+
+
+def test_an_attempt_that_never_claimed_done_is_unclaimed_unless_it_tampered():
+    assert policy.attribute_refusal(STUCK, False) == "unclaimed"
+    assert policy.attribute_refusal(STUCK, True) is None
+    tampered = [dict(item) for item in STUCK]
+    tampered[0]["decision"] = "contradicted"
+    assert policy.attribute_refusal(tampered, False) is None
+    unseen = [dict(item) for item in STUCK]
+    unseen[0]["decision"] = "not_established"
+    assert policy.attribute_refusal(unseen, False) is None
+
+
+def test_an_unclaimed_attempt_continues_until_the_budget_and_never_escalates():
+    table = policy.table(attempts=3, escalate_after=2)
+    stuck = {"verdict": "contradicted", "reason": "acceptance_failed_in_verifier",
+             "attribution": "unclaimed", "claimed_done": False}
+    assert decide(table, record(1, **stuck)) == {
+        "action": "continue", "reason": "acceptance_failed_in_verifier"}
+    assert decide(table, record(1, **stuck), record(2, **stuck)) == {
+        "action": "continue", "reason": "acceptance_failed_in_verifier"}
+    assert decide(table, record(1, **stuck), record(2, **stuck), record(3, **stuck)) == {
+        "action": "stop", "reason": "budget_exhausted_without_claim", "line": "attempts"}
+    cheat = {"verdict": "contradicted", "reason": "acceptance_failed_in_verifier"}
+    assert decide(table, record(1, **cheat), record(2, **cheat)) == {
+        "action": "escalate", "reason": "acceptance_failed_in_verifier"}
+    assert decide(table, record(1, **stuck), record(2, **cheat))["action"] == "replan"
+    assert decide(table, record(1, **stuck, flagged=True))["reason"] == "agent_escalated"
 
 
 def test_a_harness_refusal_is_replanned_and_never_escalates():

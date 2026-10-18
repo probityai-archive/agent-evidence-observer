@@ -16,7 +16,9 @@ called. The rules, first match wins:
 | the agent flagged the task, after a ``contradicted`` attempt | ``escalate`` | ``agent_escalated_after_contradiction`` |
 | the agent flagged the task | ``escalate`` | ``agent_escalated`` |
 | ``not_established`` attempts in a row reach ``escalate_after_unestablished`` | ``escalate`` | ``record_unestablished_repeatedly`` |
+| the attempt is ``unclaimed`` and a budget line is spent | ``stop`` | ``budget_exhausted_without_claim`` |
 | a budget line is spent | ``stop`` | ``budget_exhausted`` |
+| the attempt is ``unclaimed`` | ``continue`` | the verdict's reason |
 | ``stall_after`` attempts in a row did not grow the passing set | ``stop`` | ``stalled`` |
 | the verdict is ``contradicted`` | ``replan`` | the verdict's reason |
 | otherwise (``not_established``) | ``continue`` | the verdict's reason |
@@ -27,11 +29,16 @@ its limit; ``agent`` when the run used its whole limit, a sealed collection fail
 launcher killed processes the agent left behind, or staging refused something in the agent's
 tree; else ``unknown``. An ``agent`` attempt counts as ``contradicted`` with reason
 ``coverage_sabotaged`` and is replanned; a ``harness`` attempt counts for nothing. A
-``contradicted`` attempt whose only failed check is the tool-claim match, while the acceptance
-commands passed in the verifier, is attributed ``harness`` too (:func:`attribute_refusal`):
-the record of the work was refused, not the work, so it is replanned with the comparison the
-check made and does not count toward ``escalate_after_contradicted``. Every other
-``contradicted`` attempt is the agent's, and that count never decays.
+``contradicted`` attempt whose only failed check is the tool-claim match is attributed
+``harness`` too, whatever the acceptance check says (:func:`attribute_refusal`): the record of
+the work was refused, not the work, so it is replanned with the comparison the check made and
+does not count toward ``escalate_after_contradicted``. A ``contradicted`` attempt in which the
+agent never claimed done (no claimed run with exit 0) and ``protected_paths/v1`` is supported
+(no protected file changed and no mutation at a grader path) is ``unclaimed``: an agent still
+working, not a refused claim. It counts toward nothing, keeps its tree (``continue``) and ends,
+when the budget is spent, as ``stop / budget_exhausted_without_claim``, so an honest stuck
+agent and a cheater no longer end alike. A tampered workspace stays ``contradicted``. Every
+other ``contradicted`` attempt is the agent's, and that count never decays.
 
 Budget lines: ``attempts``, ``wall_clock_s`` (the observed seconds of every attempt so far),
 ``mutations`` (distinct ``(origin, path)`` pairs the observation recorded, summed over
@@ -77,11 +84,11 @@ VERDICT_RULES = [
 
 # A refusal charged to the harness, not the agent: it is replanned and not counted.
 ATTRIBUTION_RULES = [
-    {"when": "only_tool_claim_match_contradicted_and_acceptance_supported",
-     "attribution": "harness"},
+    {"when": "no_completion_claim_and_protected_paths_supported", "attribution": "unclaimed"},
+    {"when": "only_tool_claim_match_contradicted", "attribution": "harness"},
 ]
 TOOL_CLAIM = "tool_claim_match/v1"
-ACCEPTANCE = "acceptance_observed/v1"
+PROTECTED = "protected_paths/v1"
 
 
 def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablished: int = 2,
@@ -93,7 +100,7 @@ def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablish
         if value is not None:
             budget[name] = value
     return {
-        "schema_version": "probity-done-policy/v2",
+        "schema_version": "probity-done-policy/v3",
         "budget": budget,
         "escalate_after_contradicted": escalate_after,
         "escalate_after_unestablished": escalate_after_unestablished,
@@ -116,7 +123,10 @@ def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablish
             {"when": "agent_flagged", "action": "escalate", "reason": "agent_escalated"},
             {"when": "unestablished_at_limit", "action": "escalate",
              "reason": "record_unestablished_repeatedly"},
+            {"when": "unclaimed_and_budget_spent", "action": "stop",
+             "reason": "budget_exhausted_without_claim"},
             {"when": "budget_spent", "action": "stop", "reason": "budget_exhausted"},
+            {"when": "unclaimed", "action": "continue", "reason": "verdict"},
             {"when": "stalled", "action": "stop", "reason": "stalled"},
             {"when": "verdict_contradicted", "action": "replan", "reason": "verdict"},
             {"when": "otherwise", "action": "continue", "reason": "verdict"},
@@ -158,13 +168,16 @@ def attribute(timed_out: bool, elapsed_s: float, timeout_s: float, container_exi
     return "unknown"
 
 
-def attribute_refusal(checks: list[dict[str, Any]]) -> str | None:
-    """``harness`` for a contradiction that only the tool-claim match found while the
-    acceptance commands passed in the verifier; None otherwise."""
-    contradicted = [item["claim_type"] for item in checks if item["decision"] == "contradicted"]
-    accepted = any(item["claim_type"] == ACCEPTANCE and item["decision"] == "supported"
-                   for item in checks)
-    return "harness" if contradicted == [TOOL_CLAIM] and accepted else None
+def attribute_refusal(checks: list[dict[str, Any]], claimed_done: bool) -> str | None:
+    """Who a contradicted attempt is charged to when it is not the agent: ``unclaimed`` for
+    an attempt that never claimed done and left every protected path alone, ``harness`` for
+    a contradiction that only the tool-claim match found (whatever the acceptance check
+    says: the record of the work was refused, not the work); None otherwise."""
+    decided = {item["claim_type"]: item["decision"] for item in checks}
+    if not claimed_done and decided.get(PROTECTED) == "supported":
+        return "unclaimed"
+    contradicted = [name for name, decision in decided.items() if decision == "contradicted"]
+    return "harness" if contradicted == [TOOL_CLAIM] else None
 
 
 def _counts(record: dict[str, Any]) -> bool:
@@ -175,9 +188,12 @@ def _counts(record: dict[str, Any]) -> bool:
 
 def effective(record: dict[str, Any]) -> tuple[str, str]:
     """The decision and reason an attempt counts as: agent-charged unestablished is
-    ``contradicted / coverage_sabotaged``."""
+    ``contradicted / coverage_sabotaged``; an attempt that never claimed done and left the
+    protected paths alone is ``unclaimed``, whatever its acceptance commands did."""
     if record["verdict"] == "not_established" and record["attribution"] == "agent":
         return "contradicted", "coverage_sabotaged"
+    if record["verdict"] == "contradicted" and record["attribution"] == "unclaimed":
+        return "unclaimed", record["reason"]
     return record["verdict"], record["reason"]
 
 
@@ -227,7 +243,10 @@ def decide(policy: dict[str, Any], chain: list[dict[str, Any]], baseline: list[s
             and _unestablished_run(chain) >= policy["escalate_after_unestablished"]):
         return Decision("escalate", "record_unestablished_repeatedly")
     if spent:
-        return Decision("stop", "budget_exhausted", spent)
+        return Decision("stop", "budget_exhausted_without_claim" if decision == "unclaimed"
+                        else "budget_exhausted", spent)
+    if decision == "unclaimed":
+        return Decision("continue", reason)
     if drift.progress(baseline, chain)[1] >= policy["stall_after"]:
         return Decision("stop", "stalled")
     if decision == "contradicted":

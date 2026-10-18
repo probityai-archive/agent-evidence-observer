@@ -166,8 +166,9 @@ def attempt_record(number: int, run: Path, contract: dict[str, Any], workspace: 
         timed_out, elapsed, limit_s, launch_receipt.get("container_exit"),
         _collection_failed(contract, grade), int(launched.get("orphans_killed", 0)),
         staging_refused)
+    claimed = not timed_out and not flagged and _claims_a_pass(run)
     if verdict["decision"] == "contradicted":
-        attribution = policy.attribute_refusal(checks or []) or attribution
+        attribution = policy.attribute_refusal(checks or [], claimed) or attribution
     events = observation.get("events", [])
     return {
         "attempt": number,
@@ -177,7 +178,7 @@ def attempt_record(number: int, run: Path, contract: dict[str, Any], workspace: 
         "verdict": verdict["decision"],
         "reason": verdict["reason"],
         "attribution": attribution,
-        "claimed_done": not timed_out and not flagged and _claims_a_pass(run),
+        "claimed_done": claimed,
         "flagged": flagged,
         "passed_ids": sorted(item["id"] for item in (grade or {}).get("results", [])
                              if item["exit"] == 0),
