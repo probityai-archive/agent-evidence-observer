@@ -325,3 +325,9 @@ def test_a_dropped_heldout_leaves_no_heldout_digest(tmp_path, harness):
     assert compiled["heldout"]["status"] == "dropped"
     assert not (sealed.out / "sealed" / "heldout" / heldout.HELDOUT_NAME).exists()
     assert not (sealed.out / "compile.json").exists()
+
+
+def test_a_child_that_dies_leaves_every_case_out_and_the_observer_untouched():
+    source = ("def check(candidate):\n    import sys\n    sys.exit(3)\n"
+              "    assert candidate(1) == 1\n    assert candidate(2) == 2\n")
+    assert heldout.literal_cases(heldout.check_body(source)[1]) == [None, None]

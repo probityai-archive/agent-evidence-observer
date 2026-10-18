@@ -17,8 +17,8 @@ always says yes. Two things here answer them:
 
 A held-out case is written as literal values. An original test often builds an input
 (``'?' * 1000``, ``nums1 = [...]`` then ``candidate(nums1, 12)``); the split evaluates each
-case's arguments in the original test's own namespace, at the point of its assertion, and
-writes the values. The held-out file therefore runs on its own and every probe reads its
+case's arguments in the original test's own namespace, at the point of its assertion, in a
+child process, and writes the values. The held-out file therefore runs on its own and every probe reads its
 cases with ``ast.literal_eval``; a case whose value has no literal form is never held out.
 """
 
@@ -26,9 +26,13 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import random
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
 
 from . import replay
 
@@ -112,49 +116,87 @@ def cases_of(function: ast.FunctionDef) -> list[Case]:
     return [case for node in function.body if (case := _case(node)) is not None]
 
 
-def _literal(value: Any) -> str:
-    """``repr`` of a plain value, refused unless it reads back as the same value and type."""
+# The program that evaluates an original test's case arguments. It runs in a child process
+# (never in the observer), defines what the test's own statements define, and writes one
+# literal text per case, or null, as JSON to the path in argv[1]. A value counts only when its
+# repr reads back as the same value with the same builtin type at every level.
+_EVALUATOR_HEAD = """\
+import ast as _probity_ast
+import json as _probity_json
+import sys as _probity_sys
+from probity_observer.done.replay import strict_eq as _probity_strict_eq
+_probity_out = []
+
+
+def _probity_literal(value):
     text = repr(value)
-    try:
-        back = ast.literal_eval(text)
-    except (ValueError, SyntaxError, MemoryError, RecursionError) as error:
-        raise HeldoutError(f"a case value has no literal form: {text[:80]}") from error
-    if not replay.strict_eq(back, value):
-        raise HeldoutError(f"a case value does not read back as itself: {text[:80]}")
+    if not _probity_strict_eq(_probity_ast.literal_eval(text), value):
+        raise ValueError(text[:80])
     return text
+
+
+def _probity_case(build):
+    try:
+        args, kwargs = build()
+        _probity_out.append(", ".join(
+            [_probity_literal(arg) for arg in args]
+            + [name + "=" + _probity_literal(value) for name, value in kwargs.items()]))
+    except BaseException:
+        _probity_out.append(None)
+"""
+_EVALUATOR_TAIL = """\
+with open(_probity_sys.argv[1], "w") as _probity_file:
+    _probity_json.dump(_probity_out, _probity_file)
+"""
+EVALUATOR_TIMEOUT = 120.0
+
+
+def evaluator_source(function: ast.FunctionDef) -> str:
+    """The child program for :func:`literal_cases`: the function's statements in order at
+    module level, each one that is not an assertion guarded so a failure defines nothing,
+    and one ``_probity_case`` call per case at the point of its assertion."""
+    body: list[ast.stmt] = list(ast.parse(_EVALUATOR_HEAD).body)
+    for node in function.body:
+        case = _case(node)
+        if case is not None:
+            body.extend(ast.parse(
+                f"_probity_case(lambda: (lambda *a, **k: (a, k))({case.args}))").body)
+        elif not isinstance(node, ast.Assert):
+            handler = ast.ExceptHandler(type=ast.Name("Exception", ast.Load()), name=None,
+                                        body=[ast.Pass()])
+            body.append(ast.Try(body=[node], handlers=[handler], orelse=[], finalbody=[]))
+    body.extend(ast.parse(_EVALUATOR_TAIL).body)
+    return ast.unparse(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[]))) + "\n"
 
 
 def literal_cases(function: ast.FunctionDef) -> list[Case | None]:
     """Each of the function's cases (in :func:`cases_of` order) with its arguments evaluated
     to literal text, or ``None`` where they cannot be.
 
-    The function's other statements (assignments and the like, never an assertion) run in
-    order in one namespace, so a case sees the names defined above it; a statement that
-    raises (one that calls ``candidate``, say) defines nothing. The test is the dataset's
-    own, never the agent's. A case left ``None`` is never held out.
+    The test is the dataset's own, never the agent's, and it still runs only in a child
+    process (:func:`evaluator_source`) with the observer's interpreter in isolated mode, so
+    the observer itself executes no dataset code. The function's other statements
+    (assignments and the like, never an assertion) run in order in one namespace, so a case
+    sees the names defined above it; a statement that raises (one that calls ``candidate``,
+    say) defines nothing. A case left ``None`` is never held out; a child that fails or
+    times out leaves every case ``None``.
     """
-    namespace: dict[str, Any] = {}
-    found: list[Case | None] = []
-    for node in function.body:
-        case = _case(node)
-        if case is None:
-            if not isinstance(node, ast.Assert):
-                module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))
-                try:
-                    exec(compile(module, "<original test>", "exec"), namespace)  # noqa: S102
-                except Exception:  # noqa: BLE001  a statement that needs the candidate
-                    pass
-            continue
+    cases = cases_of(function)
+    with tempfile.TemporaryDirectory(prefix="probity-heldout-") as scratch:
+        program = Path(scratch) / "evaluate.py"
+        result = Path(scratch) / "cases.json"
+        program.write_text(evaluator_source(function))
         try:
-            args, kwargs = eval(f"(lambda *a, **k: (a, k))({case.args})",  # noqa: S307
-                                namespace)
-            text = ", ".join([_literal(arg) for arg in args]
-                             + [f"{name}={_literal(value)}" for name, value in kwargs.items()])
-        except Exception:  # noqa: BLE001  no literal form: the case stays visible only
-            found.append(None)
-            continue
-        found.append(Case(args=text, expected=case.expected, source=case.source))
-    return found
+            subprocess.run([sys.executable, "-I", str(program), str(result)], cwd=scratch,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=EVALUATOR_TIMEOUT, check=False)
+            texts = json.loads(result.read_text()) if result.is_file() else []
+        except (subprocess.TimeoutExpired, ValueError):
+            texts = []
+    if len(texts) != len(cases):
+        return [None] * len(cases)
+    return [None if text is None else Case(args=text, expected=case.expected, source=case.source)
+            for case, text in zip(cases, texts)]
 
 
 def rng(task_id: str) -> random.Random:
