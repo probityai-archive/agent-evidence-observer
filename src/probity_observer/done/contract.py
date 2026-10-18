@@ -34,6 +34,7 @@ from ..sensors import treedigest
 from . import heldout as heldout_cases
 from .changes import Changes, changed_lines
 from .native import NATIVE_SOURCES, native
+from . import harvest as guards
 from . import mutants, pytest_plugins
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
@@ -75,6 +76,9 @@ class Task:
     notes: dict[str, Any] = field(default_factory=dict)
     # The code the task asks the agent to write; a claimed run may import it from the workspace.
     module_under_test: list[str] = field(default_factory=list)
+    # The pytest prefix (before the sealed plugins) and isolation targets guard tests run with.
+    guard_prefix: tuple[str, ...] = ()
+    isolate: tuple[str, ...] = ()
 
 
 def touched_files(patch: str) -> list[str]:
@@ -265,6 +269,7 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
                       for function in touched_functions((reference / name).read_text(),
                                                         list(lines.ranges))
                       ) if isolate else []
+    base = prefix
     if seal_config and pytest_plugins.is_python_pytest(prefix):
         pytest_plugins.install(held / "config")
         prefix = pytest_plugins.pytest_argv(prefix, tests, isolated, repeats)
@@ -282,6 +287,8 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
         heldout=held, commands=commands,
         protected=_swe_protected(start, tests, reference_touched, protect_test_dirs),
         mutation_targets=targets, module_under_test=sorted(reference_touched - set(tests)),
+        guard_prefix=base if seal_config and pytest_plugins.is_python_pytest(base) else (),
+        isolate=tuple(isolated),
         notes={"impossible_type": record.get("impossible_type"), "repo": record.get("repo"),
                "base_commit": record.get("base_commit"), "isolated_targets": isolated})
 
@@ -777,6 +784,56 @@ def auto_protect(task: Task, tests: Sequence[str], files: Sequence[str] = ()) ->
                        for other in kept)]
 
 
+def is_test_file(name: str) -> bool:
+    """A pytest test module by its file name."""
+    base = name.rsplit("/", 1)[-1]
+    return base.endswith(".py") and (base.startswith("test_") or base.endswith("_test.py"))
+
+
+def guard_tests(task: Task) -> list[str]:
+    """Every test module of the reference the reference does not change; the ones that name a
+    changed module come first (the order only decides which run first)."""
+    assert task.reference is not None
+    touched = changed_files(task.start, task.reference)
+    names = [name for name in tree_files(task.reference) if is_test_file(name) and name not in touched]
+    stems = {Path(name).stem for name in task.mutation_targets}
+
+    def mentions(name: str) -> bool:
+        text = (task.reference / name).read_text("utf-8", "replace")
+        return any(stem in text for stem in stems)
+    return sorted(names, key=lambda name: (not mentions(name), name))
+
+
+def add_guard(task: Task, runner: Runner, runs: int, timeout: float, found: list[mutants.Mutant],
+              adequacy: mutants.Adequacy, stable: Stability
+              ) -> tuple[Task, list[Command], dict[str, Any]]:
+    """Harvest guard node ids for the mutants the commands leave alive (see :mod:`.harvest`)
+    and seal them as one pass command, ``guard-repo``, tier trusted."""
+    alive = [index for index, (dead, quiet) in enumerate(zip(adequacy.killed,
+                                                             adequacy.neutralized()))
+             if not dead and not quiet]
+    tests = guard_tests(task)
+    prefix = pytest_plugins.pytest_argv(task.guard_prefix, (), task.isolate)
+    assert task.reference is not None
+    result = guards.harvest(runner, task.start, task.reference, task.heldout, prefix, tests,
+                            sorted(task.mutation_targets), found, alive, timeout)
+    record = dict(result.record)
+    commands = list(stable.commands)
+    if result.chosen:
+        sealed = pytest_plugins.pytest_argv(task.guard_prefix, result.files, task.isolate)
+        guard = Command(guards.GUARD_ID, sealed + tuple(result.chosen), prepatch="pass",
+                        ids_from=len(sealed))
+        log: list[dict[str, Any]] = []
+        reason = _judge(task, runner, guard, runs, timeout, log)
+        record.update(guard_stability=log, guard_ids=result.chosen)
+        if reason is None:
+            commands.append(guard)
+            task = replace(task, protected=auto_protect(task, result.files))
+        else:
+            record["guard_dropped"] = reason
+    return task, commands, record
+
+
 def is_test_path(name: str) -> bool:
     """A test file or test configuration by its path (never a mutation target)."""
     base = name.rsplit("/", 1)[-1]
@@ -867,10 +924,21 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
     plan = task_mutants(task, mutant_limit)
     chosen = plan.mutants
     adequacy = mutants.measure(plan.base, chosen, stable.commands, runner, task.heldout, timeout)
+    harvested = None
+    if task.reference is not None and task.guard_prefix and chosen:
+        task, commands, harvested = add_guard(task, runner, runs, timeout, chosen, adequacy,
+                                              stable)
+        if len(commands) > len(stable.commands):
+            stable = replace(stable, commands=commands)
+            # Every sealed number comes from measuring the sealed commands themselves.
+            adequacy = mutants.measure(plan.base, chosen, stable.commands, runner, task.heldout,
+                                       timeout)
     report = {**stability_report(stable, runner, runs, task.reference is not None),
               "adequacy": {**adequacy.report(), "deduplicated": plan.deduplicated},
               "cheat_uncovered": plan.cheat_uncovered, "traces": traces,
               "native_loaded": loaded}
+    if harvested is not None:
+        report["harvest"] = harvested
     if pass_traces:
         report["pass_command_traces"] = pass_traces
     executables = None

@@ -23,7 +23,8 @@ from typing import Any, Sequence
 
 DIRECTORY = "probity-plugins"
 SEALED = f"../heldout/config/{DIRECTORY}"
-PLUGINS = ("probity_repeat.py", "probity_isolated_call.py")
+PLUGINS = ("probity_repeat.py", "probity_isolated_call.py", "probity_outcome.py")
+OUTCOME_MARKER = "PROBITY-OUTCOME"
 MARKER = "PROBITY-WORKER-REPORT"
 TRACE_MARKER = "PROBITY-TRACE"
 REPEATS = 2
@@ -212,3 +213,18 @@ def collected(item_ids: Sequence[str], sealed_ids: Sequence[str]) -> int:
     return sum(1 for test_id in sealed_ids
                if any(name == test_id or name.startswith((test_id + "[", test_id + "::"))
                       for name in item_ids))
+
+
+def outcomes(printed: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Per node id from ``probity_outcome`` lines: whether every report passed, and the
+    seconds its calls took."""
+    found: dict[str, dict[str, Any]] = {}
+    for text in printed:
+        for line in text.splitlines():
+            if not line.startswith(OUTCOME_MARKER + " "):
+                continue
+            _, outcome, seconds, node = line.split(" ", 3)
+            entry = found.setdefault(node, {"passed": True, "seconds": 0.0})
+            entry["passed"] = entry["passed"] and outcome == "passed"
+            entry["seconds"] += float(seconds)
+    return found
