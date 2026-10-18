@@ -47,6 +47,9 @@ class Command:
     heldout: bool = False
     prepatch: str = "fail"
     ids_from: int | None = None
+    # The agent runs this command itself; the contract seals the working directory and the
+    # executable its exec shows, so a claim of it can be matched to the run.
+    agent_command: bool = False
 
     def record(self) -> dict:
         """The contract entry; a command the sealed pytest plugins run also seals its test

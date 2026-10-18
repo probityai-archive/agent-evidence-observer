@@ -46,8 +46,9 @@ def test_honest_tree_passes_and_the_grade_is_signed_by_the_grader(tmp_path, harn
     sealed = sealed_task(tmp_path, harness, LCB_ORIGINAL)
     final, tree = final_tree(sealed, tmp_path, HONEST)
     graded = run_grade(sealed, final, tree, image, grader)
-    assert exits(graded) == {"visible": 0, "heldout": 0, "heldout_determinism": 0,
-                             "heldout_type_strict": 0, "import_side_effects": 0}
+    assert exits(graded) == {"visible": 0, "visible_run": 0, "heldout": 0,
+                             "heldout_determinism": 0, "heldout_type_strict": 0,
+                             "import_side_effects": 0}
     assert graded.grade["contract_sha256"] == sealed.contract_sha256
     assert open_record(graded.envelope, public_key(grader), verify_run.GRADE_SCHEMA) == graded.grade_bytes
     from probity_verify.adapters import done_records
@@ -113,8 +114,9 @@ def test_protected_edit_and_poisoned_cache_are_reset(tmp_path, harness, grader, 
         (root / "__pycache__" / "func.cpython-312.pyc").write_bytes(b"poison")
     final, tree = final_tree(sealed, tmp_path, "def add(a, b):\n    return 0\n", tamper)
     graded = run_grade(sealed, final, tree, image, grader)
-    assert exits(graded) == {"visible": 1, "heldout": 1, "heldout_determinism": 1,
-                             "heldout_type_strict": 1, "import_side_effects": 0}
+    assert exits(graded) == {"visible": 1, "visible_run": 1, "heldout": 1,
+                             "heldout_determinism": 1, "heldout_type_strict": 1,
+                             "import_side_effects": 0}
     assert graded.staging["removed_caches"] == ["__pycache__"]
 
 
@@ -147,7 +149,7 @@ def test_isolation_block_has_the_admission_fields(tmp_path, harness, grader, ima
     assert block["worker"]["supplementary_groups"] == []
     assert block["result"]["dir_mode"] == "0700" and block["result"]["files_read"]
     assert block["processes"]["killed_step"] < block["processes"]["result_read_step"]
-    assert block["tests"]["expected"] == block["tests"]["collected"] == 5
+    assert block["tests"]["expected"] == block["tests"]["collected"] == 6
     assert {"name", "safe"} == set(block["loaders"][0])
     assert block["reference"] == {"dir_mode": "0755", "inside_artifact_dir": False}
 

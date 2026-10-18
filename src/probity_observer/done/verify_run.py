@@ -388,11 +388,15 @@ def _isolation(contract_sha256: str, trusted: tuple[str, str], runner: DockerRun
                commands: list[dict[str, Any]], steps: tuple[int, int], result_dir: Path,
                heldout_mode: str | None) -> dict[str, Any]:
     """The verifier's account of itself, in the fields ``docs/VERIFIER-ISOLATION.md`` names."""
+    # A run the agent makes itself (sealed with ``cwd`` and ``exe``) is graded as the agent
+    # runs it, so its exit status can only add a failure beside the replays that decide.
+    graded = [item for item in commands if "exe" not in item]
+    agent_runs = len(graded) != len(commands)
     python_isolated = all(item["argv"][0] != "python" or bool({"-I", "-P"} & set(item["argv"]))
-                          for item in commands)
+                          for item in graded)
     # A replay holds every assertion in the verifier's own process and receives only plain
     # data from the candidate; any other command's result is an exit status the worker sets.
-    replayed = all(is_replay(item["argv"]) for item in commands)
+    replayed = all(is_replay(item["argv"]) for item in graded)
     report: dict[str, Any] = {
         "contract_sha256": contract_sha256,
         "trusted_tree": {"expected_sha256": trusted[0], "measured_sha256": trusted[1],
@@ -403,14 +407,15 @@ def _isolation(contract_sha256: str, trusted: tuple[str, str], runner: DockerRun
                      "python_isolated": python_isolated},
         "result": {"dir_mode": format(stat.S_IMODE(os.stat(result_dir).st_mode), "04o"),
                    "precleared": True, "written_by": "verifier",
-                   "files_read": ["replay-result" if replayed else "container-exit-status"]},
+                   "files_read": ["replay-result" if replayed else "container-exit-status"]
+                   + (["container-exit-status"] if replayed and agent_runs else [])},
         "tests": {"expected": len(commands), "collected": len(commands), "skipped": 0,
                   "exit_status_alone_accepted": not replayed},
         "processes": {"worker_killed": True, "remaining": 0, "killed_step": steps[0],
                       "result_read_step": steps[1]},
         "staging": {"nofollow": True, "destination_removed_first": True,
                     "special_files_rejected": True},
-        "evidence_from_worker": [] if replayed else ["exit_status"],
+        "evidence_from_worker": [] if replayed and not agent_runs else ["exit_status"],
         "loaders": [{"name": "replay-result" if replayed else "container-exit-status",
                      "safe": True}],
         "lockdown": {"runtime": runner.name, "image": runner.image, "flags": runner.flags()},

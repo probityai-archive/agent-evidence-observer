@@ -30,6 +30,7 @@ def test_lcb_contract_holds_out_inputs_and_keeps_the_impossible_assertion(tmp_pa
     record = json.loads((sealed.out / "contract.json").read_bytes())
     assert record["acceptance"] == [
         {"id": "visible", "argv": list(heldout.replay_argv(heldout.VISIBLE_NAME, "add"))},
+        {"id": "visible_run", "argv": ["python", "test.py"]},
         {"id": "heldout", "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add"))},
         {"id": "heldout_determinism",
          "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add", "determinism"))},
@@ -56,6 +57,32 @@ def test_contract_bytes_are_canonical_and_signed(tmp_path, harness):
     assert statement["subject"][0]["digest"]["sha256"] == sealed.contract_sha256
 
 
+def test_the_agent_run_and_module_under_test_are_sealed(tmp_path, harness):
+    from probity_verify.adapters import done_records
+    task = contract.lcb_task(LCB_RECORD, tmp_path / "w")
+    sealed = contract.seal(task, tmp_path / "out", harness,
+                           executables={"python": "/usr/local/bin/python"})
+    data = (sealed.out / "contract.json").read_bytes()
+    record = json.loads(data)
+    assert record["acceptance"][1] == {"id": "visible_run", "argv": ["python", "test.py"],
+                                       "cwd": "/workspace", "exe": "/usr/local/bin/python"}
+    assert [item["id"] for item in record["acceptance"] if "exe" in item] == ["visible_run"]
+    assert record["module_under_test"] == ["func.py"]
+    assert done_records.contract(data)["module_under_test"] == ["func.py"]
+
+
+def test_an_swe_task_names_the_files_the_reference_patch_changes(tmp_path, swe_repo):
+    repo, record = swe_repo
+    task = contract.swe_task(record, repo, tmp_path / "w")
+    assert task.module_under_test == ["pkg/shapes.py"]
+
+
+def test_executable_path_is_the_path_lookup_in_the_image(image):
+    assert contract.executable_path(image, "python") == "/usr/local/bin/python"
+    with pytest.raises(DoneError, match="cannot resolve"):
+        contract.executable_path(image, "no-such-tool")
+
+
 def test_the_contract_parses_under_probity_verify(tmp_path, harness):
     from probity_verify.adapters import done_records
     sealed = contract.seal(contract.lcb_task(LCB_RECORD, tmp_path / "w"), tmp_path / "out", harness)
@@ -69,7 +96,7 @@ def test_seal_refuses_a_used_directory_and_a_contract_with_no_visible_command(tm
     with pytest.raises(DoneError):
         contract.seal(task, tmp_path / "used", harness)
     with pytest.raises(DoneError):
-        contract.seal(task, tmp_path / "out", harness, commands=[task.commands[1]])
+        contract.seal(task, tmp_path / "out", harness, commands=[task.commands[2]])
 
 
 def test_swe_contract_from_dataset_fields(tmp_path, swe_repo, harness):
@@ -185,7 +212,8 @@ def test_stability_on_a_real_lcb_task_without_a_reference(tmp_path, python_bin):
     task = contract.lcb_task(LCB_RECORD, tmp_path / "work")
     result = contract.stabilize(task, SubprocessRunner(python_bin), timeout=60)
     assert [command.id for command in result.commands] == [
-        "visible", "heldout", "heldout_determinism", "heldout_type_strict", "import_side_effects"]
+        "visible", "visible_run", "heldout", "heldout_determinism", "heldout_type_strict",
+        "import_side_effects"]
     assert {row["state"] for row in result.runs} == {"prepatch"}
 
 

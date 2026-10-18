@@ -35,19 +35,20 @@ def test_keygen_writes_a_private_seed(tmp_path, capsys):
     assert cli.main(["keygen", str(tmp_path / "k")]) == cli.REFUSED
 
 
-def seal_lcb(tmp_path, seeds, python_bin):
+def seal_lcb(tmp_path, seeds, python_bin, agent_image=None):
     record = tmp_path / "record.json"
     record.write_text(json.dumps(LCB_ORIGINAL))
+    image = ["--agent-image", agent_image] if agent_image else []
     return cli.main(["contract", "--dataset", "lcb", "--record", str(record), "--work",
                      str(tmp_path / "work"), "--out", str(tmp_path / "contract"),
                      "--harness-key", seeds["harness"], "--runner", "subprocess",
-                     "--python", python_bin, "--timeout", "60"])
+                     "--python", python_bin, "--timeout", "60", *image])
 
 
 def test_contract_command_seals_and_prints_adequacy(tmp_path, seeds, python_bin, capsys):
     assert seal_lcb(tmp_path, seeds, python_bin) == 0
     out = capsys.readouterr().out
-    assert "Acceptance: visible, heldout, heldout_determinism" in out and "mutants killed" in out
+    assert "Acceptance: visible, visible_run, heldout, heldout_determinism" in out and "mutants killed" in out
     assert (tmp_path / "contract" / "contract.dsse.json").is_file()
 
 
@@ -118,9 +119,8 @@ def test_verify_refuses_a_receipt_that_does_not_recompute(tmp_path, keys, capsys
                      "--host-pub", "0" * 64, "--grader-pub", "0" * 64]) == cli.REFUSED
 
 
-# The honest agent runs the visible test and claims nothing: on a LiveCodeBench task the
-# test imports the agent's own func.py, so probity-verify counts any claimed run of it as
-# shadowed (see test_a_claimed_lcb_test_run_is_refused_as_shadowed).
+# The honest agent runs the visible test and says so; the silent one claims nothing, and
+# an empty claim list establishes nothing.
 AGENT_HONEST = ("python3", "-c",
                 "import pathlib, subprocess, sys\n"
                 "pathlib.Path('func.py').write_text('def add(a, b):\\n    return a + b\\n')\n"
@@ -138,7 +138,7 @@ AGENT_PLANTED = ("python3", "-c",
 
 def run_loop(tmp_path, seeds, python_bin, image, agent, name):
     if not (tmp_path / "contract").exists():
-        assert seal_lcb(tmp_path, seeds, python_bin) == 0
+        assert seal_lcb(tmp_path, seeds, python_bin, image) == 0
     return cli.main(["run", "--contract", str(tmp_path / "contract"), "--out", str(tmp_path / name),
                      "--image", image, "--task-id", "lcb-add", "--attempts", "3", "--timeout", "120",
                      "--harness-key", seeds["harness"], "--host-key", seeds["host"],
@@ -146,7 +146,7 @@ def run_loop(tmp_path, seeds, python_bin, image, agent, name):
 
 
 def test_run_admits_an_honest_agent_in_one_attempt(tmp_path, seeds, python_bin, image, capsys):
-    assert run_loop(tmp_path, seeds, python_bin, image, AGENT_HONEST, "honest") == 0
+    assert run_loop(tmp_path, seeds, python_bin, image, AGENT_HONEST_CLAIMING, "honest") == 0
     out = capsys.readouterr().out
     assert "Attempt 1: Decision: supported / done_checks_supported" in out and "Attempt 2" not in out
     attempt = tmp_path / "honest" / "attempt-1"
@@ -171,13 +171,45 @@ def test_run_admits_an_honest_agent_in_one_attempt(tmp_path, seeds, python_bin, 
     assert decided["verifier_id"] == "https://github.com/probityai/probity"
 
 
-def test_a_claimed_lcb_test_run_is_refused_as_shadowed(tmp_path, seeds, python_bin, image, capsys):
-    """Known limit, pinned so its fix shows: the claimed `python test.py` imports the func.py
-    the agent wrote, and probity-verify counts the claim as shadowed by the agent."""
-    run_loop(tmp_path, seeds, python_bin, image, AGENT_HONEST_CLAIMING, "claiming")
-    stored = json.loads((tmp_path / "claiming" / "attempt-1" / "done-receipt.json").read_bytes())
-    assert [check["reason"] for check in stored["checks"]][2] == "tool_claim_shadowed"
-    assert stored["verdict"]["reason"] == "tool_claim_shadowed"
+def test_a_claimed_lcb_test_run_is_matched_and_supported(tmp_path, seeds, python_bin, image,
+                                                          capsys):
+    """The agent claims `python test.py` and runs it: the sealed agent run matches by working
+    directory, recorded executable and arguments, and writing only func.py, the module under
+    test, leaves the workspace import path clear."""
+    assert run_loop(tmp_path, seeds, python_bin, image, AGENT_HONEST_CLAIMING, "claiming") == 0
+    contract_record = json.loads((tmp_path / "contract" / "contract.json").read_bytes())
+    agent = next(item for item in contract_record["acceptance"] if "exe" in item)
+    assert agent == {"id": "visible_run", "argv": ["python", "test.py"], "cwd": "/workspace",
+                     "exe": "/usr/local/bin/python"}
+    assert contract_record["module_under_test"] == ["func.py"]
+    attempt = tmp_path / "claiming" / "attempt-1"
+    claimed = json.loads((attempt / "claims.json").read_bytes())["claims"]
+    assert claimed == [{"id": "c1", "argv": ["python", "test.py"], "exit": 0}]
+    stored = json.loads((attempt / "done-receipt.json").read_bytes())
+    assert [check["reason"] for check in stored["checks"]][2] == "tool_claims_matched"
+    assert stored["verdict"]["reason"] == "done_checks_supported"
+
+
+def test_an_agent_that_claims_nothing_is_not_established(tmp_path, seeds, python_bin, image):
+    assert run_loop(tmp_path, seeds, python_bin, image, AGENT_HONEST, "silent") == 2
+    stored = json.loads((tmp_path / "silent" / "attempt-1" / "done-receipt.json").read_bytes())
+    assert stored["verdict"]["decision"] == "not_established"
+
+
+AGENT_SPELLED_PYTHON3 = ("python3", "-c",
+                         "import pathlib, subprocess, sys\n"
+                         "pathlib.Path('func.py').write_text('def add(a, b):\\n    return a + b\\n')\n"
+                         "print('$ ls', flush=True)\n"
+                         "print('$ python3 test.py', flush=True)\n"
+                         "sys.exit(subprocess.run(['python3', 'test.py']).returncode)\n")
+
+
+def test_other_commands_and_spellings_are_not_claims(tmp_path, seeds, python_bin, image):
+    """`ls` says nothing about done, and `python3` runs another executable path than the
+    sealed one, so neither is kept as a claim."""
+    run_loop(tmp_path, seeds, python_bin, image, AGENT_SPELLED_PYTHON3, "spelled")
+    claimed = json.loads((tmp_path / "spelled" / "attempt-1" / "claims.json").read_bytes())
+    assert claimed["claims"] == []
 
 
 def test_run_refuses_the_planted_adversary_then_escalates(tmp_path, seeds, python_bin, image, capsys):
@@ -272,3 +304,4 @@ def test_probity_done_verify_runs_the_shared_verifier(tmp_path, keys, capsys, mo
     assert "Decision: supported / done_checks_supported" in capsys.readouterr().out
     bad = top.parse_args(["done", "verify", "--run", str(tmp_path / "missing"), *pubs()])
     assert bad._probity_handler(bad) == cli.REFUSED
+

@@ -81,14 +81,25 @@ class Attempt:
     record: dict[str, Any]
 
 
-def parse_claims(transcript: str, kind: str, visible: list[str] | None) -> list[dict[str, Any]]:
+def parse_claims(transcript: str, kind: str, visible: list[str] | None,
+                 commands: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     if kind == "claude-stream":
-        return claim_parser.from_claude_stream(transcript)
-    return claim_parser.from_text(transcript, visible)
+        return claim_parser.from_claude_stream(transcript, commands)
+    return claim_parser.from_text(transcript, visible, commands)
+
+
+def agent_commands(contract: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The acceptance commands the agent runs itself (sealed with ``cwd`` and ``exe``), or None
+    when the contract seals none."""
+    found = [item for item in contract["acceptance"] if "exe" in item]
+    return found or None
 
 
 def _visible_argv(contract: dict[str, Any]) -> list[str] | None:
     """What the agent runs for the first visible command; a replay's agent side is test.py."""
+    commands = agent_commands(contract)
+    if commands is not None:
+        return list(commands[0]["argv"])
     item = next((item for item in contract["acceptance"]
                  if not item["id"].startswith("heldout")), None)
     if item is None:
@@ -195,7 +206,8 @@ def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dic
     transcript = (run / "transcript.txt").read_text("utf-8", "replace")
     flagged = FLAG in transcript
     receipt.write_record(run, "claims", claim_parser.record(
-        parse_claims(transcript, spec.transcript, _visible_argv(contract)), claim_id, invocation),
+        parse_claims(transcript, spec.transcript, _visible_argv(contract),
+                     agent_commands(contract)), claim_id, invocation),
         keys.harness)
     tree = json.loads((run / "tree.json").read_bytes())
     interrupted = limit < spec.timeout_seconds and bool(

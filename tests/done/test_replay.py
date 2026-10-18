@@ -79,7 +79,7 @@ def grade_source(tmp_path, record, source, runner):
     shutil.copytree(task.start, state)
     (state / "func.py").write_text(source)
     exits = {command.id: runner.run(state, command.argv, task.heldout, 120)
-             for command in task.commands}
+             for command in task.commands if not command.agent_command}
     return exits, runner.replays
 
 

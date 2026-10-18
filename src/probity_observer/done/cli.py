@@ -52,7 +52,9 @@ def cmd_contract(args: argparse.Namespace) -> int:
     task = _task(args)
     sealed = contract.compile_task(task, Path(args.out), load_signer(Path(args.harness_key)),
                                    _runner(args), runs=args.runs, mutant_limit=args.mutants,
-                                   timeout=args.timeout)
+                                   timeout=args.timeout,
+                                   agent_image=args.agent_image or (
+                                       args.image if args.runner == "docker" else None))
     adequacy = sealed.record["adequacy"]
     print(f"Contract: {sealed.out / 'contract.json'}")
     print(f"SHA-256: {sealed.contract_sha256}")
@@ -194,6 +196,9 @@ def add_commands(sub) -> None:
     seal.add_argument("--harness-key", required=True)
     seal.add_argument("--runner", choices=("docker", "subprocess"), default="docker")
     seal.add_argument("--image", help="image for the docker runner")
+    seal.add_argument("--agent-image",
+                      help="image the agent will run in; seals where its test command's "
+                           "executable lives (default: --image with the docker runner)")
     seal.add_argument("--python", help="interpreter for the subprocess runner")
     seal.add_argument("--runs", type=int, default=3)
     seal.add_argument("--mutants", type=int, default=40)

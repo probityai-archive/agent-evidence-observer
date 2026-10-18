@@ -52,11 +52,20 @@ requires-dist = [
     { name = "jcs-admit", marker = "extra == 'done'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=b69943787266702da3c02741dcc3a37643c7dc3e" },
     { name = "jcs-admit", marker = "extra == 'witness'", git = "https://github.com/probityai/jcs-admit?subdirectory=python&rev=b69943787266702da3c02741dcc3a37643c7dc3e" },
     { name = "jsonschema", marker = "extra == 'test'", specifier = ">=4,<5" },
-    { name = "probity-verify", marker = "extra == 'done'", git = "https://github.com/probityai/probity?subdirectory=packages%2Fprobity-verify&rev=b20e2d269cadb1ecfb4e5e12bac2249aa5e9e84c" },
+    { name = "probity-verify", marker = "extra == 'done'", git = "https://github.com/probityai/probity?subdirectory=packages%2Fprobity-verify&rev=87835a8bf704887862e0e648885e6c2632c7b9ff" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8,<10" },
     { name = "rfc8785", specifier = "==0.1.4" },
 ]
 provides-extras = ["test", "inspect", "witness", "cover", "done"]
+
+[[package]]
+name = "agent-evidence-vocabulary"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/f1/b9089543416945181727b950e89ca381be13e85dcf94ba18b61b3c388e8d/agent_evidence_vocabulary-0.5.0.tar.gz", hash = "sha256:dfdb0d011ac9e9b3c476c3d2173a36e7a6cfac664a0c14a9a5dd5da045975337", size = 34321, upload-time = "2026-10-16T22:29:16.015Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/d2/2fd8f30fcce983a6a796d7859bb025c99da347b7409ed1f007939c6e9497/agent_evidence_vocabulary-0.5.0-py3-none-any.whl", hash = "sha256:0d46b62e0ebe20345b89838cb75d4369d59d12b8c064fba1d575a7b2270fa338", size = 35560, upload-time = "2026-10-16T22:29:14.679Z" },
+]
 
 [[package]]
 name = "aiobotocore"
@@ -1687,9 +1696,11 @@ wheels = [
 [[package]]
 name = "probity-verify"
 version = "0.2.0"
-source = { git = "https://github.com/probityai/probity?subdirectory=packages%2Fprobity-verify&rev=b20e2d269cadb1ecfb4e5e12bac2249aa5e9e84c#b20e2d269cadb1ecfb4e5e12bac2249aa5e9e84c" }
+source = { git = "https://github.com/probityai/probity?subdirectory=packages%2Fprobity-verify&rev=87835a8bf704887862e0e648885e6c2632c7b9ff#87835a8bf704887862e0e648885e6c2632c7b9ff" }
 dependencies = [
+    { name = "agent-evidence-vocabulary" },
     { name = "cryptography" },
+    { name = "pyyaml" },
 ]
 
 [[package]]

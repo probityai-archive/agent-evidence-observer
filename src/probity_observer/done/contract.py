@@ -25,7 +25,7 @@ import re
 import shlex
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -39,6 +39,7 @@ from .runner import Command, Runner
 SCHEMA = "probity-done-contract/v1"
 EXCLUDE = ("__pycache__", ".pytest_cache")
 DEFAULT_TEST_CMD = ("python", "-P", "-m", "pytest", "-p", "no:cacheprovider", "-q")
+AGENT_CWD = "/workspace"
 ACCEPTANCE_CONFIG = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg")
 _CONFIG_SECTION = {"pytest.ini": None, "pyproject.toml": "[tool.pytest.ini_options]",
                    "tox.ini": "[pytest]", "setup.cfg": "[tool:pytest]"}
@@ -70,6 +71,8 @@ class Task:
     mutation_targets: dict[str, list[tuple[int, int]] | None] = field(default_factory=dict)
     entry: dict[str, Any] | None = None
     notes: dict[str, Any] = field(default_factory=dict)
+    # The code the task asks the agent to write; a claimed run may import it from the workspace.
+    module_under_test: list[str] = field(default_factory=list)
 
 
 def touched_files(patch: str) -> list[str]:
@@ -132,6 +135,8 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
         task_id=task_id, source="lcb", description=f"implement {entry} in func.py",
         start=start, heldout=held,
         commands=[Command("visible", heldout_cases.replay_argv(heldout_cases.VISIBLE_NAME, entry)),
+                  # The run the agent itself makes; a claim of it is matched to the agent's exec.
+                  Command("visible_run", ("python", "test.py"), agent_command=True),
                   Command("heldout", heldout_cases.replay_argv(heldout_cases.HELDOUT_NAME, entry),
                           heldout=True),
                   Command("heldout_determinism", heldout_cases.replay_argv(
@@ -141,7 +146,7 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
                   Command("import_side_effects", heldout_cases.replay_argv(
                       heldout_cases.VISIBLE_NAME, entry, "import_side_effects"),
                           prepatch="pass")],
-        protected=[Protected("test.py", "file")],
+        protected=[Protected("test.py", "file")], module_under_test=["func.py"],
         entry={"path": "func.py", "name": entry, "signature": record["prompt"],
                "expected": expected,
                "table": [(case.args, case.expected) for case in heldout_cases.cases_of(
@@ -279,7 +284,7 @@ def swe_task(record: dict[str, Any], repo: Path, work: Path,
         description=f"resolve {record['instance_id']}", start=start, reference=reference,
         heldout=held, commands=commands,
         protected=_swe_protected(start, tests, reference_touched, protect_test_dirs),
-        mutation_targets=targets,
+        mutation_targets=targets, module_under_test=sorted(reference_touched - set(tests)),
         notes={"impossible_type": record.get("impossible_type"), "repo": record.get("repo"),
                "base_commit": record.get("base_commit"), "isolated_targets": isolated})
 
@@ -309,16 +314,43 @@ def copy_protected(root: Path, entry: Protected, destination: Path) -> None:
     shutil.copytree(source, target, symlinks=True, ignore=ignore)
 
 
+def executable_path(image: str, name: str, docker: str = "docker") -> str:
+    """The absolute path the kernel runs for ``name`` in ``image``: its PATH lookup, which is
+    what the observer records as the ``exe`` of an exec of that spelling."""
+    done = subprocess.run([docker, "run", "--rm", "--network", "none", "--entrypoint", "/bin/sh",
+                           image, "-c", 'command -v "$1"', "sh", name],
+                          capture_output=True, text=True, timeout=300, check=False)
+    found = done.stdout.strip()
+    if done.returncode != 0 or not found.startswith("/") or "\n" in found:
+        raise DoneError(f"cannot resolve {name!r} in the agent image {image}: "
+                        f"exit {done.returncode} {done.stderr.strip()[:200]}")
+    return found
+
+
 def contract_record(task: Task, adequacy: dict[str, int], commands: list[Command],
-                    heldout_sha256: str | None, mutant_sha256: str | None) -> dict[str, Any]:
-    """The ``probity-done-contract/v1`` record for a compiled task."""
+                    heldout_sha256: str | None, mutant_sha256: str | None,
+                    executables: dict[str, str] | None = None) -> dict[str, Any]:
+    """The ``probity-done-contract/v1`` record for a compiled task.
+
+    With ``executables`` (each agent command's ``argv[0]`` to its path in the agent image), a
+    command the agent runs itself carries ``cwd`` and ``exe``: probity-verify matches a claim of
+    it to an exec in that directory, of that executable, with the command's arguments.
+    """
+    entries = []
+    for command in commands:
+        entry = command.record()
+        if command.agent_command and executables is not None and command.argv[0] in executables:
+            entry.update(cwd=AGENT_CWD, exe=executables[command.argv[0]])
+        entries.append(entry)
     record: dict[str, Any] = {
         "schema_version": SCHEMA, "contract_id": f"contract-{task.task_id}",
         "task": task.description,
         "protected_paths": [],
-        "acceptance": [command.record() for command in commands],
+        "acceptance": entries,
         "adequacy": adequacy,
     }
+    if task.module_under_test:
+        record["module_under_test"] = list(task.module_under_test)
     for entry in task.protected:
         item: dict[str, Any] = {"path": entry.path, "kind": entry.kind,
                                 "sha256": protected_digest(task.start, entry)}
@@ -350,7 +382,8 @@ class Sealed:
 
 def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
          commands: list[Command] | None = None, mutant_sha256: str | None = None,
-         report: dict[str, Any] | None = None) -> Sealed:
+         report: dict[str, Any] | None = None,
+         executables: dict[str, str] | None = None) -> Sealed:
     """Write the contract bundle for ``task`` into an empty ``out`` and sign it."""
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
@@ -362,7 +395,7 @@ def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
     has_heldout = any(command.heldout for command in commands)
     record = contract_record(task, adequacy, commands,
                              heldout_digest(task.heldout) if has_heldout else None,
-                             mutant_sha256)
+                             mutant_sha256, executables)
     data, envelope = sign_record(record, key)
     digest = sha256(data)
     (out / "contract.json").write_bytes(data)
@@ -485,8 +518,7 @@ def collect(task: Task, runner: Runner, command: Command, timeout: float,
                    for test_id in ids if test_id not in kept)
     if not kept:
         return None
-    return Command(command.id, prefix + tuple(kept), command.heldout, command.prepatch,
-                   command.ids_from)
+    return replace(command, argv=prefix + tuple(kept))
 
 
 def _per_id(task: Task, runner: Runner, command: Command, runs: int, timeout: float,
@@ -498,7 +530,7 @@ def _per_id(task: Task, runner: Runner, command: Command, runs: int, timeout: fl
     kept = []
     for test_id in ids:
         single = Command(f"{command.id}:{test_id}", prefix + (test_id,), command.heldout,
-                         command.prepatch)
+                         command.prepatch)  # a stability probe; never sealed
         reason = _judge(task, runner, single, runs, timeout, log)
         if reason is None:
             kept.append(test_id)
@@ -506,8 +538,7 @@ def _per_id(task: Task, runner: Runner, command: Command, runs: int, timeout: fl
             dropped.append({"id": command.id, "test": test_id, "reason": reason})
     if not kept:
         return None
-    return Command(command.id, prefix + tuple(kept), command.heldout, command.prepatch,
-                   command.ids_from)
+    return replace(command, argv=prefix + tuple(kept))
 
 
 def stabilize(task: Task, runner: Runner, runs: int = 3, timeout: float = 900.0) -> Stability:
@@ -635,8 +666,12 @@ def vacuous_passes(task: Task, runner: Runner, commands: list[Command], timeout:
 
 
 def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
-                 mutant_limit: int = 40, timeout: float = 900.0) -> Sealed:
-    """Stabilize the commands, drop vacuous zero-shot passes, measure mutant kills, and seal."""
+                 mutant_limit: int = 40, timeout: float = 900.0,
+                 agent_image: str | None = None) -> Sealed:
+    """Stabilize the commands, drop vacuous zero-shot passes, measure mutant kills, and seal.
+
+    With ``agent_image``, each command the agent runs itself is sealed with its working
+    directory and the path of its executable in that image (``cwd`` and ``exe``)."""
     stable = stabilize(task, runner, runs, timeout)
     kept, vacuous, traces = vacuous_passes(task, runner, stable.commands, timeout)
     stable = Stability(kept, stable.runs, stable.dropped + vacuous,
@@ -652,5 +687,9 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
               "adequacy": adequacy.report()}
     if traces:
         report["pass_command_traces"] = traces
+    executables = None
+    if agent_image is not None:
+        names = {command.argv[0] for command in stable.commands if command.agent_command}
+        executables = {name: executable_path(agent_image, name) for name in sorted(names)}
     return seal(task, out, key, adequacy.field(), stable.commands,
-                mutants.mutant_set_sha256(chosen) if chosen else None, report)
+                mutants.mutant_set_sha256(chosen) if chosen else None, report, executables)
