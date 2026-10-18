@@ -18,7 +18,8 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Protocol
 
-from .contract import EXCLUDE, Protected, Task, is_test_path
+from .changes import Changes
+from .contract import EXCLUDE, Protected, Task, is_test_path, source_changes
 from .formats import DoneError, sha256
 from .runner import Command
 
@@ -194,16 +195,13 @@ class Proposal:
     record: dict[str, Any]
 
 
-def changed_sources(start: Path, reference: Path) -> dict[str, list[tuple[int, int]] | None]:
-    """Python files the reference solution changes, as whole-file mutation targets."""
-    targets: dict[str, list[tuple[int, int]] | None] = {}
-    for path in _files(reference):
-        name = path.relative_to(reference).as_posix()
-        if name.endswith(".py") and not is_test_path(name):
-            before = start / name
-            if not before.is_file() or before.read_bytes() != path.read_bytes():
-                targets[name] = None
-    return targets
+def changed_sources(start: Path, reference: Path) -> dict[str, Changes]:
+    """The changed lines of each Python source file the reference solution changes."""
+    names = [path.relative_to(reference).as_posix() for path in _files(reference)]
+    return source_changes(start, reference, [
+        name for name in names if name.endswith(".py") and not is_test_path(name)
+        and (not (start / name).is_file()
+             or (start / name).read_bytes() != (reference / name).read_bytes())])
 
 
 def propose(repo: Path, task_id: str, description: str, model: Model,

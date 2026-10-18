@@ -123,7 +123,9 @@ def test_swe_contract_from_dataset_fields(tmp_path, swe_repo, harness):
     assert task.commands[2].argv[:2] == ("sh", "-c") and "../heldout" in task.commands[2].argv[2]
     protected = {(entry.path, entry.kind) for entry in task.protected}
     assert protected == {("tests", "directory"), ("conftest.py", "file")}
-    assert task.mutation_targets == {"pkg/shapes.py": [(1, 2)]}
+    # Only the changed line, not the hunk header's span of context lines.
+    assert {name: change.ranges for name, change in task.mutation_targets.items()} == {
+        "pkg/shapes.py": ((2, 2),)}
     sealed = contract.seal(task, tmp_path / "out", harness)
     entry = next(item for item in sealed.record["protected_paths"] if item["path"] == "tests")
     assert entry["exclude"] == list(contract.EXCLUDE)
