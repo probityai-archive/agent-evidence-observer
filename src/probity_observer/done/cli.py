@@ -65,8 +65,7 @@ def cmd_contract(args: argparse.Namespace) -> int:
     sealed = contract.compile_task(task, Path(args.out), load_signer(Path(args.harness_key)),
                                    _runner(args), runs=args.runs, mutant_limit=args.mutants,
                                    timeout=args.timeout,
-                                   agent_image=args.agent_image or (
-                                       args.image if args.runner == "docker" else None),
+                                   agent_image=args.agent_image,
                                    model=model)
     adequacy = sealed.record["adequacy"]
     print(f"Contract: {sealed.out / 'contract.json'}")

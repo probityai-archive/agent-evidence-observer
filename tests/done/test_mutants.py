@@ -51,6 +51,10 @@ def test_adequacy_counts_kills_and_is_sealed(tmp_path, harness, python_bin):
     assert len(vector) == record["adequacy"]["mutants"] and all(vector)
     assert report["adequacy"]["killed_fraction"] == 1.0 and report["adequacy"]["kill_vector_sha256"]
     assert report["stability"]["reference"] == "unavailable"
+    # With no agent image, the agent's own run is sealed with the path the runner resolves.
+    agent = [item for item in record["acceptance"] if "exe" in item]
+    assert [item["id"] for item in agent] == ["visible_run"]
+    assert agent[0]["exe"] == runner.executable("python") and agent[0]["cwd"] == "/workspace"
 
 
 def test_a_contract_with_no_failing_visible_command_is_refused(tmp_path, harness, python_bin):

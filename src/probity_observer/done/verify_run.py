@@ -44,8 +44,8 @@ from . import mutants, pytest_plugins
 from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
 from .formats import DoneError, encode, public_key, sha256, sign_record
 from .native import native
-from .runner import (SCRUBBED_ENV, TIMEOUT_EXIT, changed_paths, chmod_tree, is_replay,
-                     run_replay, stage)
+from .runner import (SCRUBBED_ENV, TIMEOUT_EXIT, changed_paths, chmod_tree, image_executable,
+                     is_replay, run_replay, stage)
 
 GRADE_SCHEMA = "probity-acceptance-grade/v1"
 WORKER_UID = 65534
@@ -86,6 +86,9 @@ class DockerRunner:
         command += ["--workdir", "/workspace", "--entrypoint", "/usr/bin/env", self.image, "-i",
                     *(f"{key}={value}" for key, value in sorted(SCRUBBED_ENV.items())), *argv]
         return command
+
+    def executable(self, name: str) -> str | list[str]:
+        return image_executable(self.image, name, self.docker)
 
     def child_argv(self, directory: Path, source: str) -> tuple[list[str], None]:
         """A fresh container holding only the candidate's module, read-only."""
