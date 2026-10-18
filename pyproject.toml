@@ -27,7 +27,7 @@ witness = ["jcs-admit @ git+https://github.com/probityai/jcs-admit@b699437872667
 cover = ["coverage>=7.10,<8"]
 done = [
     "jcs-admit @ git+https://github.com/probityai/jcs-admit@b69943787266702da3c02741dcc3a37643c7dc3e#subdirectory=python",
-    "probity-verify @ git+https://github.com/probityai/probity@0a10da3fd106e63aaeb28ed653f0fb5557e8e6f3#subdirectory=packages/probity-verify",
+    "probity-verify @ git+https://github.com/probityai/probity@e22d33e539479bb38016173186b94cdba5132a51#subdirectory=packages/probity-verify",
 ]
 
 [project.scripts]
