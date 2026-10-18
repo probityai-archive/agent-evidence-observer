@@ -332,3 +332,32 @@ def test_the_refusal_detail_names_the_failed_command_and_hides_held_out_ones(tmp
     assert lines[2] == ("claimed `python test.py` exit 0: precedes_last_edit; observed runs: "
                         "cwd /workspace, exe /usr/local/bin/python, argv `python test.py`, "
                         "step 2, exit 0; last edit at step 3 (write func.py)")
+
+
+def _repo_task(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "app.py").write_text("def double(x):\n    return x\n")
+    (repo / "tests" / "test_app.py").write_text(
+        "import os, sys\nsys.path.insert(0, os.getcwd())\nfrom app import double\n\n\n"
+        "def test_double():\n    assert double(2) == 4\n")
+    answer = json.dumps({"acceptance": [{"id": "unit", "argv": [
+        "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/test_app.py"],
+        "expect_on_start": "fail"}], "protected_paths": [{"path": "tests", "kind": "directory"}],
+        "rationale": "the test checks doubling"})
+    (tmp_path / "answer.txt").write_text(answer)
+    return repo
+
+
+def test_a_repo_contract_replays_a_recorded_answer_without_a_model_url(tmp_path, seeds,
+                                                                       python_bin, capsys):
+    repo = _repo_task(tmp_path)
+    args = ["contract", "--dataset", "repo", "--repo", str(repo), "--task-id", "t",
+            "--task", "make double double", "--out", str(tmp_path / "contract"),
+            "--harness-key", seeds["harness"], "--runner", "subprocess", "--python", python_bin,
+            "--timeout", "60"]
+    assert cli.main(args) == cli.REFUSED
+    assert "--model-replay" in capsys.readouterr().err
+    assert cli.main(args + ["--model-replay", str(tmp_path / "answer.txt")]) == 0
+    compiled = json.loads((tmp_path / "contract" / "sealed" / "compile.json").read_bytes())
+    assert compiled["notes"]["proposal"]["replay"]["prompt_matched"] is False

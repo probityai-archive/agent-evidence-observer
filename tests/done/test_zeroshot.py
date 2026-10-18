@@ -117,3 +117,43 @@ def test_a_reference_gives_the_proposal_mutants(tmp_path, repo, harness, python_
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
     assert sealed.record["adequacy"]["killed"] >= 1
+
+
+def _urlopen_answering(monkeypatch, message, finish="stop"):
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": message, "finish_reason": finish}]}).encode()
+
+    monkeypatch.setattr(zeroshot.urllib.request, "urlopen", lambda request, timeout: Reply())
+
+
+def test_a_null_content_answer_is_refused_with_its_finish_reason(monkeypatch):
+    _urlopen_answering(monkeypatch, {"role": "assistant", "content": None}, "length")
+    with pytest.raises(DoneError, match="no content .*length"):
+        zeroshot.ChatModel("http://h:8000", "m").complete("p")
+
+
+def test_a_recorded_answer_replays_only_for_its_own_prompt(tmp_path, repo):
+    prompt = zeroshot.render(repo, "make double double")
+    record = tmp_path / "call.json"
+    record.write_text(json.dumps({"request": {"messages": [{"role": "user", "content": prompt}]},
+                                  "response": {"choices": [{"message": {"content": ANSWER}}]}}))
+    model = zeroshot.RecordedModel(record)
+    assert model.complete(prompt) == ANSWER
+    with pytest.raises(DoneError, match="recorded for a different prompt"):
+        model.complete(prompt + "x")
+
+
+def test_a_recorded_answer_without_its_request_is_marked_unmatched(tmp_path, repo):
+    record = tmp_path / "answer.txt"
+    record.write_text(ANSWER)
+    model = zeroshot.RecordedModel(record)
+    proposal = zeroshot.propose(repo, "t", "make double double", model)
+    assert proposal.record["replay"] == {"from_sha256": zeroshot.sha256(record.read_bytes()),
+                                         "prompt_matched": False}
