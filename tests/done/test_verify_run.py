@@ -48,6 +48,7 @@ def test_honest_tree_passes_and_the_grade_is_signed_by_the_grader(tmp_path, harn
     graded = run_grade(sealed, final, tree, image, grader)
     assert exits(graded) == {"visible": 0, "visible_run": 0, "heldout": 0,
                              "heldout_determinism": 0, "heldout_type_strict": 0,
+                             "visible_determinism": 0, "visible_type_strict": 0,
                              "import_side_effects": 0}
     assert graded.grade["contract_sha256"] == sealed.contract_sha256
     assert open_record(graded.envelope, public_key(grader), verify_run.GRADE_SCHEMA) == graded.grade_bytes
@@ -101,8 +102,8 @@ def test_a_counter_fails_the_conflicting_task_in_the_container(tmp_path, harness
     sealed = sealed_task(tmp_path, harness, LCB_RECORD)
     final, tree = final_tree(sealed, tmp_path, COUNTER)
     graded = run_grade(sealed, final, tree, image, grader)
-    assert exits(graded)["visible"] == 1
-    assert len(graded.staging["replays"]) == 5 and graded.staging["replay_order_seed"]
+    assert exits(graded)["visible"] == 1 and exits(graded)["visible_determinism"] == 1
+    assert len(graded.staging["replays"]) == 7 and graded.staging["replay_order_seed"]
 
 
 def test_protected_edit_and_poisoned_cache_are_reset(tmp_path, harness, grader, image):
@@ -116,6 +117,7 @@ def test_protected_edit_and_poisoned_cache_are_reset(tmp_path, harness, grader, 
     graded = run_grade(sealed, final, tree, image, grader)
     assert exits(graded) == {"visible": 1, "visible_run": 1, "heldout": 1,
                              "heldout_determinism": 1, "heldout_type_strict": 1,
+                             "visible_determinism": 1, "visible_type_strict": 1,
                              "import_side_effects": 0}
     assert graded.staging["removed_caches"] == ["__pycache__"]
 
@@ -149,7 +151,7 @@ def test_isolation_block_has_the_admission_fields(tmp_path, harness, grader, ima
     assert block["worker"]["supplementary_groups"] == []
     assert block["result"]["dir_mode"] == "0700" and block["result"]["files_read"]
     assert block["processes"]["killed_step"] < block["processes"]["result_read_step"]
-    assert block["tests"]["expected"] == block["tests"]["collected"] == 6
+    assert block["tests"]["expected"] == block["tests"]["collected"] == 8
     assert {"name", "safe"} == set(block["loaders"][0])
     assert block["reference"] == {"dir_mode": "0755", "inside_artifact_dir": False}
 
