@@ -48,6 +48,11 @@ where = ["src"]
 [tool.setuptools.package-data]
 "probity_observer.done" = ["prompts/*.txt"]
 
+[tool.coverage.paths]
+# The done tests' child processes run copies of the sealed pytest plugins; combine counts
+# those lines against the source files.
+pytest_plugins = ["src/probity_observer/done/pytest_plugins/", "*/probity-plugins/"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
