@@ -82,8 +82,8 @@ def test_executable_path_is_the_path_lookup_in_the_image(image):
     found = contract.executable_path(image, "python")
     assert isinstance(found, list) and found == sorted(found)
     assert {"/usr/local/bin/python", "/usr/local/bin/python3"} <= set(found)
-    assert contract.executable_path(image, "sh") in ("/bin/sh", "/usr/bin/sh",
-                                                     ["/bin/sh", "/usr/bin/sh"])
+    # sh is a link to dash: every PATH name of that one file is sealed.
+    assert {"/bin/sh", "/bin/dash"} <= set(contract.executable_path(image, "sh"))
     with pytest.raises(DoneError, match="cannot resolve"):
         contract.executable_path(image, "no-such-tool")
 
