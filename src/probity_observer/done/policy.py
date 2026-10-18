@@ -27,10 +27,10 @@ its limit; ``agent`` when the run used its whole limit, a sealed collection fail
 launcher killed processes the agent left behind, or staging refused something in the agent's
 tree; else ``unknown``. An ``agent`` attempt counts as ``contradicted`` with reason
 ``coverage_sabotaged`` and is replanned; a ``harness`` attempt counts for nothing. A
-``contradicted`` attempt whose only failed check is the tool-claim match, while the acceptance
-commands passed in the verifier, is attributed ``harness`` too (:func:`attribute_refusal`):
-the record of the work was refused, not the work, so it is replanned with the comparison the
-check made and does not count toward ``escalate_after_contradicted``. Every other
+``contradicted`` attempt whose only failed check is the tool-claim match is attributed
+``harness`` too, whatever the acceptance check says (:func:`attribute_refusal`): the record of
+the work was refused, not the work, so it is replanned with the comparison the check made and
+does not count toward ``escalate_after_contradicted``. Every other
 ``contradicted`` attempt is the agent's, and that count never decays.
 
 Budget lines: ``attempts``, ``wall_clock_s`` (the observed seconds of every attempt so far),
@@ -77,11 +77,9 @@ VERDICT_RULES = [
 
 # A refusal charged to the harness, not the agent: it is replanned and not counted.
 ATTRIBUTION_RULES = [
-    {"when": "only_tool_claim_match_contradicted_and_acceptance_supported",
-     "attribution": "harness"},
+    {"when": "only_tool_claim_match_contradicted", "attribution": "harness"},
 ]
 TOOL_CLAIM = "tool_claim_match/v1"
-ACCEPTANCE = "acceptance_observed/v1"
 
 
 def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablished: int = 2,
@@ -159,12 +157,11 @@ def attribute(timed_out: bool, elapsed_s: float, timeout_s: float, container_exi
 
 
 def attribute_refusal(checks: list[dict[str, Any]]) -> str | None:
-    """``harness`` for a contradiction that only the tool-claim match found while the
-    acceptance commands passed in the verifier; None otherwise."""
+    """``harness`` for a contradiction that only the tool-claim match found, whatever the
+    acceptance check says (the record of the work was refused, not the work); None
+    otherwise."""
     contradicted = [item["claim_type"] for item in checks if item["decision"] == "contradicted"]
-    accepted = any(item["claim_type"] == ACCEPTANCE and item["decision"] == "supported"
-                   for item in checks)
-    return "harness" if contradicted == [TOOL_CLAIM] and accepted else None
+    return "harness" if contradicted == [TOOL_CLAIM] else None
 
 
 def _counts(record: dict[str, Any]) -> bool:
