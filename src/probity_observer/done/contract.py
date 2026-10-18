@@ -346,18 +346,24 @@ def executable_path(image: str, name: str, docker: str = "docker") -> str | list
 
 def contract_record(task: Task, adequacy: dict[str, int], commands: list[Command],
                     heldout_sha256: str | None, mutant_sha256: str | None,
-                    executables: dict[str, str | list[str]] | None = None) -> dict[str, Any]:
+                    executables: dict[str, str | list[str]] | None = None,
+                    run_writes: dict[str, list[str]] | None = None) -> dict[str, Any]:
     """The ``probity-done-contract/v1`` record for a compiled task.
 
     With ``executables`` (each agent command's ``argv[0]`` to its path in the agent image), a
     command the agent runs itself carries ``cwd`` and ``exe``: probity-verify matches a claim of
-    it to an exec in that directory, of that executable, with the command's arguments.
+    it to an exec in that directory, of that executable, with the command's arguments. With
+    ``run_writes`` (each command's id to the workspace paths its stable runs wrote), such a
+    command also carries ``run_writes``: probity-verify then counts a mutation as the run's
+    own only when a matching run made it under those paths or a cache directory.
     """
     entries = []
     for command in commands:
         entry = command.record()
         if command.agent_command and executables is not None and command.argv[0] in executables:
             entry.update(cwd=AGENT_CWD, exe=executables[command.argv[0]])
+            if run_writes is not None and command.id in run_writes:
+                entry["run_writes"] = sorted(set(run_writes[command.id]))
         entries.append(entry)
     record: dict[str, Any] = {
         "schema_version": SCHEMA, "contract_id": f"contract-{task.task_id}",
@@ -400,7 +406,8 @@ class Sealed:
 def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
          commands: list[Command] | None = None, mutant_sha256: str | None = None,
          report: dict[str, Any] | None = None,
-         executables: dict[str, str] | None = None) -> Sealed:
+         executables: dict[str, str | list[str]] | None = None,
+         run_writes: dict[str, list[str]] | None = None) -> Sealed:
     """Write the contract bundle for ``task`` into an empty ``out`` and sign it."""
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
@@ -412,7 +419,7 @@ def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
     has_heldout = any(command.heldout for command in commands)
     record = contract_record(task, adequacy, commands,
                              heldout_digest(task.heldout) if has_heldout else None,
-                             mutant_sha256, executables)
+                             mutant_sha256, executables, run_writes)
     data, envelope = sign_record(record, key)
     digest = sha256(data)
     (out / "contract.json").write_bytes(data)
@@ -709,4 +716,5 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
         names = {command.argv[0] for command in stable.commands if command.agent_command}
         executables = {name: executable_path(agent_image, name) for name in sorted(names)}
     return seal(task, out, key, adequacy.field(), stable.commands,
-                mutants.mutant_set_sha256(chosen) if chosen else None, report, executables)
+                mutants.mutant_set_sha256(chosen) if chosen else None, report, executables,
+                stable.run_writes)
