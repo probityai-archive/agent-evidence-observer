@@ -11,6 +11,7 @@ example a vLLM server); the verdict itself never calls a model.
 
 from __future__ import annotations
 
+import ast
 import json
 import urllib.request
 from dataclasses import dataclass, field
@@ -18,8 +19,10 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Protocol
 
+from . import mutants, pytest_plugins
 from .changes import Changes
-from .contract import EXCLUDE, Protected, Task, is_test_path, source_changes
+from .contract import (DEFAULT_TEST_CMD, EXCLUDE, Protected, Task, command_test_files,
+                       is_test_path, sealed_config, source_changes)
 from .formats import DoneError, sha256
 from .runner import Command
 
@@ -186,6 +189,87 @@ def _commands(items: Any) -> list[Command]:
     return commands
 
 
+# Options the sealed prefix already sets, or that change only how much pytest prints.
+_PREFIX_FLAGS = frozenset({"-q", "-qq", "-v", "-vv", "-x", "-s", "--quiet", "--verbose"})
+
+
+def _runner_args(argv: tuple[str, ...]) -> tuple[str, list[str]]:
+    """``("pytest" | "unittest", the arguments after the runner)``."""
+    if argv[0].rsplit("/", 1)[-1] == "pytest":
+        return "pytest", list(argv[1:])
+    return argv[2], list(argv[3:])
+
+
+def unittest_node(repo: Path, name: str) -> str | None:
+    """The pytest node id of a ``python -m unittest`` name (``a.b.C.t`` to ``a/b.py::C::t``)."""
+    parts = name.split(".")
+    for index in range(len(parts), 0, -1):
+        path = "/".join(parts[:index]) + ".py"
+        if (repo / path).is_file():
+            return "::".join([path, *parts[index:]])
+    return None
+
+
+def sealed_command(repo: Path, command: Command, prefix: tuple[str, ...]) -> Command | None:
+    """``command`` in the sealed pytest form on ``prefix``, or ``None`` when a unittest name
+    resolves to no file. A command whose arguments are all test ids or paths seals them
+    (``ids_from``); one with other options keeps them after the prefix and seals no ids."""
+    runner, args = _runner_args(command.argv)
+    kept: list[str] = []
+    index = 0
+    while index < len(args):
+        if args[index] in _PREFIX_FLAGS:
+            index += 1
+            continue
+        if args[index:index + 2] == ["-p", "no:cacheprovider"]:
+            index += 2
+            continue
+        kept.append(args[index])
+        index += 1
+    if runner == "unittest":
+        names = [arg for arg in kept if not arg.startswith("-")]
+        nodes = [unittest_node(repo, name) for name in names]
+        if not names or any(node is None for node in nodes):
+            return None
+        kept = [node for node in nodes if node is not None]
+    ids = not any(arg.startswith("-") for arg in kept) and bool(kept)
+    return Command(command.id, prefix + tuple(kept), prepatch=command.prepatch,
+                   ids_from=len(prefix) if ids else None)
+
+
+def isolation_targets(reference: Path, changes: dict[str, Changes]) -> list[str]:
+    """``path::name`` of every module-level function the reference change touches."""
+    found = []
+    for name, change in changes.items():
+        tree = ast.parse((reference / name).read_text())
+        for item in mutants.touched(tree, list(change.ranges), change.anchors):
+            if "." not in item.qualname:
+                found.append(f"{name}::{item.qualname}")
+    return sorted(found)
+
+
+def seal_commands(repo: Path, commands: list[Command], held: Path, tests: list[str],
+                  isolate: list[str]) -> tuple[list[Command], list[dict[str, Any]]]:
+    """Every proposed command in the sealed pytest form, and the ones that cannot be.
+
+    The start tree's pytest configuration and the sealed plugins are copied under ``held``;
+    each test runs twice (``probity_repeat``) and each touched module-level function runs
+    with no test frame (``probity_isolated_call``).
+    """
+    prefix = DEFAULT_TEST_CMD + sealed_config(repo, held)
+    pytest_plugins.install(held / "config")
+    prefix = pytest_plugins.pytest_argv(prefix, tests, isolate, pytest_plugins.REPEATS)
+    sealed, dropped = [], []
+    for command in commands:
+        found = sealed_command(repo, command, prefix)
+        if found is None:
+            dropped.append({"id": command.id, "argv": list(command.argv),
+                            "reason": "unittest_unresolved"})
+        else:
+            sealed.append(found)
+    return sealed, dropped
+
+
 def _protected(repo: Path, items: Any) -> list[Protected]:
     if not isinstance(items, list):
         raise DoneError("protected_paths must be a list")
@@ -219,24 +303,37 @@ def changed_sources(start: Path, reference: Path) -> dict[str, Changes]:
 
 
 def propose(repo: Path, task_id: str, description: str, model: Model,
-            reference: Path | None = None) -> Proposal:
+            reference: Path | None = None, work: Path | None = None) -> Proposal:
     """One model call; the answer becomes an unsealed task with its provenance.
 
-    Without a ``reference`` (a known-good solution) the contract has no mutants to measure
-    and is sealed with ``adequacy`` zero, which cannot support a verdict of done.
+    Every proposed command is rewritten into the sealed pytest form, whose configuration and
+    plugins go to ``work/heldout`` (``work`` is required). Without a ``reference`` (a
+    known-good solution) the contract has no mutants to measure.
     """
+    if work is None:
+        raise DoneError("a repo task needs a work directory for its sealed configuration")
     prompt = render(repo, description)
     answer = model.complete(prompt)
     value = _json_object(answer)
+    proposed = _commands(value["acceptance"])
+    targets = changed_sources(repo, reference) if reference else {}
+    tests = sorted({name for command in proposed for name in command_test_files(command, repo)})
+    held = work / "heldout"
+    held.mkdir(parents=True, exist_ok=True)
+    isolate = isolation_targets(reference, targets) if reference else []
+    commands, dropped = seal_commands(repo, proposed, held, tests, isolate)
+    if not commands:
+        raise DoneError("no proposed command has a sealed pytest form")
     task = Task(task_id=task_id, source="repo", description=description, start=repo,
-                commands=_commands(value["acceptance"]),
-                protected=_protected(repo, value["protected_paths"]), reference=reference,
-                mutation_targets=changed_sources(repo, reference) if reference else {})
+                commands=commands, protected=_protected(repo, value["protected_paths"]),
+                heldout=held, reference=reference, mutation_targets=targets)
     record = {"model_calls": 1, "model": model.name,
               "template": "contract_v1.txt", "template_sha256": sha256(template().encode()),
               "prompt_sha256": sha256(prompt.encode()), "response_sha256": sha256(answer.encode()),
               "finish_reason": getattr(model, "finish_reason", None),
-              "rationale": value["rationale"]}
+              "rationale": value["rationale"],
+              "proposed": [{"id": command.id, "argv": list(command.argv)} for command in proposed],
+              "dropped": dropped, "isolated_targets": isolate}
     if isinstance(model, RecordedModel):
         record["replay"] = {"from_sha256": model.from_sha256,
                             "prompt_matched": model.prompt_matched}

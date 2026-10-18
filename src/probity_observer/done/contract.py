@@ -540,11 +540,11 @@ def collect(task: Task, runner: Runner, command: Command, timeout: float,
         return command
     prefix, ids = command.argv[:command.ids_from], command.argv[command.ids_from:]
     printed: list[str] = []
-    runner.run(task.reference or task.start, prefix + ("--collect-only", "-q") + ids,
-               task.heldout if command.heldout else None, timeout, output=printed)
+    runner.run(task.reference or task.start, prefix + ("--collect-only", "--verbosity=-1") + ids,
+               task.heldout, timeout, output=printed)
     collected = {line.strip() for text in printed for line in text.splitlines() if "::" in line}
     kept = [test_id for test_id in ids
-            if test_id in collected or any(item.startswith(test_id + "[") for item in collected)]
+            if pytest_plugins.collected(sorted(collected), [test_id])]
     dropped.extend({"id": command.id, "test": test_id, "reason": "not_collected"}
                    for test_id in ids if test_id not in kept)
     if not kept:
@@ -845,7 +845,7 @@ def vacuous_passes(task: Task, runner: Runner, commands: list[Command], timeout:
         printed: list[str] = []
         read = None
         if traced is not None:
-            runner.run(state, traced, None, timeout, output=printed)
+            runner.run(state, traced, task.heldout, timeout, output=printed)
             read = pytest_plugins.reads(printed)
         if read is None:
             dropped.append({"id": command.id, "reason": "pass_command_untraced"})
@@ -858,7 +858,7 @@ def vacuous_passes(task: Task, runner: Runner, commands: list[Command], timeout:
             except (SyntaxError, OSError, UnicodeDecodeError):
                 continue
         chosen = mutants.stratified(groups, limit, f"{task.task_id}:{command.id}")
-        result = mutants.measure(state, chosen, [command], runner, None, timeout)
+        result = mutants.measure(state, chosen, [command], runner, task.heldout, timeout)
         traces.append({"id": command.id, "read": read, "sources": sources,
                        "mutants": len(chosen), "killed": sum(result.killed)})
         if not any(result.killed):

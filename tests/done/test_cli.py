@@ -383,6 +383,7 @@ def test_a_repo_contract_replays_a_recorded_answer_without_a_model_url(tmp_path,
     repo = _repo_task(tmp_path)
     args = ["contract", "--dataset", "repo", "--repo", str(repo), "--task-id", "t",
             "--task", "make double double", "--out", str(tmp_path / "contract"),
+            "--work", str(tmp_path / "work"),
             "--harness-key", seeds["harness"], "--runner", "subprocess", "--python", python_bin,
             "--timeout", "60"]
     assert cli.main(args) == cli.REFUSED
