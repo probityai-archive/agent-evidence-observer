@@ -374,3 +374,42 @@ def test_a_child_that_dies_leaves_every_case_out_and_the_observer_untouched():
     source = ("def check(candidate):\n    import sys\n    sys.exit(3)\n"
               "    assert candidate(1) == 1\n    assert candidate(2) == 2\n")
     assert heldout.literal_cases(heldout.check_body(source)[1]) == [None, None]
+
+
+def test_a_pytest_agent_run_seals_the_python_that_runs_it_as_a_module(tmp_path, harness):
+    """Review 5: ``python -m pytest`` ran the sealed tests and stayed unmatched without it."""
+    from probity_verify.adapters import done_records
+    task = contract.lcb_task(LCB_RECORD, tmp_path / "w")
+    commands = [*task.commands,
+                runner.Command("suite_run", ("pytest", "-q", "tests"), agent_command=True)]
+    executables = {"python": "/usr/local/bin/python", "pytest": "/usr/local/bin/pytest"}
+    interpreter = ["/usr/local/bin/python3", "/usr/local/bin/python", "/usr/local/bin/python3"]
+    record = contract.contract_record(task, {"mutants": 0, "killed": 0}, commands, None, None,
+                                      executables, None, interpreter)
+    entries = {item["id"]: item for item in record["acceptance"]}
+    assert entries["suite_run"]["interpreter"] == ["/usr/local/bin/python",
+                                                   "/usr/local/bin/python3"]
+    assert "interpreter" not in entries["visible_run"]
+    done_records.contract(encode(record))
+
+
+def test_the_sealed_python_paths_are_every_name_that_resolves():
+    table = {"python3": ["/usr/bin/python3", "/usr/bin/python3.12"], "python": "/usr/bin/python"}
+
+    def resolve(name):
+        if name not in table:
+            raise DoneError(f"cannot resolve {name!r}")
+        return table[name]
+    assert contract.python_paths(resolve) == ["/usr/bin/python", "/usr/bin/python3",
+                                              "/usr/bin/python3.12"]
+    del table["python"]
+    assert contract.python_paths(resolve) == ["/usr/bin/python3", "/usr/bin/python3.12"]
+    table.clear()
+    assert contract.python_paths(resolve) is None
+
+
+def test_only_a_python_entry_point_seals_an_interpreter():
+    paths = {"python3": "/usr/bin/python3", "python": "/usr/bin/python"}
+    assert contract.agent_interpreter({"python"}, paths.__getitem__) is None
+    assert contract.agent_interpreter({"/usr/bin/pytest"}, paths.__getitem__) == [
+        "/usr/bin/python", "/usr/bin/python3"]
