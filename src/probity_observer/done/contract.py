@@ -25,6 +25,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
@@ -32,6 +33,7 @@ from typing import Any, Sequence
 from ..sensors import treedigest
 from . import heldout as heldout_cases
 from .changes import Changes, changed_lines
+from .native import NATIVE_SOURCES, native
 from . import mutants, pytest_plugins
 from .formats import (CONTRACT_PREDICATE, DoneError, encode, sha256, sign_record,
                       statement)
@@ -654,6 +656,127 @@ def task_mutants(task: Task, limit: int) -> MutantPlan:
     return MutantPlan(task.start, [])
 
 
+class Refused(DoneError):
+    """The compiler refuses to seal; ``reason`` is the stable refusal code."""
+
+    def __init__(self, task_id: str, reason: str, detail: str) -> None:
+        super().__init__(f"{task_id}: {reason}: {detail}")
+        self.reason = reason
+
+
+TREE_SKIP = frozenset({".git", "__pycache__", ".pytest_cache"})
+
+
+def tree_files(root: Path) -> dict[str, Path]:
+    """Every regular file under ``root`` by relative path, outside VCS and cache directories."""
+    found = {}
+    for path in sorted(root.rglob("*")):
+        name = path.relative_to(root).as_posix()
+        if path.is_file() and not path.is_symlink() and not set(name.split("/")) & TREE_SKIP:
+            found[name] = path
+    return found
+
+
+def changed_files(start: Path, reference: Path) -> set[str]:
+    """Paths whose bytes differ between the two trees, added and removed ones included."""
+    old, new = tree_files(start), tree_files(reference)
+    return {name for name in set(old) | set(new)
+            if name not in old or name not in new or old[name].read_bytes() != new[name].read_bytes()}
+
+
+def native_change(start: Path, reference: Path) -> str | None:
+    """The first native source or native binary the reference changes, if any."""
+    old, new = tree_files(start), tree_files(reference)
+    for name in sorted(changed_files(start, reference)):
+        if name.endswith(NATIVE_SOURCES) or any(
+                name in side and native(side[name]) for side in (old, new)):
+            return name
+    return None
+
+
+def trace_commands(task: Task, runner: Runner, commands: list[Command], timeout: float,
+                   lines: Sequence[str] = ()) -> dict[str, dict[str, Any]]:
+    """One traced run of each command on a cache-free copy of the reference (or start).
+
+    Commands the trace cannot wrap are left out.
+    """
+    found = {}
+    with tempfile.TemporaryDirectory(prefix="probity-trace-") as scratch:
+        state = Path(scratch) / "state"
+        shutil.copytree(task.reference or task.start, state, symlinks=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        for command in commands:
+            traced = pytest_plugins.traced_argv(command.argv, lines)
+            if traced is None:
+                continue
+            printed: list[str] = []
+            runner.run(state, traced, task.heldout, timeout, output=printed)
+            result = pytest_plugins.trace(printed)
+            if result is not None:
+                found[command.id] = result
+    return found
+
+
+def shadowed(targets: Sequence[str], traces: dict[str, dict[str, Any]]) -> list[str]:
+    """Mutation targets whose module was imported from a native file beside them."""
+    found = []
+    for target in targets:
+        dotted = target[:-3].replace("/", ".")
+        folder = target.rsplit("/", 1)[0] if "/" in target else ""
+        for trace in traces.values():
+            for name, origin in trace["modules"].items():
+                here = origin.rsplit("/", 1)[0] if "/" in origin else ""
+                if ((dotted == name or dotted.endswith("." + name)) and origin != target
+                        and origin in trace["native"] and here == folder):
+                    found.append(target)
+    return sorted(set(found))
+
+
+def native_loaded(task: Task, traces: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    """Every native binary a traced run loaded from the working tree, with its start digest.
+
+    A native binary the start tree does not hold (built during the run) is refused.
+    """
+    names = sorted({name for trace in traces.values() for name in trace["native"]})
+    for name in names:
+        if not (task.start / name).is_file():
+            raise Refused(task.task_id, "native_build_required",
+                          f"{name} is loaded but is not in the start tree")
+    return [{"path": name, "sha256": treedigest.file_sha256(task.start / name)} for name in names]
+
+
+def command_test_files(command: Command, start: Path) -> list[str]:
+    """The test files a command names, as node ids or paths that exist in ``start``."""
+    found = set()
+    for arg in command.argv[1:]:
+        name = arg.split("::", 1)[0]
+        if not arg.startswith("-") and is_test_path(name) and (start / name).is_file():
+            found.add(name)
+    return sorted(found)
+
+
+def auto_protect(task: Task, tests: Sequence[str], files: Sequence[str] = ()) -> list[Protected]:
+    """The task's protected paths plus every named test file, every ``conftest.py``, the
+    acceptance configuration on the way to each test, and ``files`` (native binaries).
+
+    Nothing the reference changes is protected: a protected directory the reference writes
+    into gives way to its files.
+    """
+    touched = changed_files(task.start, task.reference) if task.reference is not None else set()
+    entries = {entry.path: entry for entry in task.protected
+               if not any(name == entry.path or name.startswith(entry.path + "/")
+                          for name in touched)}
+    for entry in _swe_protected(task.start, list(tests), touched, False):
+        entries.setdefault(entry.path, entry)
+    for name in files:
+        if name not in touched:
+            entries.setdefault(name, Protected(name, "file"))
+    kept = [entries[name] for name in sorted(entries)]
+    return [entry for entry in kept
+            if not any(other.kind == "directory" and entry.path.startswith(other.path + "/")
+                       for other in kept)]
+
+
 def is_test_path(name: str) -> bool:
     """A test file or test configuration by its path (never a mutation target)."""
     base = name.rsplit("/", 1)[-1]
@@ -719,8 +842,11 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
 
     With ``agent_image``, each command the agent runs itself is sealed with its working
     directory and the path of its executable in that image (``cwd`` and ``exe``)."""
+    if task.reference is not None and (name := native_change(task.start, task.reference)):
+        raise Refused(task.task_id, "native_build_required",
+                      f"the reference changes native code: {name}")
     stable = stabilize(task, runner, runs, timeout)
-    kept, vacuous, traces = vacuous_passes(task, runner, stable.commands, timeout)
+    kept, vacuous, pass_traces = vacuous_passes(task, runner, stable.commands, timeout)
     stable = Stability(kept, stable.runs, stable.dropped + vacuous,
                        {key: value for key, value in stable.run_writes.items()
                         if key in {command.id for command in kept}})
@@ -728,14 +854,25 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
             if not command.heldout and command.prepatch == "fail"]:
         raise DoneError(f"{task.task_id}: no stable visible command fails on the start state, "
                         "so no command can tell the task done from not done")
+    traces = trace_commands(task, runner, stable.commands, timeout)
+    if task.reference is not None:
+        if shadow := shadowed(sorted(task.mutation_targets), traces):
+            raise Refused(task.task_id, "native_shadow_import",
+                          f"{', '.join(shadow)} imported from a native file")
+    loaded = native_loaded(task, traces)
+    if task.source == "repo":
+        tests = sorted({name for command in stable.commands
+                        for name in command_test_files(command, task.start)})
+        task = replace(task, protected=auto_protect(task, tests, [item["path"] for item in loaded]))
     plan = task_mutants(task, mutant_limit)
     chosen = plan.mutants
     adequacy = mutants.measure(plan.base, chosen, stable.commands, runner, task.heldout, timeout)
     report = {**stability_report(stable, runner, runs, task.reference is not None),
               "adequacy": {**adequacy.report(), "deduplicated": plan.deduplicated},
-              "cheat_uncovered": plan.cheat_uncovered}
-    if traces:
-        report["pass_command_traces"] = traces
+              "cheat_uncovered": plan.cheat_uncovered, "traces": traces,
+              "native_loaded": loaded}
+    if pass_traces:
+        report["pass_command_traces"] = pass_traces
     executables = None
     if agent_image is not None:
         names = {command.argv[0] for command in stable.commands if command.agent_command}

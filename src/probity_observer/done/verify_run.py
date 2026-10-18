@@ -42,6 +42,7 @@ from ..sensors import treedigest
 from . import mutants, pytest_plugins
 from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
 from .formats import DoneError, encode, public_key, sha256, sign_record
+from .native import native
 from .runner import (SCRUBBED_ENV, TIMEOUT_EXIT, changed_paths, chmod_tree, is_replay,
                      run_replay, stage)
 
@@ -162,17 +163,6 @@ def _inside(root: Path, link: Path) -> bool:
         return False
     resolved = os.path.normpath(os.path.join(link.parent, target))
     return resolved == str(root) or resolved.startswith(str(root) + os.sep)
-
-
-NATIVE_SUFFIXES = (".so", ".pyd", ".dll", ".dylib")
-
-
-def native(path: Path) -> bool:
-    """A compiled binary the Python-level layers cannot see into."""
-    if path.name.endswith(NATIVE_SUFFIXES) or ".so." in path.name:
-        return True
-    with open(path, "rb") as handle:
-        return handle.read(4) == b"\x7fELF"
 
 
 def _same_file(path: Path, sealed: Path) -> bool:
