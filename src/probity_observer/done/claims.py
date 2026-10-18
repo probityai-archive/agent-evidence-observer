@@ -16,7 +16,8 @@ shell syntax beyond one simple command, is claimed as ``["sh", "-c", <line>]``.
 
 When the contract seals ``cwd`` and ``exe`` for the acceptance commands the agent runs
 itself, only claims of those commands are kept, under their sealed argv: a command line with
-the sealed arguments whose program is the sealed ``argv[0]`` or the sealed ``exe``, also inside a
+the sealed arguments whose program is the sealed ``argv[0]``, a sealed ``exe`` path or its name
+(a contract may seal every path of one interpreter file, ``python`` and ``python3``), also inside a
 one-command ``sh -c`` or ``bash -lc``. Other commands the agent ran (``ls -R``, an editor call)
 say nothing about done and are left out, with their output. A test summary counts only in a kept
 command's output or in the agent's own text, never under a ``# <tool>`` line, where the agent displays a file or a tool
@@ -67,7 +68,9 @@ def sealed_spelling(argv: list[str], commands: list[dict[str, Any]]) -> list[str
             return sealed_spelling(inner, commands)
     for command in commands:
         sealed = command["argv"]
-        if argv[1:] == sealed[1:] and argv[0] in (sealed[0], command["exe"]):
+        exes = command["exe"] if isinstance(command["exe"], list) else [command["exe"]]
+        names = {sealed[0], *exes, *(posixpath.basename(exe) for exe in exes)}
+        if argv[1:] == sealed[1:] and argv[0] in names:
             return list(sealed)
     return None
 

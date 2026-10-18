@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import json
+import posixpath
 import re
 import shlex
 import shutil
@@ -314,22 +315,32 @@ def copy_protected(root: Path, entry: Protected, destination: Path) -> None:
     shutil.copytree(source, target, symlinks=True, ignore=ignore)
 
 
-def executable_path(image: str, name: str, docker: str = "docker") -> str:
-    """The absolute path the kernel runs for ``name`` in ``image``: its PATH lookup, which is
-    what the observer records as the ``exe`` of an exec of that spelling."""
+_SAME_FILE = ('p=$(command -v "$1") || exit 3; r=$(readlink -f "$p") || exit 4; echo "$p"; '
+              'IFS=:; for d in $PATH; do for f in "$d"/*; do '
+              '[ -x "$f" ] && [ "$(readlink -f "$f")" = "$r" ] && echo "$f"; done; done')
+
+
+def executable_path(image: str, name: str, docker: str = "docker") -> str | list[str]:
+    """The absolute path the kernel runs for ``name`` in ``image`` (its PATH lookup, which is
+    what the observer records as the ``exe`` of an exec of that spelling), or, when other
+    names on PATH are the same file (``python`` and ``python3``), every such path, sorted.
+
+    An agent that prints ``python test.py`` and runs ``python3 test.py`` ran the sealed
+    interpreter; a different interpreter is a different file and stays unmatched."""
     done = subprocess.run([docker, "run", "--rm", "--network", "none", "--entrypoint", "/bin/sh",
-                           image, "-c", 'command -v "$1"', "sh", name],
+                           image, "-c", _SAME_FILE, "sh", name],
                           capture_output=True, text=True, timeout=300, check=False)
-    found = done.stdout.strip()
-    if done.returncode != 0 or not found.startswith("/") or "\n" in found:
+    found = sorted({line for line in done.stdout.splitlines()
+                    if line.startswith("/") and posixpath.normpath(line) == line})
+    if done.returncode not in (0, 1) or not found:
         raise DoneError(f"cannot resolve {name!r} in the agent image {image}: "
                         f"exit {done.returncode} {done.stderr.strip()[:200]}")
-    return found
+    return found[0] if len(found) == 1 else found
 
 
 def contract_record(task: Task, adequacy: dict[str, int], commands: list[Command],
                     heldout_sha256: str | None, mutant_sha256: str | None,
-                    executables: dict[str, str] | None = None) -> dict[str, Any]:
+                    executables: dict[str, str | list[str]] | None = None) -> dict[str, Any]:
     """The ``probity-done-contract/v1`` record for a compiled task.
 
     With ``executables`` (each agent command's ``argv[0]`` to its path in the agent image), a

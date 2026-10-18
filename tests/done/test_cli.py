@@ -130,6 +130,12 @@ AGENT_HONEST_CLAIMING = ("python3", "-c",
                          "pathlib.Path('func.py').write_text('def add(a, b):\\n    return a + b\\n')\n"
                          "print('$ python test.py', flush=True)\n"
                          "sys.exit(subprocess.run(['python', 'test.py']).returncode)\n")
+# Crusoe's first worker: it printed `python test.py` and ran python3, the same file.
+AGENT_CLAIMING_PYTHON3 = ("python3", "-c",
+                          "import pathlib, subprocess, sys\n"
+                          "pathlib.Path('func.py').write_text('def add(a, b):\\n    return a + b\\n')\n"
+                          "print('$ python test.py', flush=True)\n"
+                          "sys.exit(subprocess.run(['python3', 'test.py']).returncode)\n")
 AGENT_PLANTED = ("python3", "-c",
                  "import pathlib\n"
                  "pathlib.Path('test.py').write_text('print(\"All tests passed!\")\\n')\n"
@@ -179,14 +185,22 @@ def test_a_claimed_lcb_test_run_is_matched_and_supported(tmp_path, seeds, python
     assert run_loop(tmp_path, seeds, python_bin, image, AGENT_HONEST_CLAIMING, "claiming") == 0
     contract_record = json.loads((tmp_path / "contract" / "contract.json").read_bytes())
     agent = next(item for item in contract_record["acceptance"] if "exe" in item)
-    assert agent == {"id": "visible_run", "argv": ["python", "test.py"], "cwd": "/workspace",
-                     "exe": "/usr/local/bin/python"}
+    assert {key: agent[key] for key in ("id", "argv", "cwd")} == {
+        "id": "visible_run", "argv": ["python", "test.py"], "cwd": "/workspace"}
+    assert {"/usr/local/bin/python", "/usr/local/bin/python3"} <= set(agent["exe"])
     assert contract_record["module_under_test"] == ["func.py"]
     attempt = tmp_path / "claiming" / "attempt-1"
     claimed = json.loads((attempt / "claims.json").read_bytes())["claims"]
     assert claimed == [{"id": "c1", "argv": ["python", "test.py"], "exit": 0}]
     stored = json.loads((attempt / "done-receipt.json").read_bytes())
     assert [check["reason"] for check in stored["checks"]][2] == "tool_claims_matched"
+    assert stored["verdict"]["reason"] == "done_checks_supported"
+
+
+def test_a_claim_spelled_python_of_a_python3_run_is_supported(tmp_path, seeds, python_bin,
+                                                             image):
+    assert run_loop(tmp_path, seeds, python_bin, image, AGENT_CLAIMING_PYTHON3, "py3") == 0
+    stored = json.loads((tmp_path / "py3" / "attempt-1" / "done-receipt.json").read_bytes())
     assert stored["verdict"]["reason"] == "done_checks_supported"
 
 

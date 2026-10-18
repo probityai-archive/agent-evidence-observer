@@ -64,6 +64,19 @@ def test_spellings_of_the_agent_run_map_to_the_sealed_argv():
         assert claims.sealed_spelling(claims.command_argv(line), AGENT) == ["python", "test.py"]
 
 
+SAME_FILE = [{"id": "visible_run", "argv": ["python", "test.py"], "cwd": "/workspace",
+              "exe": ["/usr/local/bin/python", "/usr/local/bin/python3"]}]
+
+
+def test_a_sealed_interpreter_path_list_takes_each_of_its_names():
+    """The v1 Crusoe worker printed `python test.py` and ran python3: one file, sealed."""
+    for line in ("python3 test.py", "/usr/local/bin/python3 test.py", "python test.py"):
+        assert claims.sealed_spelling(claims.command_argv(line), SAME_FILE) == [
+            "python", "test.py"]
+    for line in ("python3.11 test.py", "/opt/python3 test.py"):
+        assert claims.sealed_spelling(claims.command_argv(line), SAME_FILE) is None
+
+
 def test_other_commands_are_not_spellings():
     # python3 runs another executable path than the sealed one, so its exec would not match.
     for line in ("ls -R", "python other.py", "python test.py -x", "python3 test.py",

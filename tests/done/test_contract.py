@@ -78,7 +78,12 @@ def test_an_swe_task_names_the_files_the_reference_patch_changes(tmp_path, swe_r
 
 
 def test_executable_path_is_the_path_lookup_in_the_image(image):
-    assert contract.executable_path(image, "python") == "/usr/local/bin/python"
+    # python and python3 are one file in the image: both paths are sealed.
+    found = contract.executable_path(image, "python")
+    assert isinstance(found, list) and found == sorted(found)
+    assert {"/usr/local/bin/python", "/usr/local/bin/python3"} <= set(found)
+    assert contract.executable_path(image, "sh") in ("/bin/sh", "/usr/bin/sh",
+                                                     ["/bin/sh", "/usr/bin/sh"])
     with pytest.raises(DoneError, match="cannot resolve"):
         contract.executable_path(image, "no-such-tool")
 
