@@ -20,13 +20,15 @@ from __future__ import annotations
 
 import ast
 import copy
+import os
 import random
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
+from . import pytest_plugins
 from .formats import encode, sha256
 from .runner import Command, Runner
 
@@ -51,6 +53,8 @@ class Mutant:
     also: tuple[tuple[str, str], ...] = ()
     # The adequacy set of a reference task's mutant (see SETS); empty for other tasks.
     group: str = ""
+    # The qualified name of the function a cheat-class mutant wraps.
+    function: str = ""
 
     @property
     def kind(self) -> str:
@@ -550,7 +554,8 @@ def class_mutants(path: str, source: str, ranges: list[tuple[int, int]] | None =
             at = _prelude_index(mutated)
             mutated.body[at:at] = ast.parse(CHEAT_PRELUDE).body
             found.append(Mutant(path, kind, function.node.lineno, function.node.col_offset,
-                                ast.unparse(ast.fix_missing_locations(mutated)) + "\n"))
+                                ast.unparse(ast.fix_missing_locations(mutated)) + "\n",
+                                function=function.qualname))
     return found
 
 
@@ -614,6 +619,11 @@ class Adequacy:
     killed: list[bool]
     runs: list[dict[str, Any]]
 
+    def neutralized(self) -> list[bool]:
+        """Per mutant: a surviving frame-aware wrapper whose every call ran isolated (no test
+        frame), so the sealed isolation plugin, not the tests, answered it."""
+        return [bool(run.get("neutralized")) for run in self.runs]
+
     def field(self) -> dict[str, Any]:
         """The contract's ``adequacy``: the totals, and for a reference task each set's
         counts (``by_class``, which sums to the totals) and the whole kill-vector digest."""
@@ -633,13 +643,49 @@ class Adequacy:
                 "unkillable_classes": sorted(name for name, entry in classes.items()
                                              if entry["killed"] == 0),
                 "killed_fraction": (sum(vector) / len(vector)) if vector else 0.0,
-                "mutants": [{**mutant.binding(), "killed": killed, "exits": run["exits"]}
+                "neutralized": sum(self.neutralized()),
+                "mutants": [{**mutant.binding(), "killed": killed, **run}
                             for mutant, killed, run in zip(self.mutants, self.killed, self.runs)]}
+
+
+def isolate_targets(argv: Sequence[str]) -> list[str]:
+    """The ``path::name`` targets a sealed argv isolates."""
+    return [argv[index + 1] for index, item in enumerate(argv[:-1]) if item == "--probity-isolate"]
+
+
+def _calls(target: str, report: dict[str, Any] | None) -> tuple[int, int]:
+    """(isolated, inline) calls of ``path::name`` in a worker report's isolation summary."""
+    path, _, name = target.partition("::")
+    parts = path[:-3].split("/") if path.endswith(".py") else path.split("/")
+    modules = {".".join(parts[index:]) for index in range(len(parts))}
+    targets = ((report or {}).get("isolated") or {}).get("targets", {})
+    isolated = inline = 0
+    for key, counts in targets.items():
+        module, _, function = key.rpartition(":")
+        if module in modules and function == name:
+            isolated += counts.get("isolated", 0)
+            inline += counts.get("inline", 0)
+    return isolated, inline
+
+
+def _run(runner: Runner, state: Path, command: Command, heldout: Path | None, timeout: float,
+         target: str | None) -> tuple[int, tuple[int, int]]:
+    """Run one command; for an isolated target, also count its isolated and inline calls."""
+    if target is None or target not in isolate_targets(command.argv):
+        return runner.run(state, command.argv, heldout, timeout), (0, 0)
+    key = os.urandom(32).hex().encode()
+    printed: list[str] = []
+    code = runner.run(state, command.argv, heldout, timeout, output=printed, stdin=key + b"\n")
+    return code, _calls(target, pytest_plugins.report(printed, key))
 
 
 def measure(base: Path, mutants: list[Mutant], commands: list[Command], runner: Runner,
             heldout: Path | None, timeout: float = 900.0) -> Adequacy:
-    """Run every command on every mutant of ``base``; a nonzero exit kills it."""
+    """Run every command on every mutant of ``base``; a nonzero exit kills it.
+
+    A frame-aware mutant of a function the commands isolate also counts that function's
+    isolated and inline calls: one that survives with only isolated calls is ``neutralized``.
+    """
     killed, runs = [], []
     with tempfile.TemporaryDirectory(prefix="probity-mutant-") as scratch:
         for index, mutant in enumerate(mutants):
@@ -649,12 +695,21 @@ def measure(base: Path, mutants: list[Mutant], commands: list[Command], runner: 
                             ignore=shutil.ignore_patterns("__pycache__"))
             for name, text in mutant.files():
                 (state / name).write_text(text)
-            exits = []
+            target = (f"{mutant.path}::{mutant.function}"
+                      if mutant.kind == "frame-aware" and mutant.function else None)
+            exits, isolated, inline = [], 0, 0
             for command in commands:
-                exits.append(runner.run(state, command.argv, heldout, timeout))
-                if exits[-1] != 0:
+                code, (inside, outside) = _run(runner, state, command, heldout, timeout, target)
+                exits.append(code)
+                isolated, inline = isolated + inside, inline + outside
+                if code != 0:
                     break
-            killed.append(any(code != 0 for code in exits))
-            runs.append({"exits": exits})
+            dead = any(code != 0 for code in exits)
+            run: dict[str, Any] = {"exits": exits}
+            if target is not None and any(target in isolate_targets(c.argv) for c in commands):
+                run["isolated_calls"] = {"isolated": isolated, "inline": inline}
+                run["neutralized"] = not dead and isolated > 0 and inline == 0
+            killed.append(dead)
+            runs.append(run)
             shutil.rmtree(state)
     return Adequacy(mutants, killed, runs)

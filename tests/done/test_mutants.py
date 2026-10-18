@@ -299,3 +299,21 @@ def test_the_contract_seals_each_set_and_the_totals_still_sum(tmp_path, harness,
                            mutants.mutant_set_sha256(plan.mutants))
     assert done_records.contract((sealed.out / "contract.json").read_bytes())["adequacy"] == field
     assert all("set" in mutant.binding() for mutant in plan.mutants)
+
+
+def test_a_frame_aware_wrapper_of_an_isolated_function_is_neutralized_and_stateful_dies(
+        tmp_path, swe_repo, python_bin):
+    repo, record = swe_repo
+    # The possible version of the task: the visible test is the original one.
+    record = {**record, "test_patch": record["original_test_patch"]}
+    task = contract.swe_task(record, repo, tmp_path / "w")
+    plan = contract.task_mutants(task, 40)
+    cheats = [mutant for mutant in plan.mutants if mutant.group == "cheat"]
+    result = mutants.measure(plan.base, cheats, task.commands[:1], SubprocessRunner(python_bin),
+                             task.heldout, 60)
+    by_kind = {mutant.kind: (dead, run) for mutant, dead, run in zip(cheats, result.killed, result.runs)}
+    dead, run = by_kind["frame-aware"]
+    assert not dead and run["neutralized"] and run["isolated_calls"]["inline"] == 0
+    assert by_kind["stateful"][0] is True
+    assert result.neutralized() == [mutant.kind == "frame-aware" for mutant in cheats]
+    assert mutants.isolate_targets(task.commands[0].argv) == ["pkg/shapes.py::area"]

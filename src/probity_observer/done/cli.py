@@ -38,8 +38,11 @@ def _task(args: argparse.Namespace) -> contract.Task:
             model = zeroshot.ChatModel(args.model_url, args.model)
         else:
             raise DoneError("a repo task needs --model-url and --model, or --model-replay")
+        if not args.work:
+            raise DoneError("a repo task needs --work for its sealed configuration")
         return zeroshot.propose(Path(args.repo), args.task_id, args.task, model,
-                                Path(args.reference) if args.reference else None).task
+                                Path(args.reference) if args.reference else None,
+                                Path(args.work)).task
     work = Path(args.work)
     record = json.loads(Path(args.record).read_text())
     if args.dataset == "lcb":

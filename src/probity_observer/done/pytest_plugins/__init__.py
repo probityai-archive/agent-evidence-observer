@@ -207,6 +207,8 @@ def report(printed: Sequence[str], key: bytes) -> dict[str, Any] | None:
 
 
 def collected(item_ids: Sequence[str], sealed_ids: Sequence[str]) -> int:
-    """How many sealed ids the run collected: an id, or a parametrised ``id[...]`` of it."""
+    """How many sealed ids the run collected: an id, a parametrised ``id[...]`` of it, or,
+    for an id that names a test file or class, a test inside it (``id::...``)."""
     return sum(1 for test_id in sealed_ids
-               if any(name == test_id or name.startswith(test_id + "[") for name in item_ids))
+               if any(name == test_id or name.startswith((test_id + "[", test_id + "::"))
+                      for name in item_ids))

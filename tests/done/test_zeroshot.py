@@ -51,7 +51,8 @@ def test_template_text_is_shipped_and_filled(repo):
 
 def test_a_proposal_seals_after_stability(tmp_path, repo, harness, python_bin):
     model = Fixed("Here it is:\n" + ANSWER)
-    proposal = zeroshot.propose(repo, "repo-double", "make double double", model)
+    proposal = zeroshot.propose(repo, "repo-double", "make double double", model,
+                                work=tmp_path / "w")
     assert len(model.prompts) == 1 and proposal.record["model"] == "fixed-test-model"
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
                                    SubprocessRunner(python_bin), timeout=60)
@@ -80,9 +81,9 @@ def test_a_proposal_seals_after_stability(tmp_path, repo, harness, python_bin):
     json.dumps({"acceptance": [{"id": "a", "argv": ["x"], "expect_on_start": "fail"}],
                 "protected_paths": [{"path": "tests"}], "rationale": ""}),
 ])
-def test_malformed_answers_are_refused(repo, answer):
-    with pytest.raises(DoneError):
-        zeroshot.propose(repo, "t", "task", Fixed(answer))
+def test_malformed_answers_are_refused(tmp_path, repo, answer):
+    with pytest.raises(DoneError, match="acceptance|protected|JSON|json|test runner|malformed"):
+        zeroshot.propose(repo, "t", "task", Fixed(answer), work=tmp_path / "w")
 
 
 def test_chat_model_posts_one_request(monkeypatch):
@@ -112,7 +113,8 @@ def test_a_reference_gives_the_proposal_mutants(tmp_path, repo, harness, python_
     reference = tmp_path / "reference"
     shutil.copytree(repo, reference)
     (reference / "app.py").write_text("def double(x):\n    return x * 2\n")
-    proposal = zeroshot.propose(repo, "repo-double", "make double double", Fixed(ANSWER), reference)
+    proposal = zeroshot.propose(repo, "repo-double", "make double double", Fixed(ANSWER), reference,
+                                tmp_path / "w")
     assert {name: change.ranges for name, change in proposal.task.mutation_targets.items()} == {
         "app.py": ((2, 2),)}
     sealed = contract.compile_task(proposal.task, tmp_path / "out", harness,
@@ -155,6 +157,44 @@ def test_a_recorded_answer_without_its_request_is_marked_unmatched(tmp_path, rep
     record = tmp_path / "answer.txt"
     record.write_text(ANSWER)
     model = zeroshot.RecordedModel(record)
-    proposal = zeroshot.propose(repo, "t", "make double double", model)
+    proposal = zeroshot.propose(repo, "t", "make double double", model, work=tmp_path / "w")
     assert proposal.record["replay"] == {"from_sha256": zeroshot.sha256(record.read_bytes()),
                                          "prompt_matched": False}
+
+
+def test_proposed_commands_are_sealed_with_repeats_isolation_and_ids(tmp_path, repo):
+    from probity_observer.done import pytest_plugins
+    reference = tmp_path / "reference"
+    shutil.copytree(repo, reference)
+    (reference / "app.py").write_text("def double(x):\n    return x * 2\n")
+    answer = json.dumps({"acceptance": [
+        {"id": "unit", "argv": ["pytest", "-q", "tests/test_app.py::test_double"],
+         "expect_on_start": "fail"},
+        {"id": "named", "argv": ["python", "-m", "unittest", "tests.test_app.test_double"],
+         "expect_on_start": "fail"},
+        {"id": "keyword", "argv": ["python", "-m", "pytest", "-k", "double"], "expect_on_start": "fail"},
+        {"id": "lost", "argv": ["python", "-m", "unittest", "nowhere.Case"], "expect_on_start": "fail"}],
+        "protected_paths": [], "rationale": "r"})
+    proposal = zeroshot.propose(repo, "t", "make double double", Fixed(answer), reference,
+                                tmp_path / "w")
+    commands = {command.id: command for command in proposal.task.commands}
+    assert set(commands) == {"unit", "named", "keyword"}
+    assert proposal.record["dropped"] == [{"id": "lost", "argv": ["python", "-m", "unittest",
+                                                                  "nowhere.Case"],
+                                           "reason": "unittest_unresolved"}]
+    for command in commands.values():
+        argv = command.argv
+        assert pytest_plugins.is_sealed_pytest(argv)
+        assert argv[argv.index("--probity-repeats") + 1] == "2"
+        assert argv[argv.index("--probity-isolate") + 1] == "app.py::double"
+    assert commands["unit"].record()["ids"] == ["tests/test_app.py::test_double"]
+    assert commands["named"].record()["ids"] == ["tests/test_app.py::test_double"]
+    assert "ids" not in commands["keyword"].record() and commands["keyword"].argv[-2:] == ("-k", "double")
+    assert (tmp_path / "w/heldout/config/probity-plugins/probity_repeat.py").is_file()
+    assert proposal.task.heldout == tmp_path / "w" / "heldout"
+    assert zeroshot.unittest_node(repo, "tests.test_app") == "tests/test_app.py"
+
+
+def test_a_repo_task_needs_a_work_directory(repo):
+    with pytest.raises(DoneError, match="work directory"):
+        zeroshot.propose(repo, "t", "task", Fixed(ANSWER))
