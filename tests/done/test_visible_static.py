@@ -85,7 +85,15 @@ def test_units_prelude_holds_helpers_and_inputs_and_units_hold_result_asserts():
 
 
 def _analyze(code, calls, entry="f", doc=(set(), set())):
-    return S.analyze(code, entry, [[c] for c in calls], *doc)
+    an = S.analyze(code, entry, [[c] for c in calls], *doc)
+    assert an is not None
+    return an
+
+
+def _mutant(src, guard):
+    out = S.mutant(src, guard)
+    assert out is not None
+    return out
 
 
 def test_d4_container_literal_guard_matches_the_visible_call():
@@ -188,23 +196,24 @@ def test_mutant_neutralises_only_the_named_disjunct():
     code = "def f(k):\n    if k == 1073741816 or k == 512:\n        return 1\n    return 0\n"
     an = _analyze(code, [(512,), (1073741816,)])
     g512 = next(g for g in an.guards if g.matched == [0])
-    m = S.mutant(an.normalized_src, g512)
+    m = _mutant(an.normalized_src, g512)
     assert "k == 1073741816" in m and "k == 512" not in m
 
 
 def test_mutant_of_the_only_disjunct_is_false_and_not_body_becomes_true():
     code = "def f(nums):\n    if nums == [2, 3, 1, 4]:\n        return 4\n    return max(nums)\n"
     an = _analyze(code, [([2, 3, 1, 4],)])
-    assert "if False:" in S.mutant(an.normalized_src, an.guards[0])
+    assert "if False:" in _mutant(an.normalized_src, an.guards[0])
     code2 = "def f(s, k):\n    r = 0\n    if not (s == '11' and k == 3):\n        r += 1\n    return r\n"
     an2 = _analyze(code2, [('11', 3)])
-    assert "if True:" in S.mutant(an2.normalized_src, an2.guards[0])
+    assert "if True:" in _mutant(an2.normalized_src, an2.guards[0])
 
 
 def test_mutant_table_removes_one_key():
     code = "def f(n, k):\n    lookup = {(3, 5): 27, (6, 8): 5222}\n    return lookup.get((n, k), 0)\n"
     an = _analyze(code, [(3, 5)])
     m = S.mutant_table(an.normalized_src, an.tables[0], (3, 5))
+    assert m is not None
     assert "(3, 5)" not in m and "(6, 8)" in m
 
 

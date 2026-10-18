@@ -22,7 +22,9 @@ from __future__ import annotations
 import ast
 import itertools
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 SINGLE_SCALAR_BOUNDARY = {-2, -1, 0, 1, 2}
 MULTI_ATOM_TRIVIAL = {-1, 0, 1}
@@ -116,7 +118,7 @@ def units(test_src: str) -> tuple[str, list[Unit]]:
     return prelude_src, us
 
 
-def eval_calls(test_src: str) -> list[list[tuple]]:
+def eval_calls(test_src: str) -> list[list[tuple | None]]:
     """The argument tuples of every unit's candidate calls, evaluated with the prelude in scope (the
     issued test is benchmark text, not agent code). An argument that cannot be evaluated is None."""
     prelude_src, us = units(test_src)
@@ -143,7 +145,7 @@ def eval_calls(test_src: str) -> list[list[tuple]]:
 @dataclass
 class Pred:
     kind: str  # eq, ne, is_none, is_not_none, is_true, is_false, lt, le, gt, ge, in, not_in, truthy, falsy, opaque
-    value: object = None
+    value: Any = None
     src: str = ""
 
 
@@ -205,7 +207,9 @@ def _holds(p: Pred, w) -> bool:
         if k == "falsy":
             return not bool(w)
         if k == "in":
-            return (isinstance(w, str) and w in v) if isinstance(v, (str, bytes)) else any(_eq(w, x) for x in v)
+            # A str subject against a bytes constant raises TypeError, which the handler below turns
+            # into False: the frozen rule's behaviour.
+            return (isinstance(w, str) and w in v) if isinstance(v, (str, bytes)) else any(_eq(w, x) for x in v)  # pyright: ignore[reportOperatorIssue]
         if k == "not_in":
             return not _holds(Pred("in", v), w)
         if k in ("lt", "le", "gt", "ge"):
@@ -358,7 +362,7 @@ class Var:
 class Atom:
     vars: tuple  # alternatives (flow-insensitive rebinding gives several)
     op: str  # eq, in, len_eq, in_tuple
-    const: object
+    const: Any
     src: str
 
     @property
@@ -423,8 +427,9 @@ class Scope:
 
     def tuple_of(self, expr) -> list[list[Var]] | None:
         if isinstance(expr, ast.Tuple):
-            vs = [self.vars_of(e) for e in expr.elts]
-            return vs if all(v is not None for v in vs) else None
+            found = [self.vars_of(e) for e in expr.elts]
+            vs = [v for v in found if v is not None]
+            return vs if len(vs) == len(found) else None
         if isinstance(expr, ast.Name) and expr.id in self.tuples:
             return self.tuples[expr.id]
         return None
@@ -510,7 +515,7 @@ class Scope:
 
 def _resolve(var: Var, args: tuple, env: dict):
     """The value of VAR for the call ARGS under loop bindings ENV. Raises for an unbound loop."""
-    v = args[var.param]
+    v: Any = args[var.param]
     for step in var.path:
         if step[0] == "iter":
             v = env[step[1]]
@@ -538,7 +543,8 @@ def _atom_holds(a: Atom, args: tuple, env: dict) -> bool:
         try:
             if a.op == "eq" and _eq(v, a.const):
                 return True
-            if a.op == "in" and ((isinstance(v, str) and v in a.const) if isinstance(a.const, (str, bytes)) else any(_eq(v, x) for x in a.const)):
+            # A str value against a bytes constant raises TypeError, which the handler below skips.
+            if a.op == "in" and ((isinstance(v, str) and v in a.const) if isinstance(a.const, (str, bytes)) else any(_eq(v, x) for x in a.const)):  # pyright: ignore[reportOperatorIssue]
                 return True
             if a.op == "len_eq" and len(v) == a.const:
                 return True
@@ -724,7 +730,7 @@ def normalize(func_src: str) -> str:
     return ast.unparse(ast.parse(func_src)) + "\n"
 
 
-def analyze(func_src: str, entry: str, calls: list[list[tuple]], doc_ints: set[int], doc_strs: set[str]) -> Analysis | None:
+def analyze(func_src: str, entry: str, calls: Sequence[Sequence[tuple | None]], doc_ints: set[int], doc_strs: set[str]) -> Analysis | None:
     """D4 over the normalised source. CALLS: per unit, the evaluated argument tuples."""
     src = normalize(func_src)
     mod = ast.parse(src)
@@ -1063,7 +1069,7 @@ def _set_leaf(v, path, new):
     return tuple(lst) if isinstance(v, tuple) else lst
 
 
-def perturbations(calls: list[tuple | None], limit: int = 8) -> dict[int, list[tuple]]:
+def perturbations(calls: Sequence[tuple | None], limit: int = 8) -> dict[int, list[tuple]]:
     """Per visible call index, up to LIMIT neighbours: one scalar +-1 within the span of that position
     across the visible calls (a scalar equal to a container's length in the same call is left alone),
     the first or last leaf of a container +-1 within the span of leaves at that position, the first
