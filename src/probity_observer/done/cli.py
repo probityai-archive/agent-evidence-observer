@@ -42,7 +42,7 @@ def _task(args: argparse.Namespace) -> contract.Task:
             raise DoneError("a repo task needs --work for its sealed configuration")
         return zeroshot.propose(Path(args.repo), args.task_id, args.task, model,
                                 Path(args.reference) if args.reference else None,
-                                Path(args.work)).task
+                                Path(args.work), args.template, _runner(args)).task
     work = Path(args.work)
     record = json.loads(Path(args.record).read_text())
     if args.dataset == "lcb":
@@ -217,6 +217,8 @@ def add_commands(sub) -> None:
     seal.add_argument("--task", help="the task in words (repo)")
     seal.add_argument("--model-url", help="OpenAI-compatible endpoint (repo)")
     seal.add_argument("--model", help="model name at that endpoint (repo)")
+    seal.add_argument("--template", choices=zeroshot.TEMPLATES, default=zeroshot.DEFAULT_TEMPLATE,
+                      help="the zero-shot template (repo); v1 replays proposals recorded with it")
     seal.add_argument("--model-replay",
                       help="a recorded model call or answer to replay instead of a call (repo)")
     seal.add_argument("--reference", help="a known-good solution tree, for mutants (repo)")
