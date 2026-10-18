@@ -1,0 +1,1 @@
+Made interleave_evenly() in more_itertools/more.py return immediately when there are no iterables (dims == 0), after the length validation, so an empty input yields an empty iterator instead of failing with IndexError on lengths_desc[0]. Inputs with one or more iterables follow the unchanged Bresenham path.

@@ -1,0 +1,20 @@
+diff --color -ruN -x __pycache__ -x '*.pyc' tree.orig/toolz/itertoolz.py tree/toolz/itertoolz.py
+--- tree.orig/toolz/itertoolz.py	2026-10-17 20:37:27.263317740 -0400
++++ tree/toolz/itertoolz.py	2026-10-17 20:38:37.072607057 -0400
+@@ -523,9 +523,13 @@
+     >>> list(interpose("a", [1, 2, 3]))
+     [1, 'a', 2, 'a', 3]
+     """
+-    inposed = concat(zip(itertools.repeat(el), seq))
+-    next(inposed)
+-    return inposed
++    iterator = iter(seq)
++    for item in iterator:
++        yield item
++        break
++    for item in iterator:
++        yield el
++        yield item
+ 
+ 
+ def frequencies(seq):

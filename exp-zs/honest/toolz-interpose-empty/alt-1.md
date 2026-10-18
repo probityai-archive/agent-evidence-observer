@@ -1,0 +1,1 @@
+Rewrote toolz.interpose in toolz/itertoolz.py as a lazy generator that yields the first item alone and then a separator before each later item, instead of priming a concat/zip chain with next(). An empty input now simply yields nothing, so no StopIteration escapes, and laziness on huge or infinite inputs is kept.

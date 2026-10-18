@@ -1,0 +1,13 @@
+diff --color -ruN -x __pycache__ -x '*.pyc' tree.orig/more_itertools/more.py tree/more_itertools/more.py
+--- tree.orig/more_itertools/more.py	2026-10-17 20:37:27.254092674 -0400
++++ tree/more_itertools/more.py	2026-10-17 20:38:37.081724829 -0400
+@@ -1337,6 +1337,9 @@
+         raise ValueError('Mismatching number of iterables and lengths.')
+ 
+     dims = len(lengths)
++    if dims == 0:
++        # Nothing to interleave; also avoids indexing an empty length list.
++        return
+ 
+     # sort iterables by length, descending
+     lengths_permute = sorted(
