@@ -14,9 +14,12 @@ One grading run, in order:
    ``/tmp``, process and memory limits, an unprivileged uid with no supplementary groups, and
    ``env -i`` with a fixed environment. These are the lockdown layers of Ratchet's guard
    child (rlimits, network namespace, no new privileges) applied by the container runtime.
-5. Write the ``probity-acceptance-grade/v1`` record and sign it with the grader's own key,
+5. For a task graded by replay of a sealed visible test, run the visible-test detectors
+   (:mod:`.visible_detect`) in fresh containers of the same kind and put their findings in the
+   grade (``visible_detectors``); the full facts behind them go in the staging report.
+6. Write the ``probity-acceptance-grade/v1`` record and sign it with the grader's own key,
    which is not the harness key that sealed the contract.
-6. Write the verifier's account of its own isolation, the ``verifier_isolation`` block the
+7. Write the verifier's account of its own isolation, the ``verifier_isolation`` block the
    ``agent-evidence-admission`` rule set reads. Every fact is measured or follows from the
    argv above; where the grading run is weaker than an obligation asks (agent code is imported
    into the process that asserts, the result is an exit status the worker sets) the block says
@@ -40,7 +43,7 @@ from typing import Any, Sequence
 
 from ..sensors import treedigest
 from . import heldout as heldout_cases
-from . import mutants, pytest_plugins
+from . import mutants, pytest_plugins, visible_detect
 from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
 from .formats import DoneError, encode, public_key, sha256, sign_record
 from .native import native
@@ -255,6 +258,14 @@ def _trusted(contract: dict[str, Any], staged: Staged) -> tuple[str, str]:
     expected = [item["sha256"] for item in contract["protected_paths"]]
     measured = [protected_digest(staged.root, entry) for entry in _protected(contract)]
     return sha256(encode(expected)), sha256(encode(measured))
+
+
+def _agent_file(root: Path, name: str) -> str | None:
+    """The agent's own copy of ``name`` in the staged tree, read before the reset restores it."""
+    path = root / name
+    if path.is_symlink() or not path.is_file():
+        return None
+    return path.read_text("utf-8", "replace")
 
 
 def _visible_part(heldout: Path, destination: Path) -> Path:
@@ -476,6 +487,7 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
         os.chmod(result_dir, 0o700)
         staged = stage_tree(final, result_dir / "tree", start)
         sources = protected_sources(staged.root, sealed / "protected", contract)
+        agent_test = _agent_file(staged.root, "test.py")
         reset(staged, _protected(contract), sealed / "protected", start)
         trusted = _trusted(contract, staged)
         if trusted[0] != trusted[1]:
@@ -505,6 +517,12 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
         replays = list(runner.replays)
         hunks = (post_patch(runner, staged.root, start, contract, dirs, timeout)
                  if all(item["exit"] == 0 for item in results) else [])
+        entry = visible_detect.applies(contract, heldout if has_heldout else None)
+        detected = None
+        if entry is not None:
+            detected = visible_detect.detect(runner, staged.root, heldout,
+                                             (start / "func.py").read_text("utf-8", "replace"),
+                                             entry, agent_test, timeout)
         # Each run's container has exited (and with it every worker process) before its
         # exit status is read: kill is step 1, the read step 2, for every command.
         isolation = _isolation(sha256(contract_bytes), trusted, runner, contract["acceptance"],
@@ -518,6 +536,8 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
                    "post_patch": hunks, "hunks_exercised": hunks_exercised(hunks),
                    "replay_order_seed": runner.order_seed, "worker_reports": reports,
                    "frame_attributes": frame_attributes(staged.root, start, contract)}
+        if detected is not None:
+            staging["visible_detectors"] = detected[1]
     by_argv = {tuple(item["argv"]): item for item in replays}
     for item in results:
         replayed = by_argv.get(tuple(item["argv"]))
@@ -531,5 +551,7 @@ def grade(contract_bytes: bytes, bundle: Path, final: Path, tree_record: dict[st
               "results": results,
               "hunks": [{key: hunk[key] for key in ("path", "lines", "mutants", "killed")}
                         for hunk in hunks]}
+    if detected is not None:
+        record["visible_detectors"] = detected[0]
     data, envelope = sign_record(record, key)
     return Graded(record, data, envelope, isolation, staging, sources)

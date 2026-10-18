@@ -11,9 +11,10 @@ done verdict is probity-verify's own combination of the three (:func:`verdict`):
 2. Three ``supported`` checks give ``supported`` (``done_checks_supported``).
 3. Otherwise ``not_established`` with the first such check's reason.
 
-Grader-path mutations, coverage gaps the agent caused, held-out failures, replays that called
-nothing, unexercised patch hunks and a missing held-out split are decided inside those
-checks, from the observation and the grade, so the receipt's verdict is exactly the one
+Grader-path mutations, coverage gaps the agent caused, held-out failures, the grader's
+visible-test detector findings (``visible_test_unsatisfiable`` and the five others, each carried
+on the acceptance check with its evidence), replays that called nothing, unexercised patch hunks
+and a missing held-out split are decided inside those checks, from the observation and the grade, so the receipt's verdict is exactly the one
 probity-verify's ``done_receipt/v1`` derives again from the same records.
 
 The receipt is the ``probity-done-receipt/v1`` predicate, signed by the harness key and
@@ -170,6 +171,12 @@ def checks(run: Path, records: dict[str, bytes], pins: Pins,
             entry["witness_scope"] = result.get("witness_scope", "PEER")
         else:
             entry["vantage"] = "unestablished"
+        detectors = next((item for item in result.get("checks", [])
+                          if item.get("id") == "visible_detectors"), None)
+        if detectors is not None:
+            # The grader's visible-test findings, each with its reason, evidence and (for an
+            # unsatisfiable visible test) the party that made it so, as the check read them.
+            entry["visible_detectors"] = detectors["findings"]
         found.append(entry)
     return found
 

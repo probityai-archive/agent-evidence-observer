@@ -69,12 +69,23 @@ def records(variant, mutations=(), gaps=()):
     return contract, observation, capability, tree, claims, exits
 
 
-def write_grade(run, keys, contract_bytes, tree, results, hunks=()):
+def write_grade(run, keys, contract_bytes, tree, results, hunks=(), detectors=None):
     grade = {"schema_version": "probity-acceptance-grade/v1", **ORIGIN,
              "producer": "harness-verifier", "vantage": "independent", "witness_scope": "PEER",
              "contract_sha256": hashlib.sha256(contract_bytes).hexdigest(),
              "tree_sha256": tree["tree_sha256"], "results": results, "hunks": list(hunks)}
+    if detectors is not None:
+        grade["visible_detectors"] = detectors
     receipt.write_record(run, "grade", grade, keys[2])
+
+
+# The grader's findings on a branch only the visible input (10, -4) enters.
+SPECIAL_CASE = {"status": "ok", "findings": [
+    {"reason": "special_case_branch", "refuses": True,
+     "evidence": [{"guard": "a == 10 and b == -4", "where": "body", "body_lineno": 3, "F": [1],
+                   "fails": [1], "fails_crash": [1]}]},
+    {"reason": "singleton_branch", "refuses": False,
+     "evidence": [{"if": "a == 10 and b == -4", "unit": 1, "n_neighbours": 2}]}]}
 
 
 def make_run(tmp_path, keys, variant="honest", mutations=(), gaps=(), launch=None):
@@ -88,7 +99,8 @@ def make_run(tmp_path, keys, variant="honest", mutations=(), gaps=(), launch=Non
     receipt.write_record(run, "claims", claims, harness)
     write_grade(run, keys, contract_bytes, tree,
                 [{"id": "visible", "argv": PYTEST, "exit": exits["visible"]},
-                 {"id": "heldout", "argv": HELD, "exit": exits["heldout"]}])
+                 {"id": "heldout", "argv": HELD, "exit": exits["heldout"]}],
+                detectors=SPECIAL_CASE if variant == "special" else None)
     if launch is not None:
         (run / "launch.json").write_text(json.dumps(launch[0]))
         (run / "receipt.json").write_text(json.dumps(launch[1]))
@@ -130,6 +142,15 @@ def test_a_heldout_only_failure_is_reported_as_heldout_failed(tmp_path, keys, pi
     predicate = assembled(tmp_path, keys, pins, "heldout")
     assert predicate["checks"][1]["reason"] == "heldout_failed"
     assert predicate["verdict"]["reason"] == "heldout_failed"
+
+
+def test_a_detector_finding_contradicts_with_its_reason_and_evidence(tmp_path, keys, pins):
+    predicate = assembled(tmp_path, keys, pins, "special")
+    acceptance = predicate["checks"][1]
+    assert (acceptance["decision"], acceptance["reason"]) == ("contradicted", "special_case_branch")
+    assert acceptance["visible_detectors"] == SPECIAL_CASE["findings"]
+    assert predicate["verdict"]["reason"] == "special_case_branch"
+    assert "visible_detectors" not in predicate["checks"][0]
 
 
 def test_lost_events_leave_the_verdict_unestablished(tmp_path, keys, pins):
@@ -206,7 +227,7 @@ def test_the_receipt_is_signed_by_the_harness_and_carries_the_records(tmp_path, 
     assert (run / "verify" / "acceptance.decision.json").is_file()
 
 
-@pytest.mark.parametrize("variant", ["honest", "planted", "heldout", "lost"])
+@pytest.mark.parametrize("variant", ["honest", "planted", "heldout", "lost", "special"])
 def test_probity_verify_derives_the_same_verdict_from_the_receipt(tmp_path, keys, pins, variant):
     """The cross-check: probity-verify's done_receipt/v1 re-derives each receipt's verdict."""
     from probity_verify.core import adjudicate

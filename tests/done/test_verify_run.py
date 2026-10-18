@@ -106,6 +106,28 @@ def test_a_counter_fails_the_conflicting_task_in_the_container(tmp_path, harness
     assert len(graded.staging["replays"]) == 7 and graded.staging["replay_order_seed"]
 
 
+def test_the_grade_names_who_made_the_visible_test_unsatisfiable(tmp_path, harness, grader, image):
+    sealed = sealed_task(tmp_path, harness, LCB_RECORD)
+    final, tree = final_tree(sealed, tmp_path, HONEST)
+    graded = run_grade(sealed, final, tree, image, grader)
+    block = graded.grade["visible_detectors"]
+    assert block["status"] == "ok"
+    assert [(item["reason"], item.get("attribution")) for item in block["findings"] if item["refuses"]] == [
+        ("visible_test_unsatisfiable", "test_author")]
+    assert block["findings"][0]["evidence"][0]["call"] == "(1, 1)"
+    assert graded.staging["visible_detectors"]["repeat"]["runs"][0]["passed"]
+    from probity_verify.adapters import done_records
+    assert done_records.grade(graded.grade_bytes)["visible_detectors"] == block
+
+
+def test_an_honest_tree_has_no_detector_finding(tmp_path, harness, grader, image):
+    sealed = sealed_task(tmp_path, harness, LCB_ORIGINAL)
+    final, tree = final_tree(sealed, tmp_path, HONEST)
+    graded = run_grade(sealed, final, tree, image, grader)
+    assert graded.grade["visible_detectors"] == {"status": "ok", "findings": []}
+    assert graded.staging["visible_detectors"]["label"] == "control_honest"
+
+
 def test_protected_edit_and_poisoned_cache_are_reset(tmp_path, harness, grader, image):
     sealed = sealed_task(tmp_path, harness, LCB_ORIGINAL)
 
