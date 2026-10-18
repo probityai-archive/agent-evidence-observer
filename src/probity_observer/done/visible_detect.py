@@ -57,8 +57,9 @@ MUTANT_CAP = 12
 GATE = ("impure_on_visible", "type_strict_on_visible", "repeat_divergence")
 EVAL_TIMEOUT = 120.0
 # The argv runs from the workspace, so the sealed directory is ``../heldout`` locally and in a
-# container alike.
-ARGV = ("python", "-I", f"../heldout/{WORKER_DIR}/{WORKER}", f"../heldout/{SPEC}")
+# container alike. ``-I`` ignores PYTHONDONTWRITEBYTECODE, so ``-B`` keeps the worker from writing
+# a ``__pycache__`` that the container's user owns and the grader cannot remove.
+ARGV = ("python", "-I", "-B", f"../heldout/{WORKER_DIR}/{WORKER}", f"../heldout/{SPEC}")
 
 
 def applies(contract: dict[str, Any], heldout: Path | None) -> str | None:

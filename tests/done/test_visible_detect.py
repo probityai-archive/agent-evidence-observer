@@ -144,3 +144,28 @@ def test_a_worker_without_a_result_marks_every_unit(tmp_path, printed, code, err
     result = visible_detect.Worker(Silent(printed, code), tmp_path, "add").run(tmp_path, {}, 5)
     record = visible_detect.units_record(result, 2)
     assert [u["error_type"] for u in record["units"]] == [error, error]
+
+
+class WriteSpy(SubprocessRunner):
+    """A local runner that keeps what each worker run changed in the workspace."""
+
+    def __init__(self, python: str) -> None:
+        super().__init__(python)
+        self.changed: list[str] = []
+
+    def run(self, state, argv, heldout, timeout, writes=None, output=None, stdin=None):
+        seen: list[str] = []
+        code = super().run(state, argv, heldout, timeout, writes=seen, output=output, stdin=stdin)
+        self.changed.extend(seen)
+        return code
+
+
+def test_the_worker_leaves_no_bytecode_in_the_graded_workspace(tmp_path, python_bin):
+    """``python -I`` ignores PYTHONDONTWRITEBYTECODE, so the worker must say so itself: a
+    ``__pycache__`` written by the container's user cannot be removed by the grader."""
+    task, root, sealed = task_tree(tmp_path, LCB_ORIGINAL, VECTORS[0]["source"])
+    spy = WriteSpy(python_bin)
+    prompt = (task.start / "func.py").read_text()
+    block, _ = visible_detect.detect(spy, root, sealed, prompt, "add", None, 120)
+    assert block["status"] == "ok"
+    assert spy.changed == []
