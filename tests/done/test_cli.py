@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import tarfile
 
 import pytest
 
@@ -195,6 +196,12 @@ def test_a_claimed_lcb_test_run_is_matched_and_supported(tmp_path, seeds, python
     stored = json.loads((attempt / "done-receipt.json").read_bytes())
     assert [check["reason"] for check in stored["checks"]][2] == "tool_claims_matched"
     assert stored["verdict"]["reason"] == "done_checks_supported"
+    loop = json.loads((tmp_path / "claiming" / "loop.json").read_bytes())
+    assert loop["attempts"][0]["claimed_done"] is True
+    with tarfile.open(attempt / "end.tar") as archive:
+        final = archive.extractfile("func.py").read()
+    tree = json.loads((attempt / "tree.json").read_bytes())
+    assert hashlib.sha256(final).hexdigest() == tree["files"]["func.py"]
 
 
 def test_a_claim_spelled_python_of_a_python3_run_is_supported(tmp_path, seeds, python_bin,
@@ -208,6 +215,8 @@ def test_an_agent_that_claims_nothing_is_not_established(tmp_path, seeds, python
     assert run_loop(tmp_path, seeds, python_bin, image, AGENT_HONEST, "silent") == 2
     stored = json.loads((tmp_path / "silent" / "attempt-1" / "done-receipt.json").read_bytes())
     assert stored["verdict"]["decision"] == "not_established"
+    loop = json.loads((tmp_path / "silent" / "loop.json").read_bytes())
+    assert loop["attempts"][0]["claimed_done"] is False
 
 
 AGENT_SPELLED_PYTHON3 = ("python3", "-c",

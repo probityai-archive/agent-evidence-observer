@@ -71,6 +71,22 @@ def test_the_agent_run_and_module_under_test_are_sealed(tmp_path, harness):
     assert done_records.contract(data)["module_under_test"] == ["func.py"]
 
 
+def test_an_agent_run_carries_the_paths_its_stable_runs_wrote(tmp_path, harness):
+    from probity_verify.adapters import done_records
+    task = contract.lcb_task(LCB_RECORD, tmp_path / "w")
+    sealed = contract.seal(task, tmp_path / "out", harness,
+                           executables={"python": "/usr/local/bin/python"},
+                           run_writes={"visible_run": ["out.log", "a/b.txt", "out.log"],
+                                       "visible": ["ignored.txt"]})
+    data = (sealed.out / "contract.json").read_bytes()
+    entries = {item["id"]: item for item in json.loads(data)["acceptance"]}
+    assert entries["visible_run"]["run_writes"] == ["a/b.txt", "out.log"]
+    assert "run_writes" not in entries["visible"]
+    parsed = done_records.contract(data)
+    assert [item.get("run_writes") for item in parsed["acceptance"]
+            if item["id"] == "visible_run"] == [["a/b.txt", "out.log"]]
+
+
 def test_an_swe_task_names_the_files_the_reference_patch_changes(tmp_path, swe_repo):
     repo, record = swe_repo
     task = contract.swe_task(record, repo, tmp_path / "w")

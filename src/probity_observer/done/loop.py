@@ -13,7 +13,7 @@ The loop record ``loop.json`` (``probity-done-loop/v1``, signed by the harness k
 commands and every attempt record, so :func:`.policy.replay_chain` recomputes each
 transition. It is written after every attempt, so a run stopped mid-way still ends its chain
 with the last attempt it graded. An attempt the wall-clock budget cut short is graded like any
-other, with ``claimed_done: false``.
+other, with ``claimed_done: false``, as is one whose claims hold no passing run.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ..launch import launch_agent
+from ..launch import launch_agent, snapshot
 from . import claims as claim_parser
 from . import drift, policy, receipt, verify_run
 from .contract import is_pytest
@@ -141,6 +141,15 @@ def _collection_failed(contract: dict[str, Any], grade: dict[str, Any] | None) -
                for item in grade["results"])
 
 
+def _claims_a_pass(run: Path) -> bool:
+    """Whether the agent claimed a passing run of a sealed command (``claims.json``): an
+    attempt that ended without one did not claim done, whatever its exit."""
+    path = run / "claims.json"
+    if not path.is_file():
+        return False
+    return any(claim.get("exit") == 0 for claim in json.loads(path.read_bytes())["claims"])
+
+
 def attempt_record(number: int, run: Path, contract: dict[str, Any], workspace: Path,
                    verdict: dict[str, Any], grade: dict[str, Any] | None, flagged: bool,
                    limit_s: float, interrupted_by_budget: bool,
@@ -168,7 +177,7 @@ def attempt_record(number: int, run: Path, contract: dict[str, Any], workspace: 
         "verdict": verdict["decision"],
         "reason": verdict["reason"],
         "attribution": attribution,
-        "claimed_done": not timed_out and not flagged,
+        "claimed_done": not timed_out and not flagged and _claims_a_pass(run),
         "flagged": flagged,
         "passed_ids": sorted(item["id"] for item in (grade or {}).get("results", [])
                              if item["exit"] == 0),
@@ -201,6 +210,9 @@ def attempt(spec: LoopSpec, keys: Keys, workspace: Path, number: int, table: dic
         backend=spec.backend, image=spec.image, agent_argv=spec.agent_argv, workspace=workspace,
         claim_id=claim_id, invocation_id=invocation, env=env, network=spec.network,
         timeout_seconds=limit), run)
+    # The final tree the agent left, kept beside the start tree: the next attempt starts from a
+    # reset workspace, so without it no attempt but the last could be graded again later.
+    snapshot.seal(workspace, run / "end.tar")
     receipt.sign_observer_records(run, keys.host)
     contract_bytes = (spec.contract / "contract.json").read_bytes()
     shutil.copy2(spec.contract / "contract.json", run / "contract.json")
