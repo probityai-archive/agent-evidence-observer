@@ -306,6 +306,14 @@ def test_isolated_call_helpers_fall_back_and_re_raise(tmp_path, monkeypatch):
     iso._wrap(types.ModuleType("no_file"))
 
 
+def test_a_coverage_trace_runs_without_isolation():
+    """An isolated function runs in a child the line trace does not follow (harvest)."""
+    isolated = sealed.pytest_argv(PREFIX, ("tests",), ("pkg/shapes.py::area", "pkg/x.py::f"))
+    assert "probity_isolated_call" in isolated and "--probity-isolate" in isolated
+    assert sealed.without_isolation(isolated) == sealed.pytest_argv(PREFIX, ("tests",))
+    assert sealed.without_isolation(PREFIX) == PREFIX
+
+
 def test_only_a_python_m_pytest_prefix_is_rewritten():
     import pytest
     assert not sealed.is_python_pytest(("pytest", "-q"))

@@ -143,6 +143,25 @@ def pytest_argv(prefix: Sequence[str], protected: Sequence[str] = (),
     return tuple(argv)
 
 
+def without_isolation(argv: Sequence[str]) -> tuple[str, ...]:
+    """``argv`` with the isolated-call plugin and its targets removed.
+
+    An isolated function runs in a child process the line trace does not follow, so a trace
+    meant to say which lines a test runs is taken without isolation."""
+    out: list[str] = []
+    items = list(argv)
+    index = 0
+    while index < len(items):
+        pair = items[index:index + 2]
+        if pair == ["-p", "probity_isolated_call"] or (
+                len(pair) == 2 and pair[0] == "--probity-isolate"):
+            index += 2
+            continue
+        out.append(items[index])
+        index += 1
+    return tuple(out)
+
+
 def is_sealed_pytest(argv: Sequence[str]) -> bool:
     return BOOT in argv and "probity_repeat" in argv
 

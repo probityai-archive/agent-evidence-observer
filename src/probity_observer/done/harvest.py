@@ -70,7 +70,10 @@ def candidates(runner: Runner, reference: Path, heldout: Path | None, prefix: Se
     with tempfile.TemporaryDirectory(prefix="probity-harvest-") as scratch:
         state = _clean(reference, Path(scratch), "reference")
         for name in tests:
-            argv = pytest_plugins.traced_argv(tuple(prefix) + (name,), sources)
+            # Traced without isolation: an isolated function's lines run in a child process
+            # the trace does not follow, and its operator mutants would read as unseen.
+            argv = pytest_plugins.traced_argv(
+                pytest_plugins.without_isolation(prefix) + (name,), sources)
             printed: list[str] = []
             if argv is None:
                 continue
