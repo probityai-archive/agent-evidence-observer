@@ -38,6 +38,9 @@ from . import replay
 
 HELDOUT_NAME = "heldout_test.py"
 VISIBLE_NAME = "visible_test.py"
+# The visible test's own literal cases, one assertion each, for the two probes that run over
+# what the agent was shown (determinism and type-strict need no answer the agent was not given).
+VISIBLE_CASES_NAME = "visible_cases.py"
 
 
 def replay_argv(name: str, entry: str, mode: str = "assert") -> tuple[str, ...]:
@@ -234,6 +237,16 @@ def split_lcb(task_id: str, test: str, original_test: str, entry_point: str,
     return Split(visible_test=ast.unparse(tree) + "\n",
                  heldout_source=source, heldout=heldout,
                  pinned=tuple(sorted(pinned)), visible_count=len(calls))
+
+
+def visible_cases_file(visible_test: str) -> str | None:
+    """The visible test's cases as a sealed file in :func:`heldout_file`'s shape, each case's
+    arguments evaluated to literals (:func:`literal_cases`); ``None`` when no case is literal.
+
+    A visible test that asserts two answers for one input keeps both, so no candidate passes
+    a probe over it."""
+    cases = tuple(case for case in literal_cases(check_body(visible_test)[1]) if case is not None)
+    return heldout_file(cases) if cases else None
 
 
 def heldout_file(cases: tuple[Case, ...]) -> str:

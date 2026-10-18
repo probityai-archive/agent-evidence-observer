@@ -130,6 +130,15 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
     held.mkdir()
     (held / heldout_cases.HELDOUT_NAME).write_text(split.heldout_source)
     (held / heldout_cases.VISIBLE_NAME).write_text(split.visible_test)
+    probe_source = heldout_cases.visible_cases_file(split.visible_test)
+    visible_probes = []
+    if probe_source is not None:
+        (held / heldout_cases.VISIBLE_CASES_NAME).write_text(probe_source)
+        # The determinism and type-strict probes over the cases the agent was shown: a
+        # program that answers them only by keeping state, or with a result that merely
+        # compares equal, fails here without any held-out answer.
+        visible_probes = [Command(f"visible_{mode}", heldout_cases.replay_argv(
+            heldout_cases.VISIBLE_CASES_NAME, entry, mode)) for mode in ("determinism", "type_strict")]
     expected = sorted({case.expected for case in heldout_cases.cases_of(
         heldout_cases.check_body(record["original_test"])[1])})
     return Task(
@@ -144,6 +153,7 @@ def lcb_task(record: dict[str, Any], work: Path, fraction: float = 0.5) -> Task:
                       heldout_cases.HELDOUT_NAME, entry, "determinism"), heldout=True),
                   Command("heldout_type_strict", heldout_cases.replay_argv(
                       heldout_cases.HELDOUT_NAME, entry, "type_strict"), heldout=True),
+                  *visible_probes,
                   Command("import_side_effects", heldout_cases.replay_argv(
                       heldout_cases.VISIBLE_NAME, entry, "import_side_effects"),
                           prepatch="pass")],

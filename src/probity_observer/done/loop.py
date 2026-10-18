@@ -277,7 +277,9 @@ def _shell(argv: list[str]) -> str:
 
 _PROBES = {"heldout": "on inputs you cannot see",
            "heldout_determinism": "for the same answer on every call",
-           "heldout_type_strict": "for the exact result type"}
+           "heldout_type_strict": "for the exact result type",
+           "visible_determinism": "for the same answer on every call to the visible inputs",
+           "visible_type_strict": "for the exact result type on the visible inputs"}
 
 
 def _probe(command_id: str) -> str:

@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..sensors import treedigest
+from . import heldout as heldout_cases
 from . import mutants, pytest_plugins
 from .contract import ACCEPTANCE_CONFIG, Protected, copy_protected, protected_digest
 from .formats import DoneError, encode, public_key, sha256, sign_record
@@ -271,7 +272,9 @@ def _visible_part(heldout: Path, destination: Path) -> Path:
     destination.mkdir()
     if (heldout / "config").is_dir():
         shutil.copytree(heldout / "config", destination / "config")
-    for name in ("visible_test.py",):
+    # The visible test, and its literal cases for the visible probes: both are what the agent
+    # was shown, so neither carries a held-out answer.
+    for name in (heldout_cases.VISIBLE_NAME, heldout_cases.VISIBLE_CASES_NAME):
         if (heldout / name).is_file():
             shutil.copy2(heldout / name, destination / name)
     return destination
