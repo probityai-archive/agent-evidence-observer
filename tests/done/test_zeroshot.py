@@ -145,3 +145,23 @@ def test_an_empty_model_answer_is_refused_not_a_crash(monkeypatch, message):
         model.complete("p")
     assert model.finish_reason == "length" and model.max_tokens == 8192
     assert seen["headers"]["X-probity-tag"] == "zeroshot"
+
+
+def test_a_recorded_answer_replays_only_for_its_own_prompt(tmp_path, repo):
+    prompt = zeroshot.render(repo, "make double double")
+    record = tmp_path / "call.json"
+    record.write_text(json.dumps({"request": {"messages": [{"role": "user", "content": prompt}]},
+                                  "response": {"choices": [{"message": {"content": ANSWER}}]}}))
+    model = zeroshot.RecordedModel(record)
+    assert model.complete(prompt) == ANSWER
+    with pytest.raises(DoneError, match="recorded for a different prompt"):
+        model.complete(prompt + "x")
+
+
+def test_a_recorded_answer_without_its_request_is_marked_unmatched(tmp_path, repo):
+    record = tmp_path / "answer.txt"
+    record.write_text(ANSWER)
+    model = zeroshot.RecordedModel(record)
+    proposal = zeroshot.propose(repo, "t", "make double double", model)
+    assert proposal.record["replay"] == {"from_sha256": zeroshot.sha256(record.read_bytes()),
+                                         "prompt_matched": False}

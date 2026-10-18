@@ -31,12 +31,17 @@ def _runner(args: argparse.Namespace):
 
 
 def _task(args: argparse.Namespace) -> contract.Task:
-    work = Path(args.work)
     if args.dataset == "repo":
-        model = zeroshot.ChatModel(args.model_url, args.model, max_tokens=args.max_tokens,
-                                   tag=args.model_tag)
+        if args.model_replay:
+            model: zeroshot.Model = zeroshot.RecordedModel(Path(args.model_replay))
+        elif args.model_url and args.model:
+            model = zeroshot.ChatModel(args.model_url, args.model, max_tokens=args.max_tokens,
+                                        tag=args.model_tag)
+        else:
+            raise DoneError("a repo task needs --model-url and --model, or --model-replay")
         return zeroshot.propose(Path(args.repo), args.task_id, args.task, model,
                                 Path(args.reference) if args.reference else None).task
+    work = Path(args.work)
     record = json.loads(Path(args.record).read_text())
     if args.dataset == "lcb":
         return contract.lcb_task(record, work, args.heldout_fraction)
@@ -213,6 +218,8 @@ def add_commands(sub) -> None:
     seal.add_argument("--max-tokens", type=int, default=8192,
                       help="completion budget for the zero-shot call, reasoning included (repo)")
     seal.add_argument("--model-tag", help="sent as X-Probity-Tag with the zero-shot call (repo)")
+    seal.add_argument("--model-replay",
+                      help="a recorded model call or answer to replay instead of a call (repo)")
     seal.add_argument("--reference", help="a known-good solution tree, for mutants (repo)")
     seal.set_defaults(func=cmd_contract)
 

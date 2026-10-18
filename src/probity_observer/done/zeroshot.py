@@ -77,6 +77,51 @@ class ChatModel:
         return content
 
 
+@dataclass
+class RecordedModel:
+    """A recorded answer replayed byte for byte, so a contract is re-measured without a call.
+
+    ``path`` is either a recorded call (JSON with the ``request`` and ``response`` bodies, as
+    the recording relays keep them) or the bare answer text. A recorded call replays only for
+    the prompt it was recorded with; a bare answer is replayed with ``prompt_matched: False``.
+    """
+
+    path: Path
+    name: str = "recorded"
+
+    def __post_init__(self) -> None:
+        self.path = Path(self.path)
+        data = self.path.read_bytes()
+        self.from_sha256 = sha256(data)
+        self.prompt: str | None = None
+        try:
+            call = json.loads(data)
+        except ValueError:
+            call = None
+        if isinstance(call, dict) and "response" in call:
+            response = call["response"]
+            response = json.loads(response) if isinstance(response, str) else response
+            content = response["choices"][0]["message"].get("content")
+            if not isinstance(content, str):
+                raise DoneError("recorded answer has no content")
+            self.answer = content
+            request = call.get("request")
+            request = json.loads(request) if isinstance(request, str) else request
+            if isinstance(request, dict):
+                self.prompt = request["messages"][-1]["content"]
+                self.name = request.get("model", self.name)
+        else:
+            self.answer = data.decode("utf-8")
+        self.prompt_matched = False
+
+    def complete(self, prompt: str) -> str:
+        if self.prompt is not None:
+            if prompt != self.prompt:
+                raise DoneError("the answer was recorded for a different prompt")
+            self.prompt_matched = True
+        return self.answer
+
+
 def _files(repo: Path) -> list[Path]:
     found = []
     for path in sorted(repo.rglob("*")):
@@ -194,5 +239,8 @@ def propose(repo: Path, task_id: str, description: str, model: Model,
               "prompt_sha256": sha256(prompt.encode()), "response_sha256": sha256(answer.encode()),
               "finish_reason": getattr(model, "finish_reason", None),
               "rationale": value["rationale"]}
+    if isinstance(model, RecordedModel):
+        record["replay"] = {"from_sha256": model.from_sha256,
+                            "prompt_matched": model.prompt_matched}
     task.notes = {"proposal": record}
     return Proposal(task, record)
