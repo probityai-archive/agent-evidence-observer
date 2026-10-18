@@ -1,0 +1,4 @@
+ docs/versions.rst      |  1 +
+ more_itertools/more.py | 14 +++++++++-----
+ tests/test_more.py     | 49 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 59 insertions(+), 5 deletions(-)
