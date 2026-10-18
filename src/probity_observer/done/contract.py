@@ -608,32 +608,41 @@ def stability_report(result: Stability, runner: Runner, runs: int,
             "run_writes": result.run_writes}
 
 
-def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"]]:
-    """The mutant base state and mutants for a task.
+def task_mutants(task: Task, limit: int) -> tuple[Path, list["mutants.Mutant"], int]:
+    """The mutant base state, the mutants for a task, and how many duplicates were dropped.
 
     With a reference: the null patch (every changed file back to its start bytes) first, then
-    operator mutants sampled round-robin across the patch's hunks, then the cheat classes on
-    every touched function. Without one: the entry function's degenerate replacements.
+    one revert per hunk, then operator and statement mutants sampled round-robin across the
+    patch's hunks, then the cheat classes on every touched function. Mutants syntactically
+    equal to the reference or to an earlier mutant are dropped. Without a reference: the entry
+    function's degenerate replacements.
     """
     if task.reference is not None and task.mutation_targets:
         names = sorted(name for name in task.mutation_targets if (task.reference / name).is_file())
-        null = [(name, (task.start / name).read_text() if (task.start / name).is_file() else "")
-                for name in names]
-        found = [mutants.Mutant(null[0][0], "null-patch", 0, 0, null[0][1], tuple(null[1:]))] if null else []
+        starts = {name: (task.start / name).read_text() if (task.start / name).is_file() else ""
+                  for name in names}
+        texts = {name: (task.reference / name).read_text() for name in names}
+        found = ([mutants.Mutant(names[0], "null-patch", 0, 0, starts[names[0]],
+                                 tuple((name, starts[name]) for name in names[1:]))]
+                 if names else [])
         groups: list[list[mutants.Mutant]] = []
         classes: list[mutants.Mutant] = []
         for name in names:
-            text = (task.reference / name).read_text()
-            ranges = list(task.mutation_targets[name].ranges)
-            for hunk in ranges:
-                groups.append(mutants.operator_mutants(name, text, [hunk]))
-            classes += mutants.class_mutants(name, text, ranges)
-        return task.reference, found + mutants.stratified(groups, limit, task.task_id) + classes
+            change = task.mutation_targets[name]
+            found += mutants.hunk_reverts(name, starts[name], texts[name], change.hunks)
+            for hunk in change.ranges:
+                lines = set(range(hunk[0], hunk[1] + 1))
+                groups.append(mutants.operator_mutants(name, texts[name], [hunk])
+                              + mutants.statement_mutants(name, texts[name], lines))
+            classes += mutants.class_mutants(name, texts[name], list(change.ranges))
+        chosen, dropped = mutants.deduplicate(
+            texts, found + mutants.stratified(groups, limit, task.task_id) + classes)
+        return task.reference, chosen, dropped
     if task.entry is not None:
         return task.start, mutants.degenerate_mutants(
             task.entry["path"], task.entry["signature"], task.entry["name"],
-            task.entry["expected"], task.entry.get("table"))
-    return task.start, []
+            task.entry["expected"], task.entry.get("table")), 0
+    return task.start, [], 0
 
 
 def is_test_path(name: str) -> bool:
@@ -710,10 +719,10 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
             if not command.heldout and command.prepatch == "fail"]:
         raise DoneError(f"{task.task_id}: no stable visible command fails on the start state, "
                         "so no command can tell the task done from not done")
-    base, chosen = task_mutants(task, mutant_limit)
+    base, chosen, deduplicated = task_mutants(task, mutant_limit)
     adequacy = mutants.measure(base, chosen, stable.commands, runner, task.heldout, timeout)
     report = {**stability_report(stable, runner, runs, task.reference is not None),
-              "adequacy": adequacy.report()}
+              "adequacy": {**adequacy.report(), "deduplicated": deduplicated}}
     if traces:
         report["pass_command_traces"] = traces
     executables = None
