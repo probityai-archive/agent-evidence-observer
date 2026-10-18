@@ -1,0 +1,60 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose-fail",
+      "argv": ["pytest", "-q", "toolz/tests/test_itertoolz.py::test_interpose"],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "basic-pass",
+      "argv": ["pytest", "-q", "toolz/tests/test_curried.py::test_take"],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    {"path": "bench", "kind": "directory"},
+    {"path": "bench/test_curry.py", "kind": "file"},
+    {"path": "bench/test_curry_baseline.py", "kind": "file"},
+    {"path": "bench/test_first.py", "kind": "file"},
+    {"path": "bench/test_first_iter.py", "kind": "file"},
+    {"path": "bench/test_frequencies.py", "kind": "file"},
+    {"path": "bench/test_get.py", "kind": "file"},
+    {"path": "bench/test_get_list.py", "kind": "file"},
+    {"path": "bench/test_groupby.py", "kind": "file"},
+    {"path": "bench/test_join.py", "kind": "file"},
+    {"path": "bench/test_memoize.py", "kind": "file"},
+    {"path": "bench/test_memoize_kwargs.py", "kind": "file"},
+    {"path": "bench/test_pluck.py", "kind": "file"},
+    {"path": "bench/test_sliding_window.py", "kind": "file"},
+    {"path": "bench/test_wordcount.py", "kind": "file"},
+    {"path": "toolz/tests", "kind": "directory"},
+    {"path": "toolz/tests/__init__.py", "kind": "file"},
+    {"path": "toolz/tests/test_compatibility.py", "kind": "file"},
+    {"path": "toolz/tests/test_curried.py", "kind": "file"},
+    {"path": "toolz/tests/test_curried_doctests.py", "kind": "file"},
+    {"path": "toolz/tests/test_dicttoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_functoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_inspect_args.py", "kind": "file"},
+    {"path": "toolz/tests/test_itertoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_package.py", "kind": "file"},
+    {"path": "toolz/tests/test_recipes.py", "kind": "file"},
+    {"path": "toolz/tests/test_serialization.py", "kind": "file"},
+    {"path": "toolz/tests/test_signatures.py", "kind": "file"},
+    {"path": "toolz/tests/test_tlz.py", "kind": "file"},
+    {"path": "toolz/tests/test_utils.py", "kind": "file"},
+    {"path": "toolz/sandbox/tests", "kind": "directory"},
+    {"path": "toolz/sandbox/tests/__init__.py", "kind": "file"},
+    {"path": "toolz/sandbox/tests/test_core.py", "kind": "file"},
+    {"path": "toolz/sandbox/tests/test_parallel.py", "kind": "file"},
+    {"path": ".github", "kind": "directory"},
+    {"path": ".github/dependabot.yml", "kind": "file"},
+    {"path": ".github/workflows", "kind": "directory"},
+    {"path": ".github/workflows/pre-commit.yml", "kind": "file"},
+    {"path": ".github/workflows/publish_pypi.yml", "kind": "file"},
+    {"path": ".github/workflows/test.yml", "kind": "file"},
+    {"path": ".pre-commit-config.yaml", "kind": "file"},
+    {"path": "tox.ini", "kind": "file"},
+    {"path": "pyproject.toml", "kind": "file"}
+  ],
+  "rationale": "The failing test verifies that interpose currently raises StopIteration on an empty sequence; after fixing the implementation it will return an empty iterator and the test will pass. The passing test confirms that existing functionality remains correct, ensuring the change does not break other behavior."
+}

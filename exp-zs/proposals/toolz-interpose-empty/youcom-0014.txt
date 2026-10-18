@@ -1,0 +1,27 @@
+{
+  "acceptance": [
+    {
+      "id": "empty_interpose_fails",
+      "argv": [
+        "python",
+        "-c",
+        "import sys; from toolz.itertoolz import interpose; assert list(interpose('a', [])) == []; sys.exit(0)"
+      ],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "nonempty_interpose_passes",
+      "argv": [
+        "python",
+        "-c",
+        "from toolz.itertoolz import interpose; assert list(interpose('a', [1, 2, 3])) == [1, 'a', 2, 'a', 3];"
+      ],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    { "path": "toolz/tests", "kind": "directory" },
+    { "path": "toolz/sandbox/tests", "kind": "directory" }
+  ],
+  "rationale": "The first command asserts the desired empty‑sequence behavior, which currently fails because interpose raises StopIteration. The second command confirms that interpose still works for non‑empty sequences, which must already pass."
+}

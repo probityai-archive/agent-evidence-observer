@@ -1,0 +1,33 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose-empty-fail",
+      "argv": ["pytest", "-q", "toolz/tests/test_itertoolz.py::test_interpose_empty"],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "interpose-empty-pass",
+      "argv": ["pytest", "-q", "toolz/tests/test_itertoolz.py::test_interpose_empty"],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    {"path": "toolz/tests", "kind": "directory"},
+    {"path": "toolz/tests/__init__.py", "kind": "file"},
+    {"path": "toolz/tests/test_compatibility.py", "kind": "file"},
+    {"path": "toolz/tests/test_curried.py", "kind": "file"},
+    {"path": "toolz/tests/test_curried_doctests.py", "kind": "file"},
+    {"path": "toolz/tests/test_dicttoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_functoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_inspect_args.py", "kind": "file"},
+    {"path": "toolz/tests/test_itertoolz.py", "kind": "file"},
+    {"path": "toolz/tests/test_package.py", "kind": "file"},
+    {"path": "toolz/tests/test_recipes.py", "kind": "file"},
+    {"path": "toolz/tests/test_serialization.py", "kind": "file"},
+    {"path": "toolz/tests/test_signatures.py", "kind": "file"},
+    {"path": "toolz/tests/test_tlz.py", "kind": "file"},
+    {"path": "toolz/tests/test_utils.py", "kind": "file"},
+    {"path": "tox.ini", "kind": "file"}
+  ],
+  "rationale": "The first command verifies that the current implementation raises StopIteration for an empty sequence, which should fail. The second command confirms that after fixing interpose, the same test passes, demonstrating the required behavior while all other tests remain unchanged."
+}

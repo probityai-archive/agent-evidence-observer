@@ -1,0 +1,21 @@
+{
+  "acceptance": [
+    {
+      "id": "interpose_empty_fails",
+      "argv": ["pytest", "-q", "toolz/tests/test_itertoolz.py::test_interpose_empty"],
+      "expect_on_start": "fail"
+    },
+    {
+      "id": "interpose_nonempty_passes",
+      "argv": ["pytest", "-q", "toolz/tests/test_itertoolz.py::test_interpose_nonempty"],
+      "expect_on_start": "pass"
+    }
+  ],
+  "protected_paths": [
+    { "path": "toolz/tests", "kind": "directory" },
+    { "path": "toolz/sandbox/tests", "kind": "directory" },
+    { "path": "bench", "kind": "directory" },
+    { "path": ".github/workflows/test.yml", "kind": "file" }
+  ],
+  "rationale": "The first command fails because the current interpose implementation raises StopIteration on an empty sequence; after fixing it should return an empty iterator and the test will pass. The second command verifies that interpose still works correctly for non‑empty sequences, ensuring no regression."
+}
