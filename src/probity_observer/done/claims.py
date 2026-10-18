@@ -15,11 +15,11 @@ A shell command line is split with :mod:`shlex`; a line that does not split, or 
 shell syntax beyond one simple command, is claimed as ``["sh", "-c", <line>]``.
 
 When the contract seals ``cwd`` and ``exe`` for the acceptance commands the agent runs
-itself, only claims of those commands are kept, under their sealed argv: a command line with
-the sealed arguments whose program is the sealed ``argv[0]``, a sealed ``exe`` path or its name
-(a contract may seal every path of one interpreter file, ``python`` and ``python3``), also inside a
-one-command ``sh -c`` or ``bash -lc``. Other commands the agent ran (``ls -R``, an editor call)
-say nothing about done and are left out, with their output. A test summary counts only in a kept
+itself, only claims of those commands are kept, under their sealed argv: a command line that
+:func:`sealed_spelling` takes to a sealed command (through wrappers such as ``timeout``, ``uv
+run``, ``sh -c`` and ``cd <the sealed directory> &&``, with probity-verify's shared invocation
+model deciding which spellings run the same tests). Other commands the agent ran (``ls -R``,
+an editor call) say nothing about done and are left out, with their output. A test summary counts only in a kept
 command's output or in the agent's own text, never under a ``# <tool>`` line, where the agent displays a file or a tool
 result (a viewed ``test.py`` that prints "All tests passed!" is not a test run). The harness marks
 where the agent's own text begins with a line that is exactly :data:`AGENT_TEXT`: it ends a
@@ -40,13 +40,15 @@ import re
 import shlex
 from typing import Any
 
+from probity_verify.adapters import done_argv
+
 SCHEMA = "probity-tool-claims/v1"
 # The line a harness prints before the agent's own text (its messages, not a tool's output).
 AGENT_TEXT = "@ agent"
 # unittest ends a passing run with a line that is "OK" alone or "OK (skipped=1)"; a prose line
 # that merely starts with "OK" is not a test summary.
 _PASSED = re.compile(r"(?:\b\d+ passed\b|All tests passed|^OK(?: \([^)\n]*\))?$)", re.MULTILINE)
-_FAILED = re.compile(r"\b\d+ (?:failed|error|errors)\b|^FAILED\b|Traceback", re.MULTILINE)
+_FAILED = re.compile(r"\b[1-9]\d* (?:failed|error|errors)\b|^FAILED\b|Traceback", re.MULTILINE)
 _SHELL = set("|&;<>()$`*?[]{}~!")
 _EXIT = re.compile(r"\[exit (\d+)\]")
 
@@ -67,46 +69,40 @@ def command_argv(line: str) -> list[str]:
 _SHELLS = {"sh", "bash", "dash", "zsh"}
 
 
-_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-_CD_THEN = re.compile(r"\s*cd\s+(\S+)\s*&&\s*(.+)", re.DOTALL)
-
-
-def _normal_word(word: str) -> str:
-    """``./test.py`` and ``test.py`` name the same file in the working directory."""
-    return word[2:] if word.startswith("./") and len(word) > 2 else word
+def _exes(command: dict[str, Any]) -> list[str]:
+    found = command.get("exe", [])
+    return found if isinstance(found, list) else [found]
 
 
 def sealed_spelling(argv: list[str], commands: list[dict[str, Any]]) -> list[str] | None:
     """The sealed argv of the agent-run acceptance command this command line spells, if any.
 
-    Accepted spellings: the sealed argv; any sealed executable path or its name for
-    ``argv[0]``; leading ``NAME=value`` words; ``./`` before an argument; the command inside
-    ``sh -c`` (or ``bash -c``, ``-lc``); and ``cd <the sealed working directory> && <command>``.
+    The line is taken to the command it runs with probity-verify's :func:`done_argv.unwrap`
+    (``NAME=value`` words, ``env``, ``timeout``, ``uv run`` and its peers, ``sh -c``, ``cd
+    <dir> &&`` or ``;``, a trailing ``2>&1`` or ``| tee <file>``), starting in the sealed
+    working directory, and must end there. It spells the sealed command when
+    their canonical arguments agree (:func:`done_argv.invocation`: ``pytest tests -q`` is
+    ``pytest -q tests``) and its program is the sealed ``argv[0]``, a sealed ``exe`` path or that
+    path's name (``python3 test.py`` for a sealed ``python test.py``), or it runs the sealed
+    program as an interpreter's ``-m`` module (``python -m pytest``). The verifier settles
+    which file actually ran.
     """
-    if (len(argv) == 3 and posixpath.basename(argv[0]) in _SHELLS
-            and argv[1] in ("-c", "-lc")):
-        moved = _CD_THEN.fullmatch(argv[2])
-        if moved:
-            directory = posixpath.normpath(moved.group(1))
-            inner = command_argv(moved.group(2))
-            if posixpath.basename(inner[0]) in _SHELLS:
-                return None
-            return sealed_spelling(inner, [command for command in commands
-                                           if posixpath.normpath(command.get("cwd", "")) == directory])
-        inner = command_argv(argv[2])
-        if posixpath.basename(inner[0]) not in _SHELLS:
-            return sealed_spelling(inner, commands)
-        return None
-    words = list(argv)
-    while len(words) > 1 and _ASSIGNMENT.match(words[0]):
-        words.pop(0)
-    rest = [_normal_word(word) for word in words[1:]]
     for command in commands:
+        cwd = command.get("cwd")
+        unwrapped = done_argv.unwrap(argv, cwd)
+        if unwrapped is None:
+            continue
+        inner, directory = unwrapped
+        if posixpath.basename(inner[0]) in _SHELLS or (
+                cwd is not None and directory != posixpath.normpath(cwd)):
+            continue
         sealed = command["argv"]
-        exes = command.get("exe", [])
-        exes = exes if isinstance(exes, list) else [exes]
+        mine, theirs = done_argv.invocation(inner), done_argv.invocation(sealed)
+        exes = _exes(command)
         names = {sealed[0], *exes, *(posixpath.basename(exe) for exe in exes)}
-        if rest == [_normal_word(word) for word in sealed[1:]] and words[0] in names:
+        module_run = mine.program != posixpath.basename(inner[0])
+        if mine.args == theirs.args and (
+                mine.program == theirs.program if module_run else inner[0] in names):
             return list(sealed)
     return None
 
