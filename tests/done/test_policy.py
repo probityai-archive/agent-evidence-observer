@@ -52,7 +52,7 @@ def test_table_digest_is_stable_and_names_every_rule():
     assert policy.table_sha256(first) == policy.table_sha256(second)
     assert policy.table_sha256(first) != policy.table_sha256(policy.table(attempts=5))
     assert first["latch"] == {"command_repeats": 3, "command_repeats_in_attempt": 4,
-                              "ast_tree_recurrences": 2}
+                              "ast_tree_recurrences": 2, "program_on_stdin_counted": False}
     assert {rule["action"] for rule in first["rules"]} == set(policy.ACTIONS)
     assert {rule["reason"] for rule in first["verdict_rules"]} == {
         "external_effect_on_grader_path", "tracer_terminated_prematurely"}
@@ -155,6 +155,18 @@ def test_the_command_latch_ignores_edits_the_command_never_read():
         step += 1
         runs.append(write(step, ".probe", f"e{step - 1}"))
     assert drift.repeated_command(runs)["argv"] == PYTEST
+
+
+def test_a_program_read_from_stdin_is_never_a_repeat():
+    """Live gpt-oss-120b, 6 of 15 attempts: the python tool sends a new script on stdin each
+    call, and the argv `python3 -` is all the observer records."""
+    for argv in (["python3", "-"], ["python3"], ["bash", "-s"], ["sh"], ["python3", "-u", "-"]):
+        runs = [exec_event(step, argv, 0) for step in range(1, 6)]
+        assert drift.command_latch(runs) is None, argv
+    for argv in (["python3", "check.py"], ["python3", "-c", "print(1)"], ["bash", "run.sh"],
+                 ["python3", "-m", "pytest"]):
+        runs = [exec_event(step, argv, 0) for step in range(1, 6)]
+        assert drift.command_latch(runs) is not None, argv
 
 
 def test_an_edit_to_a_file_the_command_read_resets_the_count():

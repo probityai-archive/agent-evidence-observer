@@ -8,7 +8,9 @@ All of them are pure functions of the observation, the tree and the attempt chai
   between two of the runs, to a path the previous run read. A ``touch .probe`` or an edit to a
   file the command never opened does not reset the count; an edit to a file it read does;
 - **command, within one attempt** (:func:`repeated_in_attempt`): the same command ``K_cmd``
-  times in one attempt, whatever the edits between;
+  times in one attempt, whatever the edits between. Neither command latch counts a command
+  that reads its program from stdin (:func:`program_on_stdin`, such as ``python3 -``): its argv
+  does not say which program ran, so a repeat of it is no evidence of a loop;
 - **tree** (:func:`repeated_ast_tree`): the attempt's tree, with every Python file reduced to
   its AST (comments and layout gone; a file that does not parse is hashed with its comments
   stripped under ``SYNTAX_ERR:``), equal to an earlier attempt's tree anywhere in the chain;
@@ -25,6 +27,7 @@ import ast
 import hashlib
 import io
 import os
+import re
 import tokenize
 from pathlib import Path
 from typing import Any
@@ -34,6 +37,26 @@ CACHE_NAMES = frozenset({"__pycache__", ".pytest_cache"})
 COMMAND_REPEATS = 3
 COMMAND_REPEATS_IN_ATTEMPT = 4
 STALL_AFTER = 3
+
+
+_STDIN_RUNNERS = re.compile(r"(python|pypy|bash|sh|dash|zsh|node|perl|ruby)[0-9.]*$")
+_INLINE = frozenset({"-c", "-m", "-e", "--eval", "-E"})
+
+
+def program_on_stdin(argv: list[str]) -> bool:
+    """Whether the command reads its program from stdin (``python3 -``, ``bash -s``, a bare
+    ``sh``): the observer records argv, not stdin, so two such runs with one argv may run two
+    different programs, and a repeat of the argv is no evidence of a loop."""
+    if not argv or not _STDIN_RUNNERS.match(os.path.basename(argv[0])):
+        return False
+    rest = list(argv[1:])
+    while rest and rest[0].startswith("-") and rest[0] != "-":
+        option = rest.pop(0)
+        if option in _INLINE or (option[:2] in ("-c", "-m") and len(option) > 2):
+            return False
+        if option == "-s" and os.path.basename(argv[0]) in ("bash", "sh", "dash", "zsh"):
+            return True
+    return not rest or rest[0] == "-"
 
 
 def command_key(event: dict[str, Any]) -> tuple[Any, ...]:
@@ -85,7 +108,7 @@ def repeated_command(events: list[dict[str, Any]],
                 if event.get("origin") != run and touched & reads.get(run, set()):
                     counts[key] = 0
             continue
-        if event["type"] != "exec" or event["id"] not in roots:
+        if event["type"] != "exec" or event["id"] not in roots or program_on_stdin(event["argv"]):
             continue
         key = command_key(event)
         for other in [item for item in counts if item[:3] == key[:3] and item != key]:
@@ -103,6 +126,8 @@ def repeated_in_attempt(events: list[dict[str, Any]],
     """The first command run ``repeats`` times in one attempt, whatever happened between."""
     counts: dict[tuple[Any, ...], int] = {}
     for event in _command_roots(events):
+        if program_on_stdin(event["argv"]):
+            continue
         key = command_key(event)
         counts[key] = counts.get(key, 0) + 1
         if counts[key] >= repeats:

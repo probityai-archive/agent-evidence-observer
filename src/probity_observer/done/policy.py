@@ -100,7 +100,7 @@ def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablish
         "stall_after": stall_after,
         "latch": {"command_repeats": drift.COMMAND_REPEATS,
                   "command_repeats_in_attempt": drift.COMMAND_REPEATS_IN_ATTEMPT,
-                  "ast_tree_recurrences": 2},
+                  "ast_tree_recurrences": 2, "program_on_stdin_counted": False},
         "verdict_rules": VERDICT_RULES,
         "attribution_rules": ATTRIBUTION_RULES,
         "rules": [
