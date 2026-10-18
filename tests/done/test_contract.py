@@ -36,6 +36,10 @@ def test_lcb_contract_holds_out_inputs_and_keeps_the_impossible_assertion(tmp_pa
          "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add", "determinism"))},
         {"id": "heldout_type_strict",
          "argv": list(heldout.replay_argv(heldout.HELDOUT_NAME, "add", "type_strict"))},
+        {"id": "visible_determinism",
+         "argv": list(heldout.replay_argv(heldout.VISIBLE_CASES_NAME, "add", "determinism"))},
+        {"id": "visible_type_strict",
+         "argv": list(heldout.replay_argv(heldout.VISIBLE_CASES_NAME, "add", "type_strict"))},
         {"id": "import_side_effects",
          "argv": list(heldout.replay_argv(heldout.VISIBLE_NAME, "add", "import_side_effects"))}]
     assert record["protected_paths"] == [{"path": "test.py", "kind": "file",
@@ -277,7 +281,7 @@ def test_stability_on_a_real_lcb_task_without_a_reference(tmp_path, python_bin):
     result = contract.stabilize(task, SubprocessRunner(python_bin), timeout=60)
     assert [command.id for command in result.commands] == [
         "visible", "visible_run", "heldout", "heldout_determinism", "heldout_type_strict",
-        "import_side_effects"]
+        "visible_determinism", "visible_type_strict", "import_side_effects"]
     assert {row["state"] for row in result.runs} == {"prepatch"}
 
 
