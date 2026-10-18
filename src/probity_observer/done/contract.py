@@ -336,10 +336,36 @@ def copy_protected(root: Path, entry: Protected, destination: Path) -> None:
     shutil.copytree(source, target, symlinks=True, ignore=ignore)
 
 
+# Python console scripts an agent may also run as ``python -m <name>``.
+PYTHON_ENTRY_POINTS = frozenset({"pytest", "py.test"})
+
+
+def agent_interpreter(names: set[str], resolve) -> list[str] | None:
+    """The Python paths to seal beside the agent's programs ``names``: only when one is a
+    Python entry point (:data:`PYTHON_ENTRY_POINTS`)."""
+    if not {posixpath.basename(name) for name in names} & PYTHON_ENTRY_POINTS:
+        return None
+    return python_paths(resolve)
+
+
+def python_paths(resolve) -> list[str] | None:
+    """Every path ``python3`` and ``python`` resolve to where the agent runs, or None when
+    neither does."""
+    found: set[str] = set()
+    for name in ("python3", "python"):
+        try:
+            paths = resolve(name)
+        except DoneError:
+            continue
+        found.update(paths if isinstance(paths, list) else [paths])
+    return sorted(found) or None
+
+
 def contract_record(task: Task, adequacy: dict[str, int], commands: list[Command],
                     heldout_sha256: str | None, mutant_sha256: str | None,
                     executables: dict[str, str | list[str]] | None = None,
-                    run_writes: dict[str, list[str]] | None = None) -> dict[str, Any]:
+                    run_writes: dict[str, list[str]] | None = None,
+                    interpreter: list[str] | None = None) -> dict[str, Any]:
     """The ``probity-done-contract/v1`` record for a compiled task.
 
     With ``executables`` (each agent command's ``argv[0]`` to its path in the agent image), a
@@ -347,7 +373,10 @@ def contract_record(task: Task, adequacy: dict[str, int], commands: list[Command
     it to an exec in that directory, of that executable, with the command's arguments. With
     ``run_writes`` (each command's id to the workspace paths its stable runs wrote), such a
     command also carries ``run_writes``: probity-verify then counts a mutation as the run's
-    own only when a matching run made it under those paths or a cache directory.
+    own only when a matching run made it under those paths or a cache directory. With
+    ``interpreter`` (the paths of the Python beside the agent's tools), an agent command whose
+    program is a Python entry point (``pytest``) also carries ``interpreter``, so a run of it as
+    ``python -m pytest`` matches it.
     """
     entries = []
     for command in commands:
@@ -356,6 +385,8 @@ def contract_record(task: Task, adequacy: dict[str, int], commands: list[Command
             entry.update(cwd=AGENT_CWD, exe=executables[command.argv[0]])
             if run_writes is not None and command.id in run_writes:
                 entry["run_writes"] = sorted(set(run_writes[command.id]))
+            if interpreter and posixpath.basename(command.argv[0]) in PYTHON_ENTRY_POINTS:
+                entry["interpreter"] = sorted(set(interpreter))
         entries.append(entry)
     record: dict[str, Any] = {
         "schema_version": SCHEMA, "contract_id": f"contract-{task.task_id}",
@@ -399,7 +430,8 @@ def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
          commands: list[Command] | None = None, mutant_sha256: str | None = None,
          report: dict[str, Any] | None = None,
          executables: dict[str, str | list[str]] | None = None,
-         run_writes: dict[str, list[str]] | None = None) -> Sealed:
+         run_writes: dict[str, list[str]] | None = None,
+         interpreter: list[str] | None = None) -> Sealed:
     """Write the contract bundle for ``task`` into an empty ``out`` and sign it."""
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
@@ -411,7 +443,7 @@ def seal(task: Task, out: Path, key, adequacy: dict[str, int] | None = None,
     has_heldout = any(command.heldout for command in commands)
     record = contract_record(task, adequacy, commands,
                              heldout_digest(task.heldout) if has_heldout else None,
-                             mutant_sha256, executables, run_writes)
+                             mutant_sha256, executables, run_writes, interpreter)
     data, envelope = sign_record(record, key)
     digest = sha256(data)
     (out / "contract.json").write_bytes(data)
@@ -1148,4 +1180,4 @@ def compile_task(task: Task, out: Path, key, runner: Runner, runs: int = 3,
     executables = {name: resolve(name) for name in sorted(names)} if names else None
     return seal(task, out, key, adequacy.field(), stable.commands,
                 mutants.mutant_set_sha256(chosen) if chosen else None, report, executables,
-                stable.run_writes)
+                stable.run_writes, agent_interpreter(names, resolve))

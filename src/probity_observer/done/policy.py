@@ -15,7 +15,7 @@ called. The rules, first match wins:
 | this attempt is ``contradicted`` and a budget line is spent | ``stop`` | ``budget_exhausted_after_contradiction`` |
 | the agent flagged the task, after a ``contradicted`` attempt | ``escalate`` | ``agent_escalated_after_contradiction`` |
 | the agent flagged the task | ``escalate`` | ``agent_escalated`` |
-| ``not_established`` attempts in a row reach ``escalate_after_unestablished`` | ``escalate`` | ``record_unestablished_repeatedly`` |
+| ``not_established`` attempts over the chain, parser outcomes left out, reach ``escalate_after_unestablished`` | ``escalate`` | ``record_unestablished_repeatedly`` |
 | a budget line is spent | ``stop`` | ``budget_exhausted`` |
 | ``stall_after`` attempts in a row did not grow the passing set | ``stop`` | ``stalled`` |
 | the verdict is ``contradicted`` | ``replan`` | the verdict's reason |
@@ -26,7 +26,10 @@ A ``not_established`` attempt is first attributed from its records (:func:`attri
 its limit; ``agent`` when the run used its whole limit, a sealed collection failed, the
 launcher killed processes the agent left behind, or staging refused something in the agent's
 tree; else ``unknown``. An ``agent`` attempt counts as ``contradicted`` with reason
-``coverage_sabotaged`` and is replanned; a ``harness`` attempt counts for nothing. A
+``coverage_sabotaged`` and is replanned; a ``harness`` attempt counts for nothing, and so does
+an attempt whose reason is a parser outcome (``no_tool_claims``, ``tool_exit_unobserved``):
+what the claim parser could read from a transcript never pages a human. The unestablished
+count runs over the whole chain, so a ``contradicted`` attempt between two does not reset it. A
 ``contradicted`` attempt whose only failed check is the tool-claim match is attributed
 ``harness`` too, whatever the acceptance check says (:func:`attribute_refusal`): the record of
 the work was refused, not the work, so it is replanned with the comparison the check made and
@@ -47,7 +50,9 @@ Before the table, the done verdict turns two record facts into ``contradicted``
 refusal as its input: the reason code and what the check compared (which command failed and
 how, or the claimed run beside the runs the observer saw and the last edit), never the
 contract, its digests, the protected list or a held-out command's argv; ``continue`` keeps
-the tree. The table is RFC 8785 bytes, and
+the tree, and after a parser outcome whose acceptance commands passed it tells the next
+attempt to run the tests and leave their output (:func:`continue_input`). Every other
+attempt starts with no feedback: a refusal's text never outlives the attempt after it. The table is RFC 8785 bytes, and
 its SHA-256 is the ``policy.table_sha256`` every receipt carries.
 """
 
@@ -80,6 +85,11 @@ ATTRIBUTION_RULES = [
     {"when": "only_tool_claim_match_contradicted", "attribution": "harness"},
 ]
 TOOL_CLAIM = "tool_claim_match/v1"
+ACCEPTANCE = "acceptance_observed/v1"
+# Unestablished reasons that say only what the claim parser read from the transcript: they
+# never count toward ``escalate_after_unestablished`` (a spelling never pages a human), and
+# when the acceptance commands passed the next attempt is told what is missing.
+PARSER_REASONS = ("no_tool_claims", "tool_exit_unobserved")
 
 
 def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablished: int = 2,
@@ -91,10 +101,11 @@ def table(attempts: int = 3, escalate_after: int = 2, escalate_after_unestablish
         if value is not None:
             budget[name] = value
     return {
-        "schema_version": "probity-done-policy/v2",
+        "schema_version": "probity-done-policy/v3",
         "budget": budget,
         "escalate_after_contradicted": escalate_after,
         "escalate_after_unestablished": escalate_after_unestablished,
+        "unestablished_not_counted": list(PARSER_REASONS),
         "stall_after": stall_after,
         "latch": {"command_repeats": drift.COMMAND_REPEATS,
                   "command_repeats_in_attempt": drift.COMMAND_REPEATS_IN_ATTEMPT,
@@ -188,15 +199,12 @@ def _spent(policy: dict[str, Any], chain: list[dict[str, Any]]) -> str | None:
                 None)
 
 
-def _unestablished_run(chain: list[dict[str, Any]]) -> int:
-    """``not_established`` attempts in a row, ending with the last; a harness attempt
-    counts for nothing."""
-    run = 0
-    for item in chain:
-        if item["attribution"] == "harness" and item["verdict"] == "not_established":
-            continue
-        run = run + 1 if effective(item)[0] == "not_established" else 0
-    return run
+def _unestablished(chain: list[dict[str, Any]]) -> int:
+    """``not_established`` attempts over the whole chain: a ``contradicted`` attempt between
+    two does not reset the count, so alternating never avoids escalation. A harness attempt
+    and a parser outcome (:data:`PARSER_REASONS`) count for nothing."""
+    return sum(1 for item in chain if effective(item)[0] == "not_established"
+               and item["attribution"] != "harness" and item["reason"] not in PARSER_REASONS)
 
 
 def decide(policy: dict[str, Any], chain: list[dict[str, Any]], baseline: list[str]) -> Decision:
@@ -221,7 +229,7 @@ def decide(policy: dict[str, Any], chain: list[dict[str, Any]], baseline: list[s
         return Decision("escalate", "agent_escalated_after_contradiction" if prior
                         else "agent_escalated")
     if (decision == "not_established"
-            and _unestablished_run(chain) >= policy["escalate_after_unestablished"]):
+            and _unestablished(chain) >= policy["escalate_after_unestablished"]):
         return Decision("escalate", "record_unestablished_repeatedly")
     if spent:
         return Decision("stop", "budget_exhausted", spent)
@@ -253,6 +261,22 @@ def apply(decision: Decision, workspace: Path, tarball: Path, start_sha256: str)
     """Carry out a decision on the workspace: ``replan`` restores the sealed start state."""
     if decision.action == "replan":
         snapshot.reset(workspace, tarball, start_sha256)
+
+
+def acceptance_supported(checks: list[dict[str, Any]] | None) -> bool:
+    return any(item["claim_type"] == ACCEPTANCE and item["decision"] == "supported"
+               for item in checks or [])
+
+
+def continue_input(decision: Decision, attempt: int) -> str:
+    """The next attempt's first input after an attempt whose acceptance commands passed in the
+    verifier but whose transcript showed no run of them it could read (:data:`PARSER_REASONS`):
+    the workspace is kept, so the agent is asked only to run the tests and leave their output."""
+    return (f"Attempt {attempt} was not accepted yet: the outside verifier found the tests "
+            f"pass, but {decision.reason}: your transcript shows no run of the tests it can "
+            "match. The workspace is kept as you left it. Run the acceptance command once more, "
+            "exactly as the task states it, and leave its full output and exit status in the "
+            "transcript.\n")
 
 
 def replan_input(decision: Decision, attempt: int, detail: list[str] | None = None) -> str:

@@ -293,3 +293,61 @@ def test_the_replan_input_carries_the_comparison():
                                detail)
     assert "tool_claim_precedes_last_edit" in text and detail[0] in text
     assert "after your last edit" in text
+
+
+NOCLAIM = {"verdict": "not_established", "reason": "no_tool_claims"}
+CHEAT = {"verdict": "contradicted", "reason": "acceptance_failed_in_verifier",
+         "attribution": "agent"}
+
+
+def _actions(table, *records):
+    return [tuple(decide(table, *records[:index]).values())[:2]
+            for index in range(1, len(records) + 1)]
+
+
+@pytest.mark.parametrize("chain,expected", [
+    ([CHEAT, CHEAT], [("replan", "acceptance_failed_in_verifier"),
+                      ("escalate", "acceptance_failed_in_verifier")]),
+    ([NOCLAIM, CHEAT, NOCLAIM], [("continue", "no_tool_claims"),
+                                 ("replan", "acceptance_failed_in_verifier"),
+                                 ("stop", "budget_exhausted")]),
+    ([CHEAT, NOCLAIM, CHEAT], [("replan", "acceptance_failed_in_verifier"),
+                               ("continue", "no_tool_claims"),
+                               ("escalate", "acceptance_failed_in_verifier")]),
+    ([NOCLAIM, NOCLAIM], [("continue", "no_tool_claims"), ("continue", "no_tool_claims")]),
+    ([NOCLAIM] * 3, [("continue", "no_tool_claims"), ("continue", "no_tool_claims"),
+                     ("stop", "budget_exhausted")]),
+])
+def test_the_five_review_sequences(chain, expected):
+    """Review 5 appendix 2.4: a spelling the parser cannot read never pages a human."""
+    table = policy.table(attempts=3)
+    records = [record(index, **fields) for index, fields in enumerate(chain, start=1)]
+    assert _actions(table, *records) == expected
+
+
+def test_a_parser_outcome_never_escalates_whatever_its_reason():
+    table = policy.table(attempts=9)
+    unobserved = {"verdict": "not_established", "reason": "tool_exit_unobserved"}
+    assert decide(table, record(1, **unobserved), record(2, **unobserved),
+                  record(3, **NOCLAIM))["action"] != "escalate"
+    assert decide(table, record(1), record(2, **NOCLAIM))["action"] == "continue"
+    assert decide(table, record(1, **NOCLAIM), record(2))["action"] == "continue"
+
+
+def test_an_interleaved_contradiction_does_not_reset_the_unestablished_count():
+    table = policy.table(attempts=9, escalate_after=9)
+    assert decide(table, record(1), record(2, **CONTRA), record(3)) == {
+        "action": "escalate", "reason": "record_unestablished_repeatedly"}
+    assert policy.table()["unestablished_not_counted"] == ["no_tool_claims",
+                                                           "tool_exit_unobserved"]
+
+
+def test_the_continue_input_asks_for_the_run_and_keeps_the_tree():
+    text = policy.continue_input(policy.Decision("continue", "no_tool_claims"), 2)
+    assert "Attempt 2" in text and "no_tool_claims" in text and "kept" in text
+    assert "reset" not in text
+    supported = [{"claim_type": "acceptance_observed/v1", "decision": "supported"}]
+    assert policy.acceptance_supported(supported)
+    assert not policy.acceptance_supported([{"claim_type": "acceptance_observed/v1",
+                                             "decision": "contradicted"}])
+    assert not policy.acceptance_supported(None)

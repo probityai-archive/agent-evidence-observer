@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from probity_observer.done import claims
 
 VISIBLE = ["python", "test.py"]
@@ -159,7 +161,8 @@ def test_every_sealed_spelling_of_the_agent_run_is_one_claim():
 
 
 def test_a_cd_elsewhere_or_another_interpreter_is_not_the_sealed_run():
-    for line in ("cd /tmp && python test.py", "python3.11 test.py", "pypy test.py"):
+    for line in ("cd /tmp && python test.py", "python3.11 test.py", "pypy test.py",
+                 "python -m runpy test.py"):
         assert claims.from_text(f"$ {line}\nAll tests passed!\n", VISIBLE, SAME_FILE) == [], line
 
 
@@ -218,3 +221,55 @@ def test_the_agents_own_text_is_never_a_commands_output():
 def test_the_marker_must_be_a_whole_line():
     text = "# view notes.md\nsee @ agent\nAll tests passed!\n"
     assert claims.from_text(text, VISIBLE, AGENT) == []
+
+
+PYTEST = [{"id": "visible_run", "argv": ["pytest", "-q", "tests"], "cwd": "/workspace",
+           "exe": "/usr/local/bin/pytest"}]
+
+
+@pytest.mark.parametrize("line", [
+    "python -m pytest -q tests", "python3 -m pytest tests", "uv run pytest -q tests",
+    "poetry run pytest -q tests", "pytest -q tests -x", "pytest tests -q",
+    "timeout 60 pytest -q tests", "pytest -q tests 2>&1 | tee out.log",
+    "cd /workspace; pytest -q tests", "cd /workspace && python -m pytest -q ./tests/",
+])
+def test_honest_spellings_of_a_sealed_pytest_run_are_one_claim(line):
+    """Review 5: each of these parsed to no claim, and two such attempts paged a human."""
+    found = claims.from_text(f"$ {line}\n3 passed in 0.1s\n[exit 0]\n", None, PYTEST)
+    assert found == [{"id": "c1", "argv": ["pytest", "-q", "tests"], "exit": 0}]
+
+
+@pytest.mark.parametrize("line", [
+    "timeout 60 python test.py", "python test.py 2>&1 | tee out.log",
+    "cd /workspace; python test.py", "env PYTHONHASHSEED=0 python test.py",
+])
+def test_wrapped_spellings_of_a_sealed_script_run_are_one_claim(line):
+    found = claims.from_text(f"$ {line}\nAll tests passed!\n", VISIBLE, AGENT)
+    assert found == [{"id": "c1", "argv": ["python", "test.py"], "exit": 0}]
+
+
+@pytest.mark.parametrize("line", [
+    "pytest -q tests -k fast", "pytest -q tests --deselect tests/test_a.py::test_x",
+    "pytest -q tests/test_a.py", "pytest -q tests -p no:randomly", "cd /tmp && pytest -q tests",
+    "cd sub && pytest -q tests", "python -c 'import pytest; pytest.main([\"tests\"])'",
+    "/tmp/pytest -q tests", "pytest -q tests && echo ok",
+])
+def test_a_run_that_selects_other_tests_or_runs_elsewhere_is_not_the_sealed_run(line):
+    assert claims.sealed_spelling(claims.command_argv(line), PYTEST) is None
+
+
+def test_a_claude_code_module_run_of_the_sealed_tool_is_its_claim():
+    stream = "\n".join(json.dumps(message) for message in [
+        {"message": {"content": [{"type": "tool_use", "name": "Bash", "id": "t1",
+                                  "input": {"command": "python -m pytest -q tests"}}]}},
+        {"message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+                                  "is_error": False}]}}])
+    assert claims.from_claude_stream(stream, PYTEST) == [
+        {"id": "c1", "argv": ["pytest", "-q", "tests"], "exit": 0}]
+
+
+def test_zero_failures_in_a_summary_is_no_failure():
+    text = "$ pytest -q tests\n3 passed, 0 failed, 0 errors in 0.2s\n"
+    assert claims.from_text(text, None, PYTEST) == [
+        {"id": "c1", "argv": ["pytest", "-q", "tests"], "exit": 0}]
+    assert claims.from_text("$ pytest -q tests\n2 passed, 1 failed\n", None, PYTEST) == []
