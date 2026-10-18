@@ -237,10 +237,15 @@ MODES = ("assert", "determinism", "type_strict", "import_side_effects")
 def sealed_cases(path: Path) -> list[tuple[Any, Any, Any]]:
     """``(args, kwargs, expected)`` for each ``assert candidate(...) == <literal>`` in the
     sealed test's assertion function (the held-out file is written in exactly that shape)."""
+    return cases_in(path.read_text())
+
+
+def cases_in(source: str) -> list[tuple[Any, Any, Any]]:
+    """:func:`sealed_cases` over source text; the split checks its own output with it."""
     from .heldout import cases_of, check_body
 
     found = []
-    for case in cases_of(check_body(path.read_text())[1]):
+    for case in cases_of(check_body(source)[1]):
         call = ast.parse(f"candidate({case.args})", mode="eval").body
         if not isinstance(call, ast.Call) or any(isinstance(arg, ast.Starred) for arg in call.args):
             raise ValueError(f"case arguments are not literals: {case.args}")

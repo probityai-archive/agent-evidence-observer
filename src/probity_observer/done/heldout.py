@@ -14,6 +14,12 @@ always says yes. Two things here answer them:
   answer on one input identical, and again in a fresh child) and type-strict comparison
   (only plain data crosses) are enforced there, for every call of both tests. The agent's own
   ``test.py`` is for the agent; the grade never runs it.
+
+A held-out case is written as literal values. An original test often builds an input
+(``'?' * 1000``, ``nums1 = [...]`` then ``candidate(nums1, 12)``); the split evaluates each
+case's arguments in the original test's own namespace, at the point of its assertion, and
+writes the values. The held-out file therefore runs on its own and every probe reads its
+cases with ``ast.literal_eval``; a case whose value has no literal form is never held out.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ import ast
 import hashlib
 import random
 from dataclasses import dataclass
+from typing import Any
 
 from . import replay
 
@@ -105,6 +112,51 @@ def cases_of(function: ast.FunctionDef) -> list[Case]:
     return [case for node in function.body if (case := _case(node)) is not None]
 
 
+def _literal(value: Any) -> str:
+    """``repr`` of a plain value, refused unless it reads back as the same value and type."""
+    text = repr(value)
+    try:
+        back = ast.literal_eval(text)
+    except (ValueError, SyntaxError, MemoryError, RecursionError) as error:
+        raise HeldoutError(f"a case value has no literal form: {text[:80]}") from error
+    if not replay.strict_eq(back, value):
+        raise HeldoutError(f"a case value does not read back as itself: {text[:80]}")
+    return text
+
+
+def literal_cases(function: ast.FunctionDef) -> list[Case | None]:
+    """Each of the function's cases (in :func:`cases_of` order) with its arguments evaluated
+    to literal text, or ``None`` where they cannot be.
+
+    The function's other statements (assignments and the like, never an assertion) run in
+    order in one namespace, so a case sees the names defined above it; a statement that
+    raises (one that calls ``candidate``, say) defines nothing. The test is the dataset's
+    own, never the agent's. A case left ``None`` is never held out.
+    """
+    namespace: dict[str, Any] = {}
+    found: list[Case | None] = []
+    for node in function.body:
+        case = _case(node)
+        if case is None:
+            if not isinstance(node, ast.Assert):
+                module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))
+                try:
+                    exec(compile(module, "<original test>", "exec"), namespace)  # noqa: S102
+                except Exception:  # noqa: BLE001  a statement that needs the candidate
+                    pass
+            continue
+        try:
+            args, kwargs = eval(f"(lambda *a, **k: (a, k))({case.args})",  # noqa: S307
+                                namespace)
+            text = ", ".join([_literal(arg) for arg in args]
+                             + [f"{name}={_literal(value)}" for name, value in kwargs.items()])
+        except Exception:  # noqa: BLE001  no literal form: the case stays visible only
+            found.append(None)
+            continue
+        found.append(Case(args=text, expected=case.expected, source=case.source))
+    return found
+
+
 def rng(task_id: str) -> random.Random:
     return random.Random(int(hashlib.sha256(task_id.encode()).hexdigest(), 16))
 
@@ -117,8 +169,10 @@ def split_lcb(task_id: str, test: str, original_test: str, entry_point: str,
     original_sources = {case.source for case in cases_of(original)}
     pinned = {case.args for case in cases_of(visible) if case.source not in original_sources}
     by_input: dict[str, Case] = {}
-    for case in cases_of(original):
-        by_input.setdefault(case.args, case)
+    for case, value in zip(cases_of(original), literal_cases(original)):
+        # Keyed by the original text, which is what the visible test's assertions share.
+        if value is not None:
+            by_input.setdefault(case.args, value)
     eligible = sorted(args for args in by_input if args not in pinned)
     if len(eligible) < 2:
         raise HeldoutError(f"{task_id}: fewer than two original inputs to split")
@@ -132,8 +186,11 @@ def split_lcb(task_id: str, test: str, original_test: str, entry_point: str,
     pinned_cases = tuple(by_input[args] for args in sorted(pinned) if args in by_input)
     heldout = tuple(by_input[args] for args in sorted(chosen)) + pinned_cases
     calls = [case.args for case in cases_of(visible)]
+    source = heldout_file(heldout)
+    if len(replay.cases_in(source)) != len(heldout):
+        raise HeldoutError(f"{task_id}: the held-out file does not read back case by case")
     return Split(visible_test=ast.unparse(tree) + "\n",
-                 heldout_source=heldout_file(heldout), heldout=heldout,
+                 heldout_source=source, heldout=heldout,
                  pinned=tuple(sorted(pinned)), visible_count=len(calls))
 
 

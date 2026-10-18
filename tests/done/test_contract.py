@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from probity_observer.done import contract, heldout, pytest_plugins
+from probity_observer.done import contract, heldout, pytest_plugins, replay
 from probity_observer.done.formats import DoneError, encode, open_record, public_key, sha256
 from probity_observer.sensors import treedigest
 
@@ -154,6 +154,44 @@ def test_heldout_split_refuses_too_few_inputs():
         heldout.split_lcb("t", "x = 1\n", "x = 1\n", "f")
     with pytest.raises(heldout.HeldoutError):
         heldout.heldout_file(())
+
+
+# An original test that builds its inputs, as LiveCodeBench tests do (lcbhard_47's
+# `candidate(nums1, 12)`, lcbhard_50's `'?' * 1000`), plus one value with no literal form.
+BUILT = ("def check(candidate):\n"
+         "    nums1 = [3, 1, 2]\n"
+         "    assert candidate(nums1, 2) == 5\n"
+         "    assert candidate('?' * 4, 1) == 6\n"
+         "    assert candidate([7] * 3 + [1], k=2) == 7\n"
+         "    assert candidate(list(range(3)), 0) == 3\n"
+         "    assert candidate(object(), 9) == 0\n"
+         "    assert candidate([1], 1) == 1\n")
+
+
+def test_heldout_cases_are_written_as_literal_values():
+    split = heldout.split_lcb("built", BUILT, BUILT, "f", fraction=0.9)
+    assert "nums1" not in split.heldout_source and "*" not in split.heldout_source
+    assert "range" not in split.heldout_source and "object" not in split.heldout_source
+    namespace = {}
+    exec(split.heldout_source, namespace)  # runs on its own: no name it does not define
+    read = replay.cases_in(split.heldout_source)
+    assert len(read) == len(split.heldout) == 4
+    literal = {((3, 1, 2), 2): ({}, 5), ("????", 1): ({}, 6), ((7, 7, 7, 1),): ({"k": 2}, 7),
+               ((0, 1, 2), 0): ({}, 3), ((1,), 1): ({}, 1)}
+    for args, kwargs, expected in read:
+        key = tuple(tuple(arg) if isinstance(arg, list) else arg for arg in args)
+        assert literal[key] == (kwargs, expected)
+    every = heldout.literal_cases(heldout.check_body(BUILT)[1])
+    assert [case.args if case else None for case in every] == [
+        "[3, 1, 2], 2", "'????', 1", "[7, 7, 7, 1], k=2", "[0, 1, 2], 0", None, "[1], 1"]
+
+
+def test_a_case_that_calls_the_candidate_outside_an_assertion_defines_nothing():
+    source = ("def check(candidate):\n    seen = candidate(0)\n"
+              "    assert candidate(1) == 1\n    assert candidate(2) == 2\n"
+              "    assert candidate(3) == 3\n")
+    split = heldout.split_lcb("calls", source, source, "f")
+    assert len(replay.cases_in(split.heldout_source)) == len(split.heldout)
 
 
 class Scripted:
