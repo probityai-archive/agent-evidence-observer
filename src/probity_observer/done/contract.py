@@ -584,39 +584,68 @@ class MutantPlan:
     cheat_uncovered: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _grouped(found: list[mutants.Mutant], group: str) -> list[mutants.Mutant]:
+    return [replace(mutant, group=group) for mutant in found]
+
+
+def reference_sets(name: str, start: str, text: str, change: Changes) -> dict[str, list[mutants.Mutant]]:
+    """One changed file's mutants by set (see :data:`.mutants.SETS`), before sampling.
+
+    ``hunk_revert``: each hunk's start lines put back. ``change``: operator and statement
+    mutants whose node sits on a changed line. ``function``: operator mutants inside a touched
+    function and off the changed lines. ``rest``: operator mutants elsewhere in the file.
+    ``cheat``: any-eq, stateful and frame-aware on every touched function.
+    """
+    ranges = list(change.ranges)
+    changed = change.lines()
+    spans = [(item.node.lineno, item.node.end_lineno or item.node.lineno)
+             for item in mutants.touched(ast.parse(text), ranges, change.anchors)]
+    inside = {line for first, last in spans for line in range(first, last + 1)}
+    every = mutants.operator_mutants(name, text)
+    return {
+        "hunk_revert": mutants.hunk_reverts(name, start, text, change.hunks),
+        "change": ([mutant for mutant in every if mutant.line in changed]
+                   + mutants.statement_mutants(name, text, changed)),
+        "cheat": mutants.class_mutants(name, text, ranges, change.anchors),
+        "function": [mutant for mutant in every
+                     if mutant.line in inside and mutant.line not in changed],
+        "rest": [mutant for mutant in every
+                 if mutant.line not in inside and mutant.line not in changed],
+    }
+
+
 def task_mutants(task: Task, limit: int) -> MutantPlan:
     """The mutant base state and mutants for a task, and what was left out.
 
-    With a reference: the null patch (every changed file back to its start bytes) first, then
-    one revert per hunk, then operator and statement mutants sampled round-robin across the
-    patch's hunks, then the cheat classes on every touched function. Mutants syntactically
-    equal to the reference or to an earlier mutant are dropped. Without a reference: the entry
-    function's degenerate replacements.
+    With a reference, the sets of :func:`reference_sets` over every changed file, after the
+    null patch (every changed file back to its start bytes). Only ``rest`` is sampled
+    (``limit``, round-robin across files); mutants syntactically equal to the reference or to
+    an earlier mutant are dropped. Without a reference: the entry function's degenerate
+    replacements.
     """
     if task.reference is not None and task.mutation_targets:
         names = sorted(name for name in task.mutation_targets if (task.reference / name).is_file())
         starts = {name: (task.start / name).read_text() if (task.start / name).is_file() else ""
                   for name in names}
         texts = {name: (task.reference / name).read_text() for name in names}
-        found = ([mutants.Mutant(names[0], "null-patch", 0, 0, starts[names[0]],
-                                 tuple((name, starts[name]) for name in names[1:]))]
-                 if names else [])
-        groups: list[list[mutants.Mutant]] = []
-        classes: list[mutants.Mutant] = []
+        sets: dict[str, list[mutants.Mutant]] = {name: [] for name in mutants.SETS}
+        if names:
+            sets["null_patch"] = [mutants.Mutant(
+                names[0], "null-patch", 0, 0, starts[names[0]],
+                tuple((name, starts[name]) for name in names[1:]), "null_patch")]
+        rest: list[list[mutants.Mutant]] = []
         uncovered: list[dict[str, Any]] = []
         for name in names:
             change = task.mutation_targets[name]
-            found += mutants.hunk_reverts(name, starts[name], texts[name], change.hunks)
-            for hunk in change.ranges:
-                lines = set(range(hunk[0], hunk[1] + 1))
-                groups.append(mutants.operator_mutants(name, texts[name], [hunk])
-                              + mutants.statement_mutants(name, texts[name], lines))
-            classes += mutants.class_mutants(name, texts[name], list(change.ranges),
-                                             change.anchors)
+            found = reference_sets(name, starts[name], texts[name], change)
+            rest.append(_grouped(found.pop("rest"), "rest"))
+            for group, items in found.items():
+                sets[group] += _grouped(items, group)
             uncovered += mutants.cheat_uncovered(name, texts[name], list(change.ranges),
                                                  change.anchors)
+        sets["rest"] = mutants.stratified(rest, limit, task.task_id)
         chosen, dropped = mutants.deduplicate(
-            texts, found + mutants.stratified(groups, limit, task.task_id) + classes)
+            texts, [mutant for group in mutants.SETS for mutant in sets[group]])
         return MutantPlan(task.reference, chosen, dropped, uncovered)
     if task.entry is not None:
         return MutantPlan(task.start, mutants.degenerate_mutants(

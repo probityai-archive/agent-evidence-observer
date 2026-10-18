@@ -260,3 +260,42 @@ def test_a_stateful_counter_survives_a_fresh_interpreter(tmp_path):
     first = subprocess.run(call, cwd=tmp_path, capture_output=True, text=True, check=True)
     second = subprocess.run(call, cwd=tmp_path, capture_output=True, text=True, check=True)
     assert (first.stdout.strip(), second.stdout.strip()) == ("2", "None")
+
+
+SPLIT_START = ("def kept(a):\n    return a - 1\n\n\n"
+               "def fixed(a, b):\n    total = a + b\n    return total\n")
+SPLIT_REFERENCE = ("def kept(a):\n    return a - 1\n\n\n"
+                   "def fixed(a, b):\n    total = a + b\n    if total > 10:\n        total = 10\n"
+                   "    return total\n")
+
+
+def test_reference_mutants_are_split_into_change_function_rest_and_cheat_sets():
+    from probity_observer.done import changes
+    change = changes.changed_lines(SPLIT_START, SPLIT_REFERENCE)
+    sets = contract.reference_sets("m.py", SPLIT_START, SPLIT_REFERENCE, change)
+    assert change.lines() == {7, 8}
+    assert sets["change"] and {mutant.line for mutant in sets["change"]} <= {7, 8}
+    assert sets["function"] and {mutant.line for mutant in sets["function"]} <= {5, 6, 9}
+    assert sets["rest"] and {mutant.line for mutant in sets["rest"]} <= {1, 2}
+    assert {mutant.line for mutant in sets["cheat"]} == {5}
+    assert len(sets["hunk_revert"]) == 1
+
+
+def test_the_contract_seals_each_set_and_the_totals_still_sum(tmp_path, harness, swe_repo,
+                                                               python_bin):
+    from probity_verify.adapters import done_records
+    repo, record = swe_repo
+    task = contract.swe_task(record, repo, tmp_path / "w")
+    plan = contract.task_mutants(task, 40)
+    assert {mutant.group for mutant in plan.mutants} >= {"null_patch", "change", "cheat"}
+    result = mutants.measure(plan.base, plan.mutants, task.commands[:1], SubprocessRunner(python_bin),
+                             task.heldout, 60)
+    field = result.field()
+    assert sum(entry["mutants"] for entry in field["by_class"].values()) == field["mutants"]
+    assert sum(entry["killed"] for entry in field["by_class"].values()) == field["killed"]
+    assert set(result.report()["sets"]) == set(field["by_class"])
+    assert all("kill_vector_sha256" in entry for entry in result.report()["sets"].values())
+    sealed = contract.seal(task, tmp_path / "out", harness, field, task.commands,
+                           mutants.mutant_set_sha256(plan.mutants))
+    assert done_records.contract((sealed.out / "contract.json").read_bytes())["adequacy"] == field
+    assert all("set" in mutant.binding() for mutant in plan.mutants)
