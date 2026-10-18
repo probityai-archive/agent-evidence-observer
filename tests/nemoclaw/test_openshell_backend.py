@@ -1,5 +1,6 @@
 """The OpenShell launch backend's parts that need neither docker nor OpenShell."""
 
+import hashlib
 import os
 import signal
 import subprocess
@@ -34,7 +35,8 @@ network_policies: {}
 def identity():
     return backend_openshell.Identity("img", "sha256:abc", "strace -- version 6.13", "27", {
         "binaries": {"openshell": {"path": "/opt/openshell", "sha256": "0" * 64},
-                     "openshell-gateway": {"path": "/opt/openshell-gateway", "sha256": "1" * 64}}})
+                     "openshell-gateway": {"path": "/opt/openshell-gateway", "sha256": "1" * 64}}},
+        {"image": backend_openshell.TRACER_IMAGE_DIGEST})
 
 
 def test_the_backend_is_registered_under_its_name() -> None:
@@ -73,6 +75,8 @@ def test_the_exec_and_tracer_argv_carry_the_marker_and_the_gated_flags(tmp_path)
         assert tracer[tracer.index("--cap-drop") + 1] == "ALL"
         assert [tracer[i + 1] for i, item in enumerate(tracer) if item == "--cap-add"] == \
             ["SYS_PTRACE", "KILL"]
+        image = tracer[tracer.index("--entrypoint") + 2]
+        assert image == backend_openshell.TRACER_IMAGE_DIGEST and "sha256:abc" not in tracer
         flags = tracer[tracer.index(session.marker) + 2:]
         assert flags == list(backend_openshell.tracer_flags())
         assert "signal=none" not in flags and "inject=execve,execveat:signal=SIGSTOP" in flags
@@ -177,3 +181,69 @@ def test_the_marker_and_the_tree_below_it_are_found_in_the_real_proc() -> None:
     finally:
         if target.poll() is None:
             target.kill()
+
+
+def test_the_tracer_image_is_built_reproducibly_from_the_pinned_dockerfile(tmp_path) -> None:
+    dockerfile = (backend_openshell.TRACER_CONTEXT / "Dockerfile").read_bytes()
+    assert hashlib.sha256(dockerfile).hexdigest() == backend_openshell.TRACER_DOCKERFILE_SHA256
+    for line in dockerfile.decode().splitlines():
+        if line.startswith("FROM "):
+            assert "@sha256:" in line
+        if line.startswith("ADD "):
+            assert "--checksum=sha256:" in line
+    argv = backend_openshell.tracer_build_argv("docker", tmp_path / "t.tar")
+    assert "--no-cache" in argv and "SOURCE_DATE_EPOCH=0" in argv
+    assert "rewrite-timestamp=true" in argv[argv.index("--output") + 1]
+    assert argv[-1] == str(backend_openshell.TRACER_CONTEXT)
+
+
+class FakeDocker:
+    """Stands in for ``_run`` and ``_image_present``: images present by reference, and the id a
+    load produces."""
+
+    def __init__(self, present=(), loads=None):
+        self.present, self.loads, self.calls = set(present), loads, []
+
+    def run(self, argv, **kwargs):
+        self.calls.append(argv)
+        out = ""
+        if argv[1] == "load" and self.loads:
+            self.present |= {self.loads, backend_openshell.TRACER_IMAGE_NAME}
+        if argv[1:3] == ["image", "inspect"]:
+            out = (self.loads or "") if argv[-1] == backend_openshell.TRACER_IMAGE_NAME else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    def image_present(self, reference, docker):
+        return reference in self.present
+
+
+def _with(monkeypatch, fake):
+    monkeypatch.setattr(backend_openshell, "_run", fake.run)
+    monkeypatch.setattr(backend_openshell, "_image_present", fake.image_present)
+
+
+def test_a_present_tracer_image_is_used_without_a_build(monkeypatch) -> None:
+    fake = FakeDocker(present={backend_openshell.TRACER_IMAGE_DIGEST})
+    _with(monkeypatch, fake)
+    assert backend_openshell.tracer_image() == backend_openshell.TRACER_IMAGE_DIGEST
+    assert not fake.calls
+
+
+def test_an_absent_tracer_image_is_built_and_must_match_the_pin(monkeypatch) -> None:
+    fake = FakeDocker(loads=backend_openshell.TRACER_IMAGE_DIGEST)
+    _with(monkeypatch, fake)
+    assert backend_openshell.tracer_image() == backend_openshell.TRACER_IMAGE_DIGEST
+    assert fake.calls[0][:3] == ["docker", "buildx", "build"] and fake.calls[1][1] == "load"
+    _with(monkeypatch, FakeDocker(loads="sha256:" + "e" * 64))
+    with pytest.raises(backend_openshell.BackendError, match="not the pinned"):
+        backend_openshell.tracer_image()
+
+
+def test_an_edited_dockerfile_is_refused_before_any_build(monkeypatch, tmp_path) -> None:
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n")
+    monkeypatch.setattr(backend_openshell, "TRACER_CONTEXT", tmp_path)
+    fake = FakeDocker(present={backend_openshell.TRACER_IMAGE_DIGEST})
+    _with(monkeypatch, fake)
+    with pytest.raises(backend_openshell.BackendError, match="not the file"):
+        backend_openshell.tracer_image()
+    assert not fake.calls
