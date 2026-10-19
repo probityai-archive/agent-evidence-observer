@@ -1,5 +1,5 @@
 <!-- moved-to-monorepo -->
-> **Moved to [github.com/probityai/probity/packages/observer](https://github.com/probityai/probity/tree/main/packages/observer).** This repository is archived. Tags, releases, Actions and Pages keep working.
+> **Moved to [probityai/probity/packages/observer](https://github.com/probityai/probity/tree/main/packages/observer). Star and follow it there.** This repository is archived; its tags and releases keep working.
 
 # Agent Evidence Observer (prototype)
 
