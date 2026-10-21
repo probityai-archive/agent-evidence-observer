@@ -366,7 +366,7 @@ def read_proofable(directory: Path) -> dict[str, Any]:
         reference_hashes = [str(r.get("qHash", "")).lower() for r in proofs_spec.get("references", [])]
         envelope_hashes = [str(e.get("qHash", "")).lower() for e in envelopes]
         counts_agree = (
-            len(envelopes) == proofs_spec.get("count") == 11
+            len(envelopes) == proofs_spec.get("count")
             and len(trace_hashes) == len(set(trace_hashes))
             and len(envelope_hashes) == len(set(envelope_hashes))
             and len(reference_hashes) == len(set(reference_hashes))
