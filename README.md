@@ -39,8 +39,7 @@ The root distribution is version 0.0.2. Every record says `witnessScope: PEER`: 
 host under the same operator, so the records show what this broker saw, not what an independent
 observer saw. Linux runs can launch a fixed probe, or a Python script given to `run-workload`, under
 bubblewrap with only the broker's socket exposed. `launch-agent` runs an unmodified agent in docker or
-apptainer and records, from outside it, every program it ran and every file it changed. It does not use
-bubblewrap, which cannot start on hosts with `apparmor_restrict_unprivileged_userns=1` such as Ubuntu 24.04.
+apptainer and records, from outside it, every program it ran and every file it changed.
 `agent-evidence-witness` runs a separately operated witness: a record it co-signs verifies as `EXTERNAL`
 when the reader pins a different operator for the witness key. It needs the `witness` extra, which is not yet
 in a released wheel.
