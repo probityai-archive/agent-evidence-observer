@@ -34,7 +34,7 @@ jobs:
           ref: 23d253f2587ac090412394fe1a71ef5694fe2eda
           path: vendor-adk-proposed-fix
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12.14'
       - name: Install selected verification runner
