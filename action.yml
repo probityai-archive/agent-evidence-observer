@@ -23,6 +23,10 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: warn that this Action moved
+      shell: bash
+      run: |
+        echo "::warning::probityai-archive/agent-evidence-observer moved to probityai/probity/actions/observer@agent-evidence-observer-v0.1.1; update your workflow. This copy stays but gets no fixes."
     - name: Install this selected reader
       shell: bash
       env:
